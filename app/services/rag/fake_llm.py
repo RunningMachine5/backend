@@ -12,11 +12,16 @@ class FakeLLM:
         context: RetrievedContextDTO,
     ) -> str:
         """RAG 질의와 검색 문맥을 담당자용 최종 답변으로 조합한다."""
+        # 실제 LLM 대신 대시보드에서 바로 확인할 수 있는 고정 템플릿을 사용한다.
         return (
             f"[위험등급] {query.risk_grade.value}\n"
             f"[사기유형] {query.fraud_type.value}\n"
             f"[탐지근거] {', '.join(query.evidence)}\n"
-            f"[유사사례/대응가이드] {context.title}: {context.content}"
+            f"[검색질의] {query.query}\n"
+            f"[유사사례/대응가이드] {context.title}: {context.content}\n"
+            f"[문서출처] {context.source}\n"
+            "[담당자 조치] 거래 내역과 고객 확인 결과를 검토한 뒤 "
+            "필요한 모니터링 조치를 결정한다."
         )
 
     def generate_chatbot_answer(
