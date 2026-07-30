@@ -19,6 +19,9 @@ class RetrievedContextDTO:
 
     title: str
     content: str
+    # 실제 VectorDB 연동 시 검색 결과의 출처와 유사도를 그대로 매핑할 필드이다.
+    source: str = ""
+    similarity_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -27,4 +30,7 @@ class AgentResultDTO:
 
     action: AgentAction
     message: str
+    # 이메일 또는 정상 거래 분기에서는 RAG 데이터가 없으므로 선택 필드로 유지한다.
+    rag_query: RagQueryDTO | None = None
+    retrieved_context: RetrievedContextDTO | None = None
 
