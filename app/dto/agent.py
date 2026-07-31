@@ -30,7 +30,7 @@ class AgentResultDTO:
 
     action: AgentAction
     message: str
-    # 이메일 또는 정상 거래 분기에서는 RAG 데이터가 없으므로 선택 필드로 유지한다.
+    # 정상 거래처럼 RAG를 실행하지 않은 결과도 표현할 수 있도록 선택 필드로 유지한다.
     rag_query: RagQueryDTO | None = None
     retrieved_context: RetrievedContextDTO | None = None
 
