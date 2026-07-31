@@ -1,3 +1,5 @@
+from fastapi import FastAPI
+
 from app.data.fake_data import FAKE_TRANSACTIONS
 from app.dto.chatbot import ChatbotRequestDTO
 from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
@@ -5,6 +7,11 @@ from app.pipelines.fraud_detection_pipeline import FraudDetectionPipeline
 from app.pipelines.monitoring_agent_pipeline import MonitoringAgentPipeline
 from app.presentation.console_renderer import ConsoleRenderer
 
+app=FastAPI()
+
+@app.get("/")
+async def root():
+    return {"server-message": "Hello 준혁,덕현,강현,정현,주현"}
 
 def main() -> None:
     """두 위험도 분기와 고객 대응 챗봇의 전체 데모를 순서대로 실행한다."""
