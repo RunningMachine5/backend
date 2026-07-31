@@ -1,10 +1,9 @@
 from app.data.fake_data import FAKE_TRANSACTIONS
-from app.dto.chatbot import ChatbotRequestDTO
 from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
 from app.pipelines.fraud_detection_pipeline import FraudDetectionPipeline
 from app.pipelines.monitoring_agent_pipeline import MonitoringAgentPipeline
 from app.presentation.console_renderer import ConsoleRenderer
-
+from app.dto.chatbot import ChatbotRequestDTO
 
 def main() -> None:
     """두 위험도 분기와 고객 대응 챗봇의 전체 데모를 순서대로 실행한다."""
@@ -22,7 +21,7 @@ def main() -> None:
         renderer.print_agent_result(agent_result)
 
     chatbot_request = ChatbotRequestDTO(
-        user_id="USR_100123",
+        # user_id="USR_100123",
         question="방금 발생한 고액 카드 거래가 제가 한 거래가 아닌데 어떻게 해야 하나요?",
     )
     chatbot_response = chatbot_pipeline.run(chatbot_request)

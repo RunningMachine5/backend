@@ -11,5 +11,7 @@ class FakeGuideRetriever:
         return CustomerGuideDTO(
             title="미확인 카드거래 고객 대응 가이드",
             content=CUSTOMER_GUIDE_TEXT,
+            source="Fake Guide DB",
+            similarity_score=1.0
         )
 
