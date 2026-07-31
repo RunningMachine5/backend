@@ -11,7 +11,16 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql
-      - ./docker:/docker-entrypoint-initdb.d #최초 실행시 확장 활성화
+    configs:
+      # 최초 실행(데이터 디렉터리가 비어 있을 때)에만 실행됨
+      - source: init_extensions
+        target: /docker-entrypoint-initdb.d/00-extensions.sql
+
+configs:
+  init_extensions:
+    content: |
+      CREATE EXTENSION IF NOT EXISTS vector;
+      CREATE EXTENSION IF NOT EXISTS pg_search;
 
 volumes:
   pgdata:
