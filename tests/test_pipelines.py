@@ -19,6 +19,9 @@ class PipelineTest(unittest.TestCase):
 
         self.assertEqual(assessment.risk_grade, RiskGrade.VERY_HIGH)
         self.assertEqual(agent_result.action, AgentAction.EMAIL_SENT)
+        self.assertIn("https://fake-finance.local/chatbot", agent_result.message)
+        self.assertIsNone(agent_result.rag_query)
+        self.assertIsNone(agent_result.retrieved_context)
 
     def test_other_risk_uses_rag_branch(self) -> None:
         """두 번째 거래가 RAG 기반 대시보드 분기로 이어지는지 확인한다."""
@@ -28,6 +31,20 @@ class PipelineTest(unittest.TestCase):
         self.assertNotEqual(assessment.risk_grade, RiskGrade.VERY_HIGH)
         self.assertEqual(agent_result.action, AgentAction.DASHBOARD_REPORTED)
         self.assertIn("[유사사례/대응가이드]", agent_result.message)
+        self.assertIsNotNone(agent_result.rag_query)
+        self.assertIsNotNone(agent_result.retrieved_context)
+
+        # 생성된 질의가 팀 간 DTO 계약에 필요한 탐지 정보를 모두 포함하는지 확인한다.
+        self.assertIn(assessment.risk_grade.value, agent_result.rag_query.query)
+        self.assertIn(
+            assessment.primary_fraud_type.value,
+            agent_result.rag_query.query,
+        )
+        for evidence in assessment.evidence:
+            self.assertIn(evidence, agent_result.rag_query.query)
+
+        self.assertIn("금융보안원", agent_result.retrieved_context.source)
+        self.assertIn("[담당자 조치]", agent_result.message)
 
     def test_non_fraud_stops_before_pattern_analysis(self) -> None:
         """사기 아님 거래가 패턴 분석 없이 조치 없음으로 종료되는지 확인한다."""
@@ -45,6 +62,8 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse(assessment.prediction.is_fraud)
         self.assertEqual(assessment.patterns, [])
         self.assertEqual(agent_result.action, AgentAction.NO_ACTION)
+        self.assertIsNone(agent_result.rag_query)
+        self.assertIsNone(agent_result.retrieved_context)
 
     def test_chatbot_combines_guide_and_transaction(self) -> None:
         """고객 질문에 관련 거래정보와 고객 대응 가이드가 포함되는지 확인한다."""
