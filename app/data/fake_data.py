@@ -11,6 +11,8 @@ FAKE_TRANSACTIONS = [
         user_amount_std_dev=185_000.42,
         payment_method="CARD",
         merchant_category="VEHICLES",
+        user_name="홍길동",
+        email="sample@email.com",
     ),
     TransactionDTO(
         user_id="USR_100456",
@@ -19,6 +21,8 @@ FAKE_TRANSACTIONS = [
         user_amount_std_dev=300_000.00,
         payment_method="CARD",
         merchant_category="ELECTRONICS",
+        user_name="김철수",
+        email="kimcheolsu@email.com",
     ),
 ]
 
