@@ -7,16 +7,16 @@ FAKE_TRANSACTIONS = [
     TransactionDTO(
         user_id="USR_100123",
         transaction_time="2026-07-30T12:47:22+09:00",
-        amount=85_000_000,
-        user_amount_std_dev=185_000.42,
+        amount=85_000_000, # 해당 거래 금액 8,500만원 - 평균 대비 460배
+        user_amount_std_dev=185_000.42, # 평균 금액 18.5만원
         payment_method="CARD",
         merchant_category="VEHICLES",
     ),
     TransactionDTO(
         user_id="USR_100456",
         transaction_time="2026-07-30T13:10:00+09:00",
-        amount=12_000_000,
-        user_amount_std_dev=300_000.00,
+        amount=12_000_000, # 해당 거래 금액 1,200만원 - 평균 대비 40배
+        user_amount_std_dev=300_000.00, # 평균 금액 30만원
         payment_method="CARD",
         merchant_category="ELECTRONICS",
     ),
