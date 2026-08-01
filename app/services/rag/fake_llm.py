@@ -1,6 +1,5 @@
 from app.dto.agent import RagQueryDTO, RetrievedContextDTO
 from app.dto.chatbot import ChatbotRequestDTO, CustomerGuideDTO
-from app.dto.transaction import TransactionDTO
 
 
 class FakeLLM:
@@ -28,13 +27,13 @@ class FakeLLM:
         self,
         request: ChatbotRequestDTO,
         guide: CustomerGuideDTO,
-        transaction: TransactionDTO,
+        # transaction: TransactionDTO,
     ) -> str:
         """고객 질문, 대응 가이드, 관련 거래를 고객용 답변으로 조합한다."""
         return (
-            f"문의하신 거래는 {transaction.transaction_time}에 "
-            f"{transaction.merchant_category} 업종에서 발생한 "
-            f"{transaction.amount:,}원 {transaction.payment_method} 결제입니다. "
+            # f"문의하신 거래는 {transaction.transaction_time}에 "
+            # f"{transaction.merchant_category} 업종에서 발생한 "
+            # f"{transaction.amount:,}원 {transaction.payment_method} 결제입니다. "
             f"{guide.content}"
         )
 

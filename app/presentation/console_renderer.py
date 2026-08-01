@@ -27,7 +27,7 @@ class ConsoleRenderer:
             print(f"- {evidence}")
 
     def print_agent_result(self, result: AgentResultDTO) -> None:
-        """Agent가 선택한 작업과 이메일 또는 대시보드 내용을 출력한다."""
+        """Agent가 선택한 작업과 이메일 및 대시보드 내용을 출력한다."""
         print("\n--- AI Agent 처리 결과 ---")
         print(f"수행 작업: {result.action.value}")
         print(result.message)
