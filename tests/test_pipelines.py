@@ -1,9 +1,10 @@
 import unittest
+from unittest.mock import Mock
 
 from app.data.fake_data import FAKE_TRANSACTIONS
 from app.domain.enums import AgentAction, RiskGrade
 from app.dto.chatbot import ChatbotRequestDTO
-from app.dto.transaction import TransactionDTO
+from app.dto.transaction import TransactionDTO, TransactionFeaturesDTO
 from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
 from app.pipelines.fraud_detection_pipeline import FraudDetectionPipeline
 from app.pipelines.monitoring_agent_pipeline import MonitoringAgentPipeline
@@ -61,7 +62,7 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("[담당자 조치]", agent_result.message)
 
     def test_non_fraud_stops_before_pattern_analysis(self) -> None:
-        """사기 아님 거래가 패턴 분석 없이 조치 없음으로 종료되는지 확인한다."""
+        """모델이 정상으로 판정하면 후속 분석 없이 종료되는지 확인한다."""
         transaction = TransactionDTO(
             user_id="USR_SAFE",
             user_name="홍길동",
@@ -72,7 +73,18 @@ class PipelineTest(unittest.TestCase):
             payment_method="TRANSFER",
             merchant_category="GROCERIES",
         )
-        assessment = FraudDetectionPipeline().run(transaction)
+
+        pipeline = FraudDetectionPipeline()
+        pipeline.model = Mock()
+        pipeline.model.predict.return_value = TransactionFeaturesDTO(
+            user_id=transaction.user_id,
+            is_fraud=False,
+            high_relevance_feature={},
+            fraud_probability=0.45,
+        )
+        pipeline.pattern_detector = Mock()
+
+        assessment = pipeline.run(transaction)
         agent_result = MonitoringAgentPipeline().run(assessment)
 
         self.assertFalse(assessment.prediction.is_fraud)
@@ -80,6 +92,8 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(agent_result.action, AgentAction.NO_ACTION)
         self.assertIsNone(agent_result.rag_query)
         self.assertIsNone(agent_result.retrieved_context)
+        pipeline.model.predict.assert_called_once_with(transaction)
+        pipeline.pattern_detector.detect.assert_not_called()
 
     def test_chatbot_combines_guide_and_transaction(self) -> None:
         """고객 질문에 관련 거래정보와 고객 대응 가이드가 포함되는지 확인한다."""
