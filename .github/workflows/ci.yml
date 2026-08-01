@@ -3,8 +3,6 @@ name: Backend CI
 on:
   pull_request:
     branches: [dev, main]
-  push:
-    branches: [dev]
 
 permissions:
   contents: read
@@ -34,4 +32,3 @@ jobs:
 
       - name: Build backend image
         run: docker build --tag fdshield-backend:ci .
-

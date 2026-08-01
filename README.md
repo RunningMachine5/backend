@@ -25,16 +25,18 @@ docker compose up -d --build
 curl http://localhost:8000/health
 ```
 
-운영 배포에서는 `docker-compose.prod.yml`을 병합하며, DB 5432와 Backend 8000
-포트는 호스트에 직접 공개하지 않습니다. Backend는 Nginx를 통해서만 노출합니다.
+개발 VM 배포에서는 `docker-compose.prod.yml`을 VM 보안 오버레이로 병합하며,
+DB 5432와 Backend 8000 포트는 호스트에 직접 공개하지 않습니다. Backend는
+Nginx를 통해서만 노출합니다.
 
 ## CI/CD
 
-- PR 및 `dev` push: uv 의존성 동기화, 단위 테스트, Docker 이미지 빌드
-- `main` push: 테스트 후 GCP Artifact Registry 이미지 발행, GCP VM의 Backend 컨테이너 교체
+- PR: uv 의존성 동기화, 단위 테스트, Docker 이미지 빌드
+- `dev` push: 테스트 후 GCP Artifact Registry 이미지 발행, 공용 개발 VM의 Backend 컨테이너 교체
+- `main`은 운영 서버가 준비되기 전까지 자동배포하지 않음
 - 운영 이미지는 `asia-northeast3-docker.pkg.dev/project-4cc3406c-72d8-4907-a5d/fdshield/backend:<commit-sha>` 형식을 사용
 - GitHub Actions는 Workload Identity Federation으로 GCP에 인증하며 서비스 계정 JSON 키를 저장하지 않음
-- DB 비밀번호와 애플리케이션 환경변수는 VM의 `/opt/fdshield/.env.prod`에 저장
+- DB 비밀번호와 애플리케이션 환경변수는 개발 VM의 `/opt/fdshield/.env.dev`에 저장
 
 GitHub Repository Secrets:
 

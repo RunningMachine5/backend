@@ -1,8 +1,8 @@
-name: Backend CD
+name: Backend Dev CD
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: backend-production
+  group: backend-development
   cancel-in-progress: false
 
 env:
@@ -133,7 +133,7 @@ jobs:
           compose=(
             docker compose
             --project-name fdshield
-            --env-file .env.prod
+            --env-file .env.dev
             -f backend/docker-compose.yml
             -f backend/docker-compose.prod.yml
           )
