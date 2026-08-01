@@ -1,9 +1,21 @@
+from fastapi import FastAPI
+
+from app.api import transaction
 from app.data.fake_data import FAKE_TRANSACTIONS
-from app.dto.chatbot import ChatbotRequestDTO
 from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
 from app.pipelines.fraud_detection_pipeline import FraudDetectionPipeline
 from app.pipelines.monitoring_agent_pipeline import MonitoringAgentPipeline
 from app.presentation.console_renderer import ConsoleRenderer
+from app.dto.chatbot import ChatbotRequestDTO
+
+app=FastAPI()
+
+# 라우터 등록. 파일이 늘어나면 여기에 include_router 만 추가하면 된다.
+app.include_router(transaction.router)
+
+@app.get("/")
+async def root():
+    return {"server-message": "Hello 준혁,덕현,강현,정현,주현"}
 
 
 def main() -> None:
@@ -22,7 +34,7 @@ def main() -> None:
         renderer.print_agent_result(agent_result)
 
     chatbot_request = ChatbotRequestDTO(
-        user_id="USR_100123",
+        # user_id="USR_100123",
         question="방금 발생한 고액 카드 거래가 제가 한 거래가 아닌데 어떻게 해야 하나요?",
     )
     chatbot_response = chatbot_pipeline.run(chatbot_request)
