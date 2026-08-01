@@ -7,10 +7,12 @@ class FraudTypeScorer:
 
     def score(self, patterns: list[PatternScoreDTO]) -> list[FraudTypeScoreDTO]:
         """정해진 패턴 순서와 유형별 가중치를 사용해 세 유형을 점수화한다."""
+        #패턴 별 점수 추출
         high_amount = patterns[0].score
         user_deviation = patterns[1].score
         risky_merchant = patterns[2].score
 
+        #각 유형 별로 이상 패턴의 가중치 설정
         large_payment = (
             high_amount * 0.45 + user_deviation * 0.35 + risky_merchant * 0.20
         )
@@ -21,6 +23,7 @@ class FraudTypeScorer:
             high_amount * 0.20 + user_deviation * 0.60 + risky_merchant * 0.20
         )
 
+        #각 사기 유형 별 점수 반환
         return [
             FraudTypeScoreDTO(
                 fraud_type=FraudType.LARGE_AMOUNT_PAYMENT,

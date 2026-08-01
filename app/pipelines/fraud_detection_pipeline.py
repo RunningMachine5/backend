@@ -19,7 +19,7 @@ class FraudDetectionPipeline:
 
     def run(self, transaction: TransactionDTO) -> FraudAssessmentDTO:
         """거래 한 건을 분류하고 패턴, 사기유형, 위험등급을 차례로 계산한다."""
-        prediction = self.model.predict(transaction)
+        prediction = self.model.predict(transaction) # 거래의 이상 여부 예측 -> 예측여부, 예측 가능성 리턴
         if not prediction.is_fraud:
             return FraudAssessmentDTO(
                 transaction=transaction,
@@ -28,12 +28,16 @@ class FraudDetectionPipeline:
                 fraud_type_scores=[],
                 primary_fraud_type=None,
                 risk_grade=RiskGrade.LOW,
-                evidence=["Fake 모델의 사기 분류 임계값 0.55 미만"],
+                evidence=["사기 분류 임계값 0.55 미만"],
             )
 
-        patterns = self.pattern_detector.detect(transaction)
+        # 거래 데이터 그대로 받음 -> 기존 소비 패턴보다 큰 거래액, 고액 거래, 카드/고위험 영역 거래 의 점수를 매김 -> 3가지 패턴 리스트 리턴(모든 패턴에 대한 점수를 리턴)
+        patterns = self.pattern_detector.detect(prediction)
+        #패턴 점수를 조합해서 사기 유형 판단. (고액, 카드 도난, 이상 행동)
         fraud_type_scores = self.fraud_type_scorer.score(patterns)
+        #가장 점수가 높은 유형의 점수.
         primary_score = max(fraud_type_scores, key=lambda item: item.score)
+        #점수를 위험도로 변환.
         risk_grade = self.risk_grader.grade(primary_score.score)
 
         evidence = [

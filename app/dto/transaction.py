@@ -14,3 +14,12 @@ class TransactionDTO:
     payment_method: str
     merchant_category: str
 
+
+@dataclass(frozen=True)
+class TransactionFeaturesDTO:
+    """6개 중 연관성이 높은 피쳐들만 넘길 수 있도록 정의한 입력 DTO."""
+
+    user_id: str
+    is_fraud: bool
+    high_relevance_feature: dict
+    fraud_probability: float

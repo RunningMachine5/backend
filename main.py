@@ -28,8 +28,8 @@ def main() -> None:
     renderer = ConsoleRenderer()
 
     print("=== 금융 이상거래 탐지 및 대응 파이프라인 ===")
-    for transaction in FAKE_TRANSACTIONS:
-        assessment = fraud_pipeline.run(transaction)
+    for transaction in FAKE_TRANSACTIONS: # 신규 거래 데이터
+        assessment = fraud_pipeline.run(transaction) # 여기가 ML 시작
         renderer.print_assessment(assessment)
 
         agent_result = agent_pipeline.run(assessment)
