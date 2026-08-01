@@ -2,8 +2,9 @@ from datetime import datetime
 
 from sqlmodel import Field, SQLModel
 
-"""거래 테이블"""
 class Transaction(SQLModel, table=True):
+    """거래 테이블"""
+
     __tablename__ = "transactions"
 
     # @Id @GeneratedValue(strategy = IDENTITY)

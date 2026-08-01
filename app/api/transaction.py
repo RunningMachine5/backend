@@ -1,6 +1,4 @@
-from datetime import datetime
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from sqlmodel import SQLModel, select
 
 from app.core.db import SessionDep
