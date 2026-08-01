@@ -103,7 +103,7 @@ jobs:
           printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Upload production Compose files
+      - name: Upload VM Compose files
         run: |
           scp -P "$VM_SSH_PORT" \
             docker-compose.yml docker-compose.prod.yml \
@@ -129,6 +129,7 @@ jobs:
             --password-stdin \
             "https://$REGISTRY"
           unset registry_token
+          trap 'docker logout "$REGISTRY" >/dev/null 2>&1 || true' EXIT
 
           compose=(
             docker compose
@@ -138,9 +139,28 @@ jobs:
             -f backend/docker-compose.prod.yml
           )
 
+          # ParadeDB 첫 부팅 중 임시 PostgreSQL이 한 번 재시작되므로 DB를 먼저 기동한다.
+          "${compose[@]}" up -d db
           "${compose[@]}" pull backend
-          docker logout "$REGISTRY" >/dev/null 2>&1 || true
-          "${compose[@]}" run --rm backend alembic upgrade head
+
+          # 초기화 재시작과 겹친 일시적인 connection refused를 견디도록 재시도한다.
+          migration_succeeded=false
+          for attempt in $(seq 1 30); do
+            if "${compose[@]}" run --rm --no-deps backend alembic upgrade head; then
+              migration_succeeded=true
+              break
+            fi
+
+            echo "Database is not ready for migration yet ($attempt/30); retrying in 2s..."
+            sleep 2
+          done
+
+          if [ "$migration_succeeded" != true ]; then
+            echo "Alembic migration failed after 30 attempts."
+            "${compose[@]}" logs --tail 100 db
+            exit 1
+          fi
+
           "${compose[@]}" up -d --no-deps backend
           "${compose[@]}" exec -T backend python -c \
             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
