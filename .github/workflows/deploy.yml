@@ -146,7 +146,7 @@ jobs:
           # 초기화 재시작과 겹친 일시적인 connection refused를 견디도록 재시도한다.
           migration_succeeded=false
           for attempt in $(seq 1 30); do
-            if "${compose[@]}" run --rm --no-deps backend alembic upgrade head; then
+            if "${compose[@]}" run --rm --no-deps --interactive=false backend alembic upgrade head; then
               migration_succeeded=true
               break
             fi
