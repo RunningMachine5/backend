@@ -1,0 +1,29 @@
+services:
+  db:
+    image: paradedb/paradedb:latest # PostgreSQL(18) + pgvector + pg_search(BM25)
+    container_name: fdshield-db-container
+    restart: unless-stopped # 꺼지면 자동으로 재시작
+    environment:
+      POSTGRES_USER: root # 슈퍼유저 게정 이름
+      POSTGRES_PASSWORD: 1234 # env 로 관리 권장
+      POSTGRES_DB: fdshield-db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    configs:
+      # 최초 실행(데이터 디렉터리가 비어 있을 때)에만 실행됨
+      - source: init_extensions
+        target: /docker-entrypoint-initdb.d/00-extensions.sql
+
+configs:
+  init_extensions:
+    content: |
+      CREATE EXTENSION IF NOT EXISTS vector;
+      CREATE EXTENSION IF NOT EXISTS pg_search;
+
+volumes:
+  pgdata:
+
+# 이 파일은 프로젝트 루트에 놓을것
+# docker compose up은 현재 디렉터리와 상위 디렉터리만 뒤지기 때문
