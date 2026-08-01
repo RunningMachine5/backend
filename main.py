@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api import transaction
+from app.api import health, transaction
 from app.data.fake_data import FAKE_TRANSACTIONS
 from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
 from app.pipelines.fraud_detection_pipeline import FraudDetectionPipeline
@@ -8,10 +8,12 @@ from app.pipelines.monitoring_agent_pipeline import MonitoringAgentPipeline
 from app.presentation.console_renderer import ConsoleRenderer
 from app.dto.chatbot import ChatbotRequestDTO
 
-app=FastAPI()
+app = FastAPI()
 
 # 라우터 등록. 파일이 늘어나면 여기에 include_router 만 추가하면 된다.
+app.include_router(health.router)
 app.include_router(transaction.router)
+
 
 @app.get("/")
 async def root():

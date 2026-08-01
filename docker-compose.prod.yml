@@ -1,0 +1,14 @@
+services:
+  db:
+    # 운영 VM에서는 PostgreSQL을 호스트/인터넷에 직접 공개하지 않는다.
+    ports: !reset []
+    expose:
+      - "5432"
+
+  backend:
+    # 운영에서는 VM에서 소스를 빌드하지 않고 CI가 Artifact Registry에 올린 이미지를 받는다.
+    build: !reset null
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be set to an Artifact Registry image with a commit SHA tag}
+    ports: !reset []
+    expose:
+      - "8000"
