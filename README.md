@@ -51,6 +51,8 @@ Engine 및 Docker Compose 플러그인이 미리 준비되어 있어야 합니�
 VM에 연결된 서비스 계정에는 `fdshield` Artifact Registry 저장소의
 `Artifact Registry Reader` 역할이 필요합니다. 배포 시 VM 메타데이터에서 단기
 토큰을 발급받아 이미지를 pull하며 장기 Registry 비밀번호는 저장하지 않습니다.
+ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므로 Alembic
+마이그레이션은 일시적인 연결 실패 시 최대 30회 재시도합니다.
 
 ## 전체 흐름
 
