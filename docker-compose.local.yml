@@ -1,19 +1,15 @@
 services:
-  db:
-    # 운영 VM에서는 PostgreSQL을 호스트/인터넷에 직접 공개하지 않는다.
-    ports: !reset []
-    expose:
-      - "5432"
-
   backend:
-    # 운영에서는 VM에서 소스를 빌드하지 않고 CI가 Artifact Registry에 올린 이미지를 받는다.
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be set to an Artifact Registry image with a commit SHA tag}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-fdshield/backend:local}
     container_name: fdshield-backend-container
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-fdshield-db}
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
