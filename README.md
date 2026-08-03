@@ -20,14 +20,110 @@ python3 -m unittest discover -s tests -v
 
 `.env.example`을 `.env`로 복사하고 비밀번호를 변경합니다.
 
+### 1. DB만 Docker로 실행하고 Backend는 로컬에서 실행
+
+일반적인 Backend 개발 방식입니다. 기본 Compose에는 ParadeDB만 들어 있으므로
+다음 명령으로 Backend 컨테이너 없이 DB만 실행합니다.
+
+이전 Compose 구성으로 Backend 컨테이너를 이미 실행했던 PC에서는 최초 한 번
+다음 명령으로 기존 DB와 Backend 컨테이너를 내립니다. `-v`를 사용하지 않으므로
+DB 볼륨은 삭제되지 않습니다.
+
 ```bash
-docker compose up -d --build
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  down
+```
+
+그다음 기본 구성을 실행합니다.
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+의존성을 설치하고 DB 마이그레이션을 적용한 뒤 FastAPI 개발 서버를 실행합니다.
+
+```bash
+uv sync
+uv run --env-file .env alembic upgrade head
+uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+확인 주소:
+
+- API: `http://localhost:8000`
+- Health Check: `http://localhost:8000/health`
+- Swagger UI: `http://localhost:8000/docs`
+
+DB 로그와 종료 명령:
+
+```bash
+docker compose logs -f db
+docker compose down
+```
+
+### 2. DB와 Backend를 모두 Docker로 실행
+
+Docker 이미지나 컨테이너 환경까지 통합 확인할 때만 로컬 오버레이를 함께
+사용합니다.
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  up -d --build
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  ps
+
 curl http://localhost:8000/health
 ```
 
-개발 VM 배포에서는 `docker-compose.prod.yml`을 VM 보안 오버레이로 병합하며,
-DB 5432와 Backend 8000 포트는 호스트에 직접 공개하지 않습니다. Backend는
-Nginx를 통해서만 노출합니다.
+Backend 로그 확인:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  logs -f backend
+```
+
+두 컨테이너 종료:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  down
+```
+
+### 3. 개발 VM 배포
+
+개발 VM에서는 기본 파일과 운영 오버레이를 병합합니다.
+
+```bash
+BACKEND_IMAGE=asia-northeast3-docker.pkg.dev/<GCP_PROJECT_ID>/fdshield/backend:<commit-sha> \
+docker compose \
+  --project-name fdshield \
+  --env-file .env.dev \
+  -f backend/docker-compose.yml \
+  -f backend/docker-compose.prod.yml \
+  up -d db backend
+```
+
+운영 오버레이는 `BACKEND_IMAGE`에 Artifact Registry의 커밋 SHA 이미지를
+요구합니다. 실제 배포에서는 GitHub Actions가 이미지 주소를 주입하고 위 작업을
+자동으로 수행하므로, 일반적으로 팀원이 VM에서 직접 실행하지 않습니다.
+
+VM에서는 DB 5432와 Backend 8000 포트를 호스트에 직접 공개하지 않으며,
+Backend는 Nginx를 통해서만 외부에 노출합니다.
+
+> 운영 VM에서 `docker compose down -v`를 실행하면 DB 볼륨이 삭제될 수 있으므로
+> 사용하지 않습니다.
 
 ## CI/CD
 
