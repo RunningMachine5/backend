@@ -161,7 +161,18 @@ jobs:
             exit 1
           fi
 
-          "${compose[@]}" up -d --no-deps backend
-          "${compose[@]}" exec -T backend python -c \
-            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+          # Backend를 새 이미지로 교체하고 Compose healthcheck가 성공할 때까지 기다린다.
+          if ! "${compose[@]}" up \
+            -d \
+            --no-deps \
+            --wait \
+            --wait-timeout 60 \
+            backend; then
+            echo "Backend did not become healthy within 60 seconds."
+            "${compose[@]}" ps backend
+            "${compose[@]}" logs --tail 100 backend
+            exit 1
+          fi
+
+          echo "Backend deployment completed successfully."
           REMOTE
