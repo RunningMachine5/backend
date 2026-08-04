@@ -3,7 +3,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableParallel,RunnablePassthrough
+from dotenv import load_dotenv
 import os
+
+load_dotenv()
 
 if not os.getenv("OPENAI_API_KEY"):
     print("openai 키가 인식되지 않습니다")
