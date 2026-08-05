@@ -10,6 +10,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-fdshield-db}
       ML_SERVING_URL: ${ML_SERVING_DOCKER_URL:-http://host.docker.internal:8001}
       ML_SERVING_TIMEOUT_SECONDS: ${ML_SERVING_TIMEOUT_SECONDS:-5}
+      ML_SERVING_AUTH_MODE: ${ML_SERVING_AUTH_MODE:-none}
     ports:
       - "8000:8000"
     depends_on:
