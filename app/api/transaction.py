@@ -1,25 +1,69 @@
-from fastapi import APIRouter
-from sqlmodel import SQLModel, select
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, status
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Field, SQLModel, select
 
 from app.core.db import SessionDep
 from app.data.model.transaction import Transaction
+from app.services.ml_serving.client import MLServingClientDep, MLServingError
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
 class TransactionCreate(SQLModel):
-    """요청 전용 DTO. 엔티티를 그대로 노출하면 id 를 클라이언트가 주입할 수 있다."""
+    """입력 컬럼 확정 전 사용하는 거래 수신 DTO."""
 
-    payment_method: str
+    transaction_id: str = Field(min_length=1, max_length=64)
+    occurred_at: datetime | None = None
+    raw_data: dict[str, Any] = Field(min_length=1)
 
 
-@router.post("", response_model=Transaction)
-def create_transaction(payload: TransactionCreate, session: SessionDep) -> Transaction:
-    tx = Transaction.model_validate(payload)   # DTO → Entity 매핑 (ModelMapper 역할)
-    session.add(tx)                            # em.persist()
-    session.commit()                           # 트랜잭션 커밋
-    session.refresh(tx)                        # DB 가 채운 id 를 다시 읽어옴
+@router.post("", response_model=Transaction, status_code=status.HTTP_201_CREATED)
+def create_transaction(
+    payload: TransactionCreate,
+    session: SessionDep,
+    ml_client: MLServingClientDep,
+) -> Transaction:
+    """거래 원본을 먼저 저장한 뒤 현재 ML Stub에 동기 추론을 요청한다."""
+
+    tx = Transaction(
+        transaction_id=payload.transaction_id,
+        occurred_at=payload.occurred_at or datetime.now(),
+        raw_data=payload.raw_data,
+    )
+    session.add(tx)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="이미 존재하는 transaction_id입니다.",
+        ) from exc
+    session.refresh(tx)
+
+    try:
+        prediction = ml_client.predict(
+            transaction_id=tx.transaction_id,
+            features=tx.raw_data,
+        )
+    except MLServingError:
+        tx.prediction_status = "FAILED"
+    else:
+        tx.prediction_status = "COMPLETED"
+        tx.ml_is_fraud = prediction.is_fraud
+        tx.fraud_probability = prediction.fraud_probability
+        tx.shap = prediction.shap
+        tx.model_name = prediction.model_name
+        tx.model_version = prediction.model_version
+
+    tx.updated_at = datetime.now()
+    session.add(tx)
+    session.commit()
+    session.refresh(tx)
     return tx
 
 
