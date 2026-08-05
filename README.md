@@ -57,6 +57,27 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - Health Check: `http://localhost:8000/health`
 - Swagger UI: `http://localhost:8000/docs`
 
+### ML Stub 연동 확인
+
+ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 요청합니다.
+입력 컬럼이 확정되기 전에는 `raw_data`를 JSON 객체로 저장하고, Backend가 이를
+ML `/predict` 요청의 `features`로 그대로 전달합니다.
+
+```bash
+curl -X POST http://localhost:8000/transactions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transaction_id": "TX_STUB_001",
+    "raw_data": {
+      "Transaction_Amount": 850000,
+      "future_input_column": "draft-value"
+    }
+  }'
+```
+
+ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
+꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 상태만 `FAILED`로 저장됩니다.
+
 DB 로그와 종료 명령:
 
 ```bash
