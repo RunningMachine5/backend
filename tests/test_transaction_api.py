@@ -1,4 +1,7 @@
+import os
 import unittest
+
+os.environ.setdefault("OPENAI_API_KEY", "test-only-key")
 
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
