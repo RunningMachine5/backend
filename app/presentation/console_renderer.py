@@ -15,7 +15,20 @@ class ConsoleRenderer:
             f"사기 분류: {assessment.prediction.is_fraud} "
             f"(확률={assessment.prediction.fraud_probability:.2f})"
         )
-        print(f"위험등급: {assessment.risk_grade.value}")
+        risk_grade_text = (
+            assessment.risk_grade.value
+            if assessment.risk_grade
+            else "미산정"
+        )
+        risk_score_text = (
+            f"{assessment.risk_score}점"
+            if assessment.risk_score is not None
+            else "미산정"
+        )
+        print(f"위험점수: {risk_score_text}")
+        print(f"위험등급: {risk_grade_text}")
+        for reason in assessment.risk_reasons:
+            print(f"- 위험등급 근거: {reason}")
         fraud_type_text = (
             assessment.primary_fraud_type.value
             if assessment.primary_fraud_type
