@@ -89,6 +89,11 @@ class PipelineTest(unittest.TestCase):
 
         self.assertFalse(assessment.prediction.is_fraud)
         self.assertEqual(assessment.patterns, [])
+        self.assertIsNone(assessment.risk_score)
+        self.assertIsNone(assessment.risk_grade)
+        self.assertIsNone(assessment.amount_risk_factor)
+        self.assertIsNone(assessment.amount_points)
+        self.assertIsNone(assessment.ml_probability_points)
         self.assertEqual(agent_result.action, AgentAction.NO_ACTION)
         self.assertIsNone(agent_result.rag_query)
         self.assertIsNone(agent_result.retrieved_context)

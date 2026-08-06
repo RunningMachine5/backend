@@ -1,4 +1,3 @@
-from app.domain.enums import RiskGrade
 from app.dto.fraud import FraudAssessmentDTO
 from app.dto.transaction import TransactionDTO
 from app.services.analysis.fraud_type_scorer import FraudTypeScorer
@@ -27,7 +26,11 @@ class FraudDetectionPipeline:
                 patterns=[],
                 fraud_type_scores=[],
                 primary_fraud_type=None,
-                risk_grade=RiskGrade.LOW,
+                risk_score=None,
+                risk_grade=None,
+                amount_risk_factor=None,
+                amount_points=None,
+                ml_probability_points=None,
                 evidence=["사기 분류 임계값 0.55 미만"],
             )
 
@@ -35,10 +38,14 @@ class FraudDetectionPipeline:
         patterns = self.pattern_detector.detect(prediction)
         #패턴 점수를 조합해서 사기 유형 판단. (고액, 카드 도난, 이상 행동)
         fraud_type_scores = self.fraud_type_scorer.score(patterns)
-        #가장 점수가 높은 유형의 점수.
+        # 가장 점수가 높은 유형을 대표 사기유형으로 선택한다.
         primary_score = max(fraud_type_scores, key=lambda item: item.score)
-        #점수를 위험도로 변환.
-        risk_grade = self.risk_grader.grade(primary_score.score)
+
+        # Rule 점수는 유형 분류에만 사용하고 위험도는 거래금액과 ML 확률로 계산한다.
+        risk_assessment = self.risk_grader.assess(
+            transaction_amount=transaction.amount,
+            fraud_probability=prediction.fraud_probability,
+        )
 
         evidence = [
             pattern.evidence
@@ -51,6 +58,10 @@ class FraudDetectionPipeline:
             patterns=patterns,
             fraud_type_scores=fraud_type_scores,
             primary_fraud_type=primary_score.fraud_type,
-            risk_grade=risk_grade,
+            risk_score=risk_assessment.risk_score,
+            risk_grade=risk_assessment.risk_grade,
+            amount_risk_factor=risk_assessment.amount_risk_factor,
+            amount_points=risk_assessment.amount_points,
+            ml_probability_points=risk_assessment.ml_probability_points,
             evidence=evidence,
         )
