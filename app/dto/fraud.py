@@ -35,7 +35,9 @@ class RiskAssessmentDTO:
 
     risk_score: int
     risk_grade: RiskGrade
-    risk_reasons: list[str]
+    amount_risk_factor: float # 거래금액 위험도
+    amount_points: float # 거래금액 기여점수
+    ml_probability_points: float # ML 확률 기여점수
 
 
 @dataclass(frozen=True)
@@ -49,5 +51,7 @@ class FraudAssessmentDTO:
     primary_fraud_type: FraudType | None
     risk_score: int | None
     risk_grade: RiskGrade | None
-    risk_reasons: list[str]
+    amount_risk_factor: float | None
+    amount_points: float | None
+    ml_probability_points: float | None
     evidence: list[str]

@@ -28,7 +28,9 @@ class FraudDetectionPipeline:
                 primary_fraud_type=None,
                 risk_score=None,
                 risk_grade=None,
-                risk_reasons=["정상 거래로 분류되어 위험등급을 산정하지 않음"],
+                amount_risk_factor=None,
+                amount_points=None,
+                ml_probability_points=None,
                 evidence=["사기 분류 임계값 0.55 미만"],
             )
 
@@ -58,6 +60,8 @@ class FraudDetectionPipeline:
             primary_fraud_type=primary_score.fraud_type,
             risk_score=risk_assessment.risk_score,
             risk_grade=risk_assessment.risk_grade,
-            risk_reasons=risk_assessment.risk_reasons,
+            amount_risk_factor=risk_assessment.amount_risk_factor,
+            amount_points=risk_assessment.amount_points,
+            ml_probability_points=risk_assessment.ml_probability_points,
             evidence=evidence,
         )

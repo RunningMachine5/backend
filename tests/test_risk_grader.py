@@ -42,6 +42,9 @@ class RiskGraderTest(unittest.TestCase):
 
         self.assertEqual(result.risk_score, 84)
         self.assertEqual(result.risk_grade, RiskGrade.VERY_HIGH)
+        self.assertEqual(result.amount_risk_factor, 0.80)
+        self.assertEqual(result.amount_points, 48.0)
+        self.assertEqual(result.ml_probability_points, 36.0)
 
     def test_small_amount_and_high_probability_is_medium(self) -> None:
         """소액이라도 ML 확률이 높으면 보통 등급까지 상승하는지 확인한다."""

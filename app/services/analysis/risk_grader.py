@@ -29,16 +29,10 @@ class RiskGrader:
         return RiskAssessmentDTO(
             risk_score=risk_score,
             risk_grade=risk_grade,
-            risk_reasons=[
-                (
-                    f"절대 거래금액 {absolute_amount:,}원의 금액 위험도는 "
-                    f"{amount_risk_factor:.2f}이며 기여점수는 {amount_points:.1f}점임"
-                ),
-                (
-                    f"ML 사기확률은 {fraud_probability:.2f}이며 "
-                    f"기여점수는 {ml_points:.1f}점임"
-                ),
-            ],
+            # 화면에서 산정 근거를 조합할 수 있도록 계산값을 구조화하여 전달한다.
+            amount_risk_factor=amount_risk_factor,
+            amount_points=amount_points,
+            ml_probability_points=ml_points,
         )
 
     @staticmethod
