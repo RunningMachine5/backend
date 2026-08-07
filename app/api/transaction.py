@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -7,6 +6,7 @@ from sqlmodel import Field, SQLModel, select
 
 from app.core.db import SessionDep
 from app.data.model.transaction import Transaction
+from app.dto.ml_prediction import MLTransactionFeatures
 from app.services.ml_serving.client import MLServingClientDep, MLServingError
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
@@ -14,11 +14,11 @@ router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
 class TransactionCreate(SQLModel):
-    """입력 컬럼 확정 전 사용하는 거래 수신 DTO."""
+    """전처리 전 ML 원본 Feature 54개를 포함하는 거래 수신 DTO."""
 
     transaction_id: str = Field(min_length=1, max_length=64)
     occurred_at: datetime | None = None
-    raw_data: dict[str, Any] = Field(min_length=1)
+    raw_data: MLTransactionFeatures
 
 
 @router.post("", response_model=Transaction, status_code=status.HTTP_201_CREATED)
@@ -29,10 +29,14 @@ def create_transaction(
 ) -> Transaction:
     """거래 원본을 먼저 저장한 뒤 현재 ML Stub에 동기 추론을 요청한다."""
 
+    # Pydantic이 검증한 날짜와 alias를 JSON에서 사용하는 원본 컬럼명으로 되돌린다.
+    # 특히 Python 식별자로 쓸 수 없는 "Time Difference" 키를 그대로 보존한다.
+    raw_data = payload.raw_data.model_dump(mode="json", by_alias=True)
+
     tx = Transaction(
         transaction_id=payload.transaction_id,
         occurred_at=payload.occurred_at or datetime.now(),
-        raw_data=payload.raw_data,
+        raw_data=raw_data,
     )
     session.add(tx)
     try:
@@ -48,7 +52,7 @@ def create_transaction(
     try:
         prediction = ml_client.predict(
             transaction_id=tx.transaction_id,
-            features=tx.raw_data,
+            features=raw_data,
         )
     except MLServingError:
         tx.prediction_status = "FAILED"
