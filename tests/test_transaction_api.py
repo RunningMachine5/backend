@@ -9,12 +9,17 @@ from sqlmodel import Session, create_engine, select
 
 from app.core.db import get_session
 from app.data.model.transaction import Transaction
+from app.dto.ml_prediction import (
+    MLTransactionFeatures,
+    RAW_TRANSACTION_FEATURE_COLUMNS,
+)
 from app.services.ml_serving.client import (
     MLPredictionResponse,
     MLServingError,
     get_ml_serving_client,
 )
 from main import app
+from tests.ml_feature_fixture import valid_ml_raw_data
 
 
 class SuccessfulMLStub:
@@ -76,10 +81,11 @@ class TransactionApiTest(unittest.TestCase):
         ml_stub = SuccessfulMLStub()
         app.dependency_overrides[get_ml_serving_client] = lambda: ml_stub
 
-        raw_data = {
-            "Transaction_Amount": 850_000,
-            "future_input_column": "draft-value",
-        }
+        raw_data = valid_ml_raw_data()
+        normalized_raw_data = MLTransactionFeatures.model_validate(raw_data).model_dump(
+            mode="json",
+            by_alias=True,
+        )
         response = self.client.post(
             "/transactions",
             json={
@@ -96,11 +102,11 @@ class TransactionApiTest(unittest.TestCase):
         self.assertEqual(body["fraud_probability"], 0.75)
         self.assertEqual(body["shap"], {"Transaction_Amount": 0.2})
         self.assertEqual(ml_stub.last_transaction_id, "TX_STUB_001")
-        self.assertEqual(ml_stub.last_features, raw_data)
+        self.assertEqual(ml_stub.last_features, normalized_raw_data)
 
         with Session(self.engine) as session:
             stored = session.exec(select(Transaction)).one()
-            self.assertEqual(stored.raw_data, raw_data)
+            self.assertEqual(stored.raw_data, normalized_raw_data)
             self.assertEqual(stored.prediction_status, "COMPLETED")
             self.assertEqual(stored.model_name, "fdshield-rule-based-stub")
 
@@ -111,7 +117,7 @@ class TransactionApiTest(unittest.TestCase):
             "/transactions",
             json={
                 "transaction_id": "TX_STUB_FAILED_001",
-                "raw_data": {"temporary_column": 123},
+                "raw_data": valid_ml_raw_data(),
             },
         )
 
@@ -121,8 +127,51 @@ class TransactionApiTest(unittest.TestCase):
         with Session(self.engine) as session:
             stored = session.exec(select(Transaction)).one()
             self.assertEqual(stored.transaction_id, "TX_STUB_FAILED_001")
-            self.assertEqual(stored.raw_data, {"temporary_column": 123})
+            self.assertEqual(
+                set(stored.raw_data),
+                set(RAW_TRANSACTION_FEATURE_COLUMNS),
+            )
             self.assertIsNone(stored.fraud_probability)
+
+    def test_create_transaction_rejects_missing_ml_feature(self) -> None:
+        raw_data = valid_ml_raw_data()
+        raw_data.pop("Location")
+
+        response = self.client.post(
+            "/transactions",
+            json={
+                "transaction_id": "TX_MISSING_LOCATION",
+                "raw_data": raw_data,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Location", response.text)
+
+    def test_create_transaction_rejects_obsolete_or_unknown_feature(self) -> None:
+        raw_data = valid_ml_raw_data()
+        raw_data["Transaction_Failure_Status"] = 0
+
+        response = self.client.post(
+            "/transactions",
+            json={
+                "transaction_id": "TX_OBSOLETE_FEATURE",
+                "raw_data": raw_data,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Transaction_Failure_Status", response.text)
+
+    def test_ml_raw_feature_contract_has_54_exact_columns(self) -> None:
+        columns = set(RAW_TRANSACTION_FEATURE_COLUMNS)
+
+        self.assertEqual(len(columns), 54)
+        self.assertIn("Location", columns)
+        self.assertIn("Time Difference", columns)
+        self.assertNotIn("Time_difference", columns)
+        self.assertNotIn("Transaction_Failure_Status", columns)
+        self.assertNotIn("Customer_flag_terminal_malicious_behavior_4", columns)
 
 
 if __name__ == "__main__":
