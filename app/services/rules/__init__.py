@@ -3,9 +3,9 @@
 from app.services.rules.defaults import DEFAULT_RULE_DEFINITIONS, DEFAULT_RULE_SET
 from app.services.rules.engine import (
     FraudRuleDefinition,
-    RuleClassificationResult,
     RuleComponentDefinition,
     RuleEngine,
+    RuleScoreResult,
     RuleSetDefinition,
     RuleSetValidationError,
 )
@@ -20,7 +20,7 @@ from app.services.rules.feature_builder import (
     RuleFeatureBuilder,
     RuleFeatureError,
 )
-from app.services.rules.classification import classify_transaction_fraud_type
+from app.services.rules.scoring import score_transaction_fraud_types
 from app.services.rules.repository import (
     get_active_rule_set,
     rule_set_definition_from_database,
@@ -33,16 +33,16 @@ __all__ = [
     "RULE_CONTEXT_FIELDS",
     "RULE_DERIVED_FEATURES",
     "RULE_RAW_FEATURES",
-    "RuleClassificationResult",
     "RuleComponentDefinition",
     "RuleEngine",
+    "RuleScoreResult",
     "RuleExpressionError",
     "RuleExpressionEvaluator",
     "RuleFeatureBuilder",
     "RuleFeatureError",
     "RuleSetDefinition",
     "RuleSetValidationError",
-    "classify_transaction_fraud_type",
+    "score_transaction_fraud_types",
     "get_active_rule_set",
     "rule_set_definition_from_database",
 ]

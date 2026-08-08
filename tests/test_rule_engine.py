@@ -47,11 +47,9 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.classify(raw_data)
+        result = self.engine.score(raw_data)
 
-        self.assertEqual(result.status, "CLASSIFIED")
-        self.assertEqual(result.fraud_type, "VOICE_PHISHING")
-        self.assertEqual(result.top_score, 1.0)
+        self.assertEqual(result.type_scores["VOICE_PHISHING"], 1.0)
         self.assertEqual(
             set(result.matched_components["VOICE_PHISHING"]),
             {
@@ -82,10 +80,9 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.classify(raw_data)
+        result = self.engine.score(raw_data)
 
-        self.assertEqual(result.fraud_type, "MESSENGER_PHISHING")
-        self.assertEqual(result.top_score, 1.0)
+        self.assertEqual(result.type_scores["MESSENGER_PHISHING"], 1.0)
         self.assertEqual(len(result.matched_components["MESSENGER_PHISHING"]), 6)
 
     def test_account_takeover_uses_final_weighted_signals(self) -> None:
@@ -104,10 +101,9 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.classify(raw_data)
+        result = self.engine.score(raw_data)
 
-        self.assertEqual(result.fraud_type, "ACCOUNT_TAKEOVER")
-        self.assertEqual(result.top_score, 1.0)
+        self.assertEqual(result.type_scores["ACCOUNT_TAKEOVER"], 1.0)
         self.assertEqual(len(result.matched_components["ACCOUNT_TAKEOVER"]), 7)
 
     def test_fraud_used_account_uses_final_weighted_signals(self) -> None:
@@ -123,10 +119,9 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.classify(raw_data)
+        result = self.engine.score(raw_data)
 
-        self.assertEqual(result.fraud_type, "FRAUD_USED_ACCOUNT")
-        self.assertEqual(result.top_score, 1.0)
+        self.assertEqual(result.type_scores["FRAUD_USED_ACCOUNT"], 1.0)
         self.assertEqual(len(result.matched_components["FRAUD_USED_ACCOUNT"]), 6)
 
     def test_card_fraud_uses_proxy_gate_and_final_weighted_signals(self) -> None:
@@ -146,28 +141,23 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.classify(raw_data)
+        result = self.engine.score(raw_data)
 
-        self.assertEqual(result.fraud_type, "CARD_FRAUD")
-        self.assertEqual(result.top_score, 1.0)
+        self.assertEqual(result.type_scores["CARD_FRAUD"], 1.0)
         self.assertEqual(len(result.matched_components["CARD_FRAUD"]), 7)
 
         raw_data["Channel"] = "internet"
-        gated = self.engine.classify(raw_data)
+        gated = self.engine.score(raw_data)
         self.assertEqual(gated.type_scores["CARD_FRAUD"], 0.0)
         self.assertEqual(gated.matched_components["CARD_FRAUD"], [])
 
-    def test_returns_unclassified_below_minimum_score(self) -> None:
-        result = self.engine.classify(valid_rule_raw_data())
+    def test_returns_every_type_even_when_all_scores_are_zero(self) -> None:
+        result = self.engine.score(valid_rule_raw_data())
 
-        self.assertEqual(result.status, "UNCLASSIFIED")
-        self.assertIsNone(result.fraud_type)
-        self.assertEqual(result.top_score, 0.0)
         self.assertEqual(set(result.type_scores), FINAL_TYPE_CODES)
         self.assertTrue(all(score == 0.0 for score in result.type_scores.values()))
-        self.assertEqual(result.decision_reason, "BELOW_MINIMUM_SCORE")
 
-    def test_returns_unclassified_when_top_scores_are_ambiguous(self) -> None:
+    def test_preserves_close_scores_without_selecting_one_type(self) -> None:
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
@@ -178,14 +168,10 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.classify(raw_data)
+        result = self.engine.score(raw_data)
 
-        self.assertEqual(result.status, "UNCLASSIFIED")
-        self.assertIsNone(result.fraud_type)
-        self.assertEqual(result.top_score, 0.5)
-        self.assertEqual(result.second_score, 0.5)
-        self.assertEqual(result.score_gap, 0.0)
-        self.assertEqual(result.decision_reason, "AMBIGUOUS_TOP_SCORES")
+        self.assertEqual(result.type_scores["MESSENGER_PHISHING"], 0.5)
+        self.assertEqual(result.type_scores["ACCOUNT_TAKEOVER"], 0.5)
 
     def test_new_fraud_type_is_evaluated_without_enum_or_engine_change(self) -> None:
         new_rule = FraudRuleDefinition(
@@ -206,17 +192,13 @@ class RuleEngineTest(unittest.TestCase):
         )
         custom_rule_set = RuleSetDefinition(
             version="v2",
-            minimum_score=0.5,
-            ambiguity_margin=0.1,
             rules=(*DEFAULT_RULE_SET.rules, new_rule),
         )
         raw_data = valid_rule_raw_data()
         raw_data["Account_indicator_Openbanking"] = 1
 
-        result = self.engine.classify(raw_data, custom_rule_set)
+        result = self.engine.score(raw_data, custom_rule_set)
 
-        self.assertEqual(result.status, "CLASSIFIED")
-        self.assertEqual(result.fraud_type, "NEW_FRAUD_TYPE")
         self.assertEqual(result.type_scores["NEW_FRAUD_TYPE"], 1.0)
 
     def test_rejects_rule_when_component_weights_do_not_sum_to_one(self) -> None:

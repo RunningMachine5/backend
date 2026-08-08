@@ -27,7 +27,6 @@ from app.dto.fraud_rule import (
     FraudRuleSetDraftCreate,
     FraudRuleSetResponse,
     FraudRuleSetSummaryResponse,
-    FraudRuleSetUpdate,
     FraudRuleTestRequest,
     FraudRuleTestResponse,
     FraudRuleTypeScoreResponse,
@@ -42,6 +41,7 @@ from app.services.rules.engine import (
     RuleEngine,
     RuleSetValidationError,
 )
+from app.services.rules.defaults import DEFAULT_RULE_SET
 from app.services.rules.expression_evaluator import RuleExpressionError
 from app.services.rules.feature_builder import RuleFeatureError
 from app.services.rules.repository import rule_set_definition_from_database
@@ -482,8 +482,6 @@ def _rule_set_response(session: Session, rule_set: FraudRuleSet) -> FraudRuleSet
         id=rule_set.id,
         version=rule_set.version,
         status=rule_set.status,
-        minimum_score=rule_set.minimum_score,
-        ambiguity_margin=rule_set.ambiguity_margin,
         created_at=rule_set.created_at,
         updated_at=rule_set.updated_at,
         activated_at=rule_set.activated_at,
@@ -749,20 +747,9 @@ def create_draft_rule_set(
 
     maximum_version = session.exec(select(func.max(FraudRuleSet.version))).one()
     version = (maximum_version or 0) + 1
-    if source is None:
-        from app.services.rules.defaults import DEFAULT_RULE_SET
-
-        minimum_score = DEFAULT_RULE_SET.minimum_score
-        ambiguity_margin = DEFAULT_RULE_SET.ambiguity_margin
-    else:
-        minimum_score = source.minimum_score
-        ambiguity_margin = source.ambiguity_margin
-
     draft = FraudRuleSet(
         version=version,
         status=FraudRuleSetStatus.DRAFT,
-        minimum_score=minimum_score,
-        ambiguity_margin=ambiguity_margin,
     )
     session.add(draft)
     session.flush()
@@ -775,23 +762,6 @@ def create_draft_rule_set(
     _commit_or_conflict(session, "동일한 룰셋 버전이 이미 생성되었습니다.")
     session.refresh(draft)
     return _rule_set_response(session, draft)
-
-
-@router.put("/rule-sets/{rule_set_id}", response_model=FraudRuleSetResponse)
-def update_rule_set(
-    rule_set_id: int,
-    payload: FraudRuleSetUpdate,
-    session: SessionDep,
-) -> FraudRuleSetResponse:
-    rule_set = _get_rule_set(session, rule_set_id)
-    _assert_draft(rule_set)
-    for field_name in payload.model_fields_set:
-        setattr(rule_set, field_name, getattr(payload, field_name))
-    rule_set.updated_at = datetime.now()
-    session.add(rule_set)
-    session.commit()
-    session.refresh(rule_set)
-    return _rule_set_response(session, rule_set)
 
 
 @router.post(
@@ -925,7 +895,7 @@ def test_rule_set(
 
     definition = rule_set_definition_from_database(session, rule_set)
     try:
-        result = RuleEngine().classify(
+        result = RuleEngine().score(
             payload.raw_data.model_dump(mode="python", by_alias=True),
             definition,
         )
@@ -941,12 +911,6 @@ def test_rule_set(
         if rule.enabled
     }
     return FraudRuleTestResponse(
-        status=result.status,
-        fraud_type=result.fraud_type,
-        decision_reason=result.decision_reason,
-        top_score=result.top_score,
-        second_score=result.second_score,
-        score_gap=result.score_gap,
         rule_set_version=rule_set.version,
         type_scores=[
             FraudRuleTypeScoreResponse(

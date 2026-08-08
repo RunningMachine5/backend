@@ -30,8 +30,6 @@ def _card_context(condition: dict[str, Any]) -> dict[str, Any]:
 
 DEFAULT_RULE_SET = RuleSetDefinition(
     version="v1",
-    minimum_score=0.50,
-    ambiguity_margin=0.10,
     rules=(
         FraudRuleDefinition(
             type_code="VOICE_PHISHING",
