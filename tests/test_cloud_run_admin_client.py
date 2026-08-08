@@ -78,6 +78,8 @@ class CloudRunAdminClientTest(unittest.TestCase):
             min_pr_auc=0.75,
             min_recall=0.8,
             dataset_uri="gs://bucket/train.csv",
+            transactions_uri="gs://bucket/transactions.csv",
+            split_datetime="2026-04-01 00:00:00",
         )
 
         self.assertTrue(result["name"].endswith("/train-op"))
@@ -88,7 +90,80 @@ class CloudRunAdminClientTest(unittest.TestCase):
         env_by_name = {item["name"]: item["value"] for item in env}
         self.assertEqual(env_by_name["TRAINING_MODE"], "train")
         self.assertEqual(env_by_name["TRAINING_DATA_URI"], "gs://bucket/train.csv")
+        self.assertEqual(
+            env_by_name["TRAINING_TRANSACTIONS_URI"],
+            "gs://bucket/transactions.csv",
+        )
+        self.assertEqual(
+            env_by_name["TRAINING_SPLIT_DATETIME"],
+            "2026-04-01 00:00:00",
+        )
         self.assertEqual(env_by_name["MLFLOW_AUTO_PROMOTE"], "true")
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_omits_optional_dataset_overrides(self, request: Mock) -> None:
+        request.return_value = api_response(
+            {"name": "projects/test/locations/region/operations/train-op"}
+        )
+        client = self.make_client()
+
+        client.run_training(
+            auto_promote=False,
+            min_pr_auc=0.0,
+            min_recall=0.0,
+        )
+
+        env = request.call_args.kwargs["json"]["overrides"]["containerOverrides"][0][
+            "env"
+        ]
+        env_names = {item["name"] for item in env}
+        self.assertNotIn("TRAINING_DATA_URI", env_names)
+        self.assertNotIn("TRAINING_TRANSACTIONS_URI", env_names)
+        self.assertNotIn("TRAINING_SPLIT_DATETIME", env_names)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_accepts_raw_dataset_without_companion(
+        self,
+        request: Mock,
+    ) -> None:
+        request.return_value = api_response(
+            {"name": "projects/test/locations/region/operations/train-op"}
+        )
+        client = self.make_client()
+
+        client.run_training(
+            auto_promote=False,
+            min_pr_auc=0.0,
+            min_recall=0.0,
+            dataset_uri="gs://bucket/transactions.csv",
+        )
+
+        env = request.call_args.kwargs["json"]["overrides"]["containerOverrides"][0][
+            "env"
+        ]
+        env_by_name = {item["name"]: item["value"] for item in env}
+        self.assertEqual(
+            env_by_name["TRAINING_DATA_URI"],
+            "gs://bucket/transactions.csv",
+        )
+        self.assertNotIn("TRAINING_TRANSACTIONS_URI", env_by_name)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_rejects_companion_without_dataset(
+        self,
+        request: Mock,
+    ) -> None:
+        client = self.make_client()
+
+        with self.assertRaisesRegex(CloudRunAdminError, "함께 지정"):
+            client.run_training(
+                auto_promote=False,
+                min_pr_auc=0.0,
+                min_recall=0.0,
+                transactions_uri="gs://bucket/transactions.csv",
+            )
+
+        request.assert_not_called()
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_create_revision_pins_current_traffic_and_preserves_secret_env(

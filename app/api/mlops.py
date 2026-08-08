@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import secrets
-from typing import Annotated, Any
+from datetime import datetime
+from typing import Annotated, Any, Self
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core import config
 from app.dto.ml_prediction import MLTransactionFeatures
@@ -46,12 +48,61 @@ router = APIRouter(
 
 
 class TrainingRunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    auto_promote: bool = True
+    auto_promote: bool = False
     min_pr_auc: float = Field(default=0.0, ge=0.0, le=1.0)
     min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
-    dataset_uri: str | None = Field(default=None, min_length=1)
+    dataset_uri: str | None = Field(default=None, min_length=1, max_length=2048)
+    transactions_uri: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2048,
+    )
+    split_datetime: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("dataset_uri", "transactions_uri")
+    @classmethod
+    def validate_gcs_uri(cls, value: str | None) -> str | None:
+        """Cloud Run Job이 읽을 수 있는 명시적인 GCS 객체만 허용한다."""
+
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "gs"
+            or not parsed.netloc
+            or parsed.path in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("학습 데이터 URI는 gs://bucket/object 형식이어야 합니다.")
+        return value
+
+    @field_validator("split_datetime")
+    @classmethod
+    def validate_split_datetime(cls, value: str | None) -> str | None:
+        """생성형 데이터의 naive Transaction_Datetime과 같은 형식으로 정규화한다."""
+
+        if value is None:
+            return None
+        try:
+            boundary = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("split_datetime은 ISO datetime 형식이어야 합니다.") from exc
+        if boundary.tzinfo is not None:
+            raise ValueError("split_datetime에는 시간대를 포함할 수 없습니다.")
+        return boundary.isoformat(sep=" ")
+
+    @model_validator(mode="after")
+    def validate_companion_dataset(self) -> Self:
+        """보조 원본 URI만 단독으로 전달되는 잘못된 실행을 차단한다."""
+
+        if self.transactions_uri is not None and self.dataset_uri is None:
+            raise ValueError(
+                "transactions_uri는 dataset_uri와 함께 지정해야 합니다."
+            )
+        return self
 
 
 class ModelRevisionRequest(BaseModel):
@@ -95,6 +146,8 @@ def start_training_run(
             min_pr_auc=payload.min_pr_auc,
             min_recall=payload.min_recall,
             dataset_uri=payload.dataset_uri,
+            transactions_uri=payload.transactions_uri,
+            split_datetime=payload.split_datetime,
         )
     except CloudRunAdminError as exc:
         raise _upstream_error(exc) from exc

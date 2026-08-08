@@ -196,7 +196,8 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 ```text
 POST /mlops/training/runs
 {"auto_promote": true, "min_pr_auc": 0.75, "min_recall": 0.8,
- "dataset_uri": "gs://bucket/datasets/train.csv"}
+ "dataset_uri": "gs://bucket/datasets/generated/v1/transactions.csv",
+ "split_datetime": "2026-04-01 00:00:00"}
 
 POST /mlops/serving/revisions
 {"model_version": "17"}
@@ -204,6 +205,16 @@ POST /mlops/serving/revisions
 POST /mlops/serving/promotions
 {"model_version": "17", "transaction_id": "TX-SMOKE", "features": {}}
 ```
+
+기본 운영 학습은 생성형 원본 `transactions.csv`를 `dataset_uri` 하나로 지정하며,
+ML이 내부에서 54→91 전처리를 수행합니다. 이미 전처리된 `train.csv`를 직접 지정하는
+경우에만 행 수와 행 순서가 같은 원본 `transactions.csv`를 `transactions_uri`로 함께
+보내야 합니다. Backend는 각각 `TRAINING_DATA_URI`, `TRAINING_TRANSACTIONS_URI`
+override로 전달하고, 실제 데이터 종류와 두 파일의 정렬은 ML Job이 검증합니다.
+`split_datetime`은 원본 `Transaction_Datetime` 기준 시간 분할 경계이며
+`TRAINING_SPLIT_DATETIME`으로 전달됩니다. URI 필드를 생략하면 Cloud Run Job에 미리
+설정된 값을 그대로 사용하므로 기존 `{}` 실행 요청은 호환됩니다. 의도하지 않은 모델
+자동 승격을 막기 위해 `auto_promote` 기본값은 `false`입니다.
 
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회, Service 조회·수정 권한과
 Serving 리비전 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한이 필요합니다.

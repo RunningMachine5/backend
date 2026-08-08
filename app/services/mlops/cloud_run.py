@@ -198,8 +198,15 @@ class CloudRunAdminClient:
         min_pr_auc: float,
         min_recall: float,
         dataset_uri: str | None = None,
+        transactions_uri: str | None = None,
+        split_datetime: str | None = None,
     ) -> dict[str, Any]:
         """기존 Cloud Run Job을 환경변수 override와 함께 한 번 실행한다."""
+
+        if transactions_uri and not dataset_uri:
+            raise CloudRunAdminError(
+                "TRAINING_TRANSACTIONS_URI는 TRAINING_DATA_URI와 함께 지정해야 합니다."
+            )
 
         env = [
             {"name": "TRAINING_MODE", "value": "train"},
@@ -214,6 +221,17 @@ class CloudRunAdminClient:
         ]
         if dataset_uri:
             env.append({"name": "TRAINING_DATA_URI", "value": dataset_uri})
+        if transactions_uri:
+            env.append(
+                {
+                    "name": "TRAINING_TRANSACTIONS_URI",
+                    "value": transactions_uri,
+                }
+            )
+        if split_datetime:
+            env.append(
+                {"name": "TRAINING_SPLIT_DATETIME", "value": split_datetime}
+            )
 
         container_override: dict[str, Any] = {"env": env}
         if self.training_container:

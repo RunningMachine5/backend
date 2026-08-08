@@ -60,7 +60,94 @@ class MLOpsApiTest(unittest.TestCase):
             min_pr_auc=0.75,
             min_recall=0.8,
             dataset_uri=None,
+            transactions_uri=None,
+            split_datetime=None,
         )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_run_passes_generated_dataset_contract(self) -> None:
+        self.admin.run_training.return_value = {
+            "name": "projects/test/locations/region/operations/train-op"
+        }
+
+        response = self.client.post(
+            "/mlops/training/runs",
+            headers={"X-MLOps-Admin-Token": "admin-secret"},
+            json={
+                "dataset_uri": "gs://bucket/synthetic/v1/train.csv",
+                "transactions_uri": "gs://bucket/synthetic/v1/transactions.csv",
+                "split_datetime": "2026-04-01T00:00:00",
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.admin.run_training.assert_called_once_with(
+            auto_promote=False,
+            min_pr_auc=0.0,
+            min_recall=0.0,
+            dataset_uri="gs://bucket/synthetic/v1/train.csv",
+            transactions_uri="gs://bucket/synthetic/v1/transactions.csv",
+            split_datetime="2026-04-01 00:00:00",
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_run_accepts_raw_transactions_without_companion(
+        self,
+    ) -> None:
+        self.admin.run_training.return_value = {
+            "name": "projects/test/locations/region/operations/train-op"
+        }
+        response = self.client.post(
+            "/mlops/training/runs",
+            headers={"X-MLOps-Admin-Token": "admin-secret"},
+            json={"dataset_uri": "gs://bucket/generated/v1/transactions.csv"},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.admin.run_training.assert_called_once_with(
+            auto_promote=False,
+            min_pr_auc=0.0,
+            min_recall=0.0,
+            dataset_uri="gs://bucket/generated/v1/transactions.csv",
+            transactions_uri=None,
+            split_datetime=None,
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_run_rejects_non_gcs_dataset_contract(self) -> None:
+        response = self.client.post(
+            "/mlops/training/runs",
+            headers={"X-MLOps-Admin-Token": "admin-secret"},
+            json={
+                "dataset_uri": "https://example.com/train.csv",
+                "transactions_uri": "gs://bucket/transactions.csv",
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.admin.run_training.assert_not_called()
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_run_rejects_companion_without_dataset(self) -> None:
+        response = self.client.post(
+            "/mlops/training/runs",
+            headers={"X-MLOps-Admin-Token": "admin-secret"},
+            json={"transactions_uri": "gs://bucket/transactions.csv"},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.admin.run_training.assert_not_called()
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_run_rejects_timezone_aware_split_datetime(self) -> None:
+        response = self.client.post(
+            "/mlops/training/runs",
+            headers={"X-MLOps-Admin-Token": "admin-secret"},
+            json={"split_datetime": "2026-04-01T00:00:00+09:00"},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.admin.run_training.assert_not_called()
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_promotion_passes_validated_raw_features_to_smoke_prediction(self) -> None:
