@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 BinaryFlag = Literal[0, 1]
@@ -47,7 +47,15 @@ class MLTransactionFeatures(BaseModel):
     Account_amount_daily_limit: int = Field(gt=0)
     Account_indicator_Openbanking: BinaryFlag
     Account_remaining_amount_daily_limit_exceeded: int = Field(ge=0)
-    Account_release_suspention: BinaryFlag
+    Account_release_suspension: BinaryFlag = Field(
+        validation_alias=AliasChoices(
+            "Account_release_suspension",
+            "Account_release_suspention",
+        ),
+        # ML 54개 입력 계약과 기존 학습 데이터는 아직 오타 이름을 사용한다.
+        # 입력은 두 이름을 받되 ML 전송·raw_data 저장 시에는 legacy 키를 유지한다.
+        serialization_alias="Account_release_suspention",
+    )
     Account_one_month_max_amount: int = Field(ge=0)
     Account_one_month_std_dev: float = Field(ge=0)
     Account_dawn_one_month_max_amount: int = Field(ge=0)
@@ -85,7 +93,7 @@ class MLTransactionFeatures(BaseModel):
 
 
 RAW_TRANSACTION_FEATURE_COLUMNS = tuple(
-    field.alias or name
+    field.serialization_alias or field.alias or name
     for name, field in MLTransactionFeatures.model_fields.items()
 )
 

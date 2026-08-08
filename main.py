@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api import chat, health, mlops, transaction
+from app.api import chat, fraud_rule, health, mlops, transaction
 from app.data.fake_data import FAKE_TRANSACTIONS
 from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
 from app.pipelines.fraud_detection_pipeline import FraudDetectionPipeline
@@ -15,6 +15,7 @@ app.include_router(health.router)
 app.include_router(transaction.router)
 app.include_router(chat.router)
 app.include_router(mlops.router)
+app.include_router(fraud_rule.router)
 
 
 @app.get("/")
