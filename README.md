@@ -171,6 +171,59 @@ VM에 연결된 서비스 계정에는 `fdshield` Artifact Registry 저장소의
 ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므로 Alembic
 마이그레이션은 일시적인 연결 실패 시 최대 30회 재시도합니다.
 
+## MLOps 관리자 API
+
+`MLOPS_ADMIN_TOKEN`이 비어 있으면 `/mlops` 전체가 `503`으로 비활성화됩니다. 운영
+토큰은 저장소가 아니라 VM의 `/opt/fdshield/.env.dev` 또는 Secret Manager에 저장하고
+모든 요청의 `X-MLOps-Admin-Token` 헤더로 전달합니다.
+
+권장 실행 순서는 다음과 같습니다.
+
+1. `POST /mlops/training/runs`로 Cloud Run Training Job을 시작합니다.
+2. 응답의 `operation_id`를 `GET /mlops/operations/{id}`로 조회하고,
+   `GET /mlops/training/status`에서 최신 Execution 성공을 확인합니다.
+3. MLflow에 등록된 정확한 숫자 버전으로 `POST /mlops/serving/revisions`를 호출합니다.
+   이 단계는 기존 리비전의 트래픽 100%를 고정하고 새 리비전을 태그 URL에만 띄웁니다.
+4. operation 완료와 `GET /mlops/serving/status`의 Ready 상태를 확인합니다.
+5. 같은 버전과 원본 Feature 54개로 `POST /mlops/serving/promotions`를 호출합니다.
+   Backend가 태그 URL에 실제 `/predict` 요청을 보내 모델명·버전을 검증한 경우에만
+   새 리비전으로 트래픽 100% 이동을 요청합니다.
+
+핵심 요청 형태는 다음과 같습니다. 승격의 `features`에는
+[`examples/transaction-request.json`](examples/transaction-request.json)의 `raw_data`
+54개 필드를 넣습니다.
+
+```text
+POST /mlops/training/runs
+{"auto_promote": true, "min_pr_auc": 0.75, "min_recall": 0.8,
+ "dataset_uri": "gs://bucket/datasets/generated/v1/transactions.csv",
+ "split_datetime": "2026-04-01 00:00:00"}
+
+POST /mlops/serving/revisions
+{"model_version": "17"}
+
+POST /mlops/serving/promotions
+{"model_version": "17", "transaction_id": "TX-SMOKE", "features": {}}
+```
+
+기본 운영 학습은 생성형 원본 `transactions.csv`를 `dataset_uri` 하나로 지정하며,
+ML이 내부에서 54→91 전처리를 수행합니다. 이미 전처리된 `train.csv`를 직접 지정하는
+경우에만 행 수와 행 순서가 같은 원본 `transactions.csv`를 `transactions_uri`로 함께
+보내야 합니다. Backend는 각각 `TRAINING_DATA_URI`, `TRAINING_TRANSACTIONS_URI`
+override로 전달하고, 실제 데이터 종류와 두 파일의 정렬은 ML Job이 검증합니다.
+`split_datetime`은 원본 `Transaction_Datetime` 기준 시간 분할 경계이며
+`TRAINING_SPLIT_DATETIME`으로 전달됩니다. URI 필드를 생략하면 Cloud Run Job에 미리
+설정된 값을 그대로 사용하므로 기존 `{}` 실행 요청은 호환됩니다. 의도하지 않은 모델
+자동 승격을 막기 위해 `auto_promote` 기본값은 `false`입니다.
+
+운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회, Service 조회·수정 권한과
+Serving 리비전 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한이 필요합니다.
+학습 Job 서비스 계정에는 GCS 학습 객체 읽기와 MLflow Secret 접근 권한이, Serving
+서비스 계정에는 MLflow Secret 접근 권한이 필요합니다. 새 리비전 생성 또는 스모크
+테스트가 실패하면 승격 API가 호출되지 않으므로 기존 추론 리비전은 계속 서비스합니다.
+Cloud Run Service는 요청이 없으면 자동 scale-to-zero 되므로 별도의 "서버 끄기" API는
+두지 않습니다.
+
 ## 전체 흐름
 
 ```text
