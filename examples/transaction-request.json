@@ -1,6 +1,14 @@
 {
   "transaction_id": "TX_CONTRACT_001",
-  "occurred_at": "2025-01-01T00:00:00+09:00",
+  "customer_id": "C000494",
+  "customer_birth_date": "1981-06-15",
+  "customer_personal_identifier": "sample-personal-token",
+  "customer_identification_number": "sample-identification-token",
+  "source_account_number": "sample-source-account",
+  "recipient_account_number": "sample-recipient-account",
+  "ip_address": "104.255.200.109",
+  "mac_address": "26:a4:59:d5:b7:da",
+  "confirmed_is_fraud": true,
   "raw_data": {
     "Customer_Birthyear": 1981,
     "Customer_Gender": "male",

@@ -9,13 +9,17 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
 from app.core.db import get_session
+from app.data.model.account import Account
+from app.data.model.customer import Customer
 from app.data.model.fraud_rule import (
     FraudRule,
     FraudRuleComponent,
     FraudRuleSet,
     FraudTypeScoreResult,
 )
+from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
+from app.data.model.transaction_label import TransactionLabel
 from app.dto.ml_prediction import (
     MLTransactionFeatures,
     RAW_TRANSACTION_FEATURE_COLUMNS,
@@ -26,11 +30,11 @@ from app.services.ml_serving.client import (
     get_ml_serving_client,
 )
 from main import app
-from tests.ml_feature_fixture import valid_ml_raw_data
+from tests.ml_feature_fixture import valid_ml_raw_data, valid_transaction_row
 
 
 class SuccessfulMLStub:
-    """Backend가 현재 ML Stub 계약으로 호출하는지 확인하는 테스트 대역."""
+    """Backend의 ML Serving 요청·응답 계약을 검증하는 성공 테스트 대역."""
 
     def __init__(self) -> None:
         self.last_transaction_id: str | None = None
@@ -88,7 +92,11 @@ class TransactionApiTest(unittest.TestCase):
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
+        Customer.__table__.create(self.engine)
+        Account.__table__.create(self.engine)
         Transaction.__table__.create(self.engine)
+        MLPredictionResult.__table__.create(self.engine)
+        TransactionLabel.__table__.create(self.engine)
         FraudRuleSet.__table__.create(self.engine)
         FraudRule.__table__.create(self.engine)
         FraudRuleComponent.__table__.create(self.engine)
@@ -105,7 +113,7 @@ class TransactionApiTest(unittest.TestCase):
         app.dependency_overrides.clear()
         self.engine.dispose()
 
-    def test_create_transaction_saves_ml_stub_response(self) -> None:
+    def test_create_transaction_saves_ml_serving_response(self) -> None:
         ml_stub = SuccessfulMLStub()
         app.dependency_overrides[get_ml_serving_client] = lambda: ml_stub
 
@@ -117,9 +125,12 @@ class TransactionApiTest(unittest.TestCase):
         response = self.client.post(
             "/transactions",
             json={
-                "transaction_id": "TX_STUB_001",
-                "occurred_at": "2026-08-05T12:00:00+09:00",
-                "raw_data": raw_data,
+                **valid_transaction_row(
+                    "TX_STUB_001",
+                    confirmed_is_fraud=True,
+                ),
+                "Customer_birth_date": "1981-06-15",
+                **raw_data,
             },
         )
 
@@ -134,9 +145,34 @@ class TransactionApiTest(unittest.TestCase):
 
         with Session(self.engine) as session:
             stored = session.exec(select(Transaction)).one()
-            self.assertEqual(stored.raw_data, normalized_raw_data)
-            self.assertEqual(stored.prediction_status, "COMPLETED")
-            self.assertEqual(stored.model_name, "fdshield-rule-based-stub")
+            self.assertEqual(stored.raw_features, normalized_raw_data)
+            self.assertEqual(stored.customer_id, "C000494")
+            self.assertEqual(stored.transaction_amount, 3_995_050)
+
+            customer = session.exec(select(Customer)).one()
+            self.assertEqual(customer.customer_id, stored.customer_id)
+            self.assertEqual(customer.birth_date.isoformat(), "1981-06-15")
+
+            accounts = session.exec(select(Account)).all()
+            self.assertEqual(len(accounts), 2)
+            self.assertEqual(
+                {account.account_id for account in accounts},
+                {stored.source_account_id, stored.recipient_account_id},
+            )
+
+            label = session.exec(select(TransactionLabel)).one()
+            self.assertEqual(label.transaction_id, stored.transaction_id)
+            self.assertTrue(label.confirmed_is_fraud)
+
+            prediction_result = session.exec(select(MLPredictionResult)).one()
+            self.assertEqual(prediction_result.transaction_id, "TX_STUB_001")
+            self.assertTrue(prediction_result.prediction_is_fraud)
+            self.assertEqual(prediction_result.fraud_probability, 0.75)
+            self.assertEqual(
+                prediction_result.model_name,
+                "fdshield-rule-based-stub",
+            )
+            self.assertGreaterEqual(prediction_result.latency_ms, 0)
 
             score_results = session.exec(select(FraudTypeScoreResult)).all()
             self.assertEqual(score_results, [])
@@ -147,10 +183,7 @@ class TransactionApiTest(unittest.TestCase):
 
         response = self.client.post(
             "/transactions",
-            json={
-                "transaction_id": "TX_STUB_FAILED_001",
-                "raw_data": valid_ml_raw_data(),
-            },
+            json=valid_transaction_row("TX_STUB_FAILED_001"),
         )
 
         self.assertEqual(response.status_code, 201)
@@ -160,12 +193,33 @@ class TransactionApiTest(unittest.TestCase):
             stored = session.exec(select(Transaction)).one()
             self.assertEqual(stored.transaction_id, "TX_STUB_FAILED_001")
             self.assertEqual(
-                set(stored.raw_data),
+                set(stored.raw_features),
                 set(RAW_TRANSACTION_FEATURE_COLUMNS),
             )
-            self.assertIsNone(stored.fraud_probability)
+            customer = session.exec(select(Customer)).one()
+            self.assertEqual(customer.birth_date.isoformat(), "1981-01-01")
+            prediction_results = session.exec(select(MLPredictionResult)).all()
+            self.assertEqual(prediction_results, [])
             score_results = session.exec(select(FraudTypeScoreResult)).all()
             self.assertEqual(score_results, [])
+
+    def test_create_transaction_rejects_duplicate_transaction_id(self) -> None:
+        app.dependency_overrides[get_ml_serving_client] = (
+            lambda: SuccessfulNormalMLStub()
+        )
+        payload = {
+            **valid_transaction_row("TX_DUPLICATE_001"),
+        }
+
+        first = self.client.post("/transactions", json=payload)
+        duplicate = self.client.post("/transactions", json=payload)
+
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.assertEqual(
+            duplicate.json()["detail"],
+            "이미 존재하는 transaction_id입니다.",
+        )
 
     def test_normal_prediction_does_not_create_rule_scores(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
@@ -174,10 +228,7 @@ class TransactionApiTest(unittest.TestCase):
 
         response = self.client.post(
             "/transactions",
-            json={
-                "transaction_id": "TX_RULE_SKIPPED_001",
-                "raw_data": valid_ml_raw_data(),
-            },
+            json=valid_transaction_row("TX_RULE_SKIPPED_001"),
         )
 
         self.assertEqual(response.status_code, 201, response.text)
@@ -203,10 +254,7 @@ class TransactionApiTest(unittest.TestCase):
 
         transaction = self.client.post(
             "/transactions",
-            json={
-                "transaction_id": "TX_RULE_SCORED_001",
-                "raw_data": valid_ml_raw_data(),
-            },
+            json=valid_transaction_row("TX_RULE_SCORED_001"),
         )
 
         self.assertEqual(transaction.status_code, 201, transaction.text)
@@ -222,6 +270,7 @@ class TransactionApiTest(unittest.TestCase):
                     == "TX_RULE_SCORED_001"
                 )
             ).one()
+            self.assertEqual(score_result.rule_set_id, draft_id)
             self.assertEqual(set(score_result.type_scores), {
                 "VOICE_PHISHING",
                 "MESSENGER_PHISHING",
@@ -229,7 +278,6 @@ class TransactionApiTest(unittest.TestCase):
                 "FRAUD_USED_ACCOUNT",
                 "CARD_FRAUD",
             })
-            self.assertEqual(score_result.rule_set_version, 1)
             self.assertIn(
                 "loan_related",
                 score_result.matched_components["VOICE_PHISHING"],
@@ -244,15 +292,12 @@ class TransactionApiTest(unittest.TestCase):
         self.assertEqual(listed.json()[0]["rule_scores"], body["rule_scores"])
 
     def test_create_transaction_rejects_missing_ml_feature(self) -> None:
-        raw_data = valid_ml_raw_data()
-        raw_data.pop("Location")
+        row = valid_transaction_row("TX_MISSING_LOCATION")
+        row.pop("Location")
 
         response = self.client.post(
             "/transactions",
-            json={
-                "transaction_id": "TX_MISSING_LOCATION",
-                "raw_data": raw_data,
-            },
+            json=row,
         )
 
         self.assertEqual(response.status_code, 422)
@@ -265,8 +310,8 @@ class TransactionApiTest(unittest.TestCase):
         response = self.client.post(
             "/transactions",
             json={
-                "transaction_id": "TX_OBSOLETE_FEATURE",
-                "raw_data": raw_data,
+                **valid_transaction_row("TX_OBSOLETE_FEATURE"),
+                **raw_data,
             },
         )
 

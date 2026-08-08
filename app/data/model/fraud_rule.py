@@ -150,6 +150,11 @@ class FraudTypeScoreResult(SQLModel, table=True):
         max_length=64,
         index=True,
     )
+    rule_set_id: int = Field(
+        foreign_key="fraud_rule_sets.id",
+        ondelete="RESTRICT",
+        index=True,
+    )
     type_scores: dict[str, float] = Field(
         default_factory=dict,
         sa_column=Column(JSON_COLUMN, nullable=False),
@@ -158,7 +163,6 @@ class FraudTypeScoreResult(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSON_COLUMN, nullable=False),
     )
-    rule_set_version: int = Field(index=True)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
