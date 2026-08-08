@@ -8,6 +8,7 @@ from app.core.db import SessionDep
 from app.data.model.transaction import Transaction
 from app.dto.ml_prediction import MLTransactionFeatures
 from app.services.ml_serving.client import MLServingClientDep, MLServingError
+from app.services.rules.classification import classify_transaction_fraud_type
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -63,6 +64,14 @@ def create_transaction(
         tx.shap = prediction.shap
         tx.model_name = prediction.model_name
         tx.model_version = prediction.model_version
+
+        fraud_type_result = classify_transaction_fraud_type(
+            session=session,
+            transaction_id=tx.transaction_id,
+            raw_data=raw_data,
+            is_fraud=prediction.is_fraud,
+        )
+        session.add(fraud_type_result)
 
     tx.updated_at = datetime.now()
     session.add(tx)
