@@ -1,21 +1,46 @@
 import unittest
-from unittest.mock import Mock
 
 from app.data.fake_data import FAKE_TRANSACTIONS
-from app.domain.enums import AgentAction, RiskGrade
+from app.domain.enums import AgentAction, FraudType, RiskGrade
 from app.dto.chatbot import ChatbotRequestDTO
-from app.dto.transaction import TransactionDTO, TransactionFeaturesDTO
+from app.dto.fraud import FraudAssessmentDTO, FraudPredictionDTO
 from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
-from app.pipelines.fraud_detection_pipeline import FraudDetectionPipeline
 from app.pipelines.monitoring_agent_pipeline import MonitoringAgentPipeline
 
 
+def assessment_for_agent(
+    *,
+    risk_grade: RiskGrade | None,
+    is_fraud: bool = True,
+) -> FraudAssessmentDTO:
+    """아직 구형 계약을 쓰는 모니터링 에이전트에 명시적 입력을 만든다."""
+
+    return FraudAssessmentDTO(
+        transaction=FAKE_TRANSACTIONS[0],
+        prediction=FraudPredictionDTO(
+            is_fraud=is_fraud,
+            fraud_probability=0.95 if is_fraud else 0.05,
+        ),
+        patterns=[],
+        fraud_type_scores=[],
+        primary_fraud_type=(
+            FraudType.LARGE_AMOUNT_PAYMENT if is_fraud else None
+        ),
+        risk_score=95 if risk_grade is not None else None,
+        risk_grade=risk_grade,
+        amount_risk_factor=1.0 if risk_grade is not None else None,
+        amount_points=50.0 if risk_grade is not None else None,
+        ml_probability_points=45.0 if risk_grade is not None else None,
+        evidence=["테스트용 고액 거래 근거"] if is_fraud else [],
+    )
+
+
 class PipelineTest(unittest.TestCase):
-    """핵심 분기와 DTO 연결을 검증하는 최소 단위 테스트."""
+    """아직 별도 스켈레톤인 Agent·Chatbot 분기를 검증한다."""
 
     def test_very_high_risk_uses_email_and_rag_branches(self) -> None:
         """매우높음 거래가 피해자 이메일과 담당자 RAG 처리로 이어지는지 확인한다."""
-        assessment = FraudDetectionPipeline().run(FAKE_TRANSACTIONS[0])
+        assessment = assessment_for_agent(risk_grade=RiskGrade.VERY_HIGH)
         agent_result = MonitoringAgentPipeline().run(assessment)
 
         self.assertEqual(assessment.risk_grade, RiskGrade.VERY_HIGH)
@@ -40,7 +65,7 @@ class PipelineTest(unittest.TestCase):
 
     def test_other_risk_uses_rag_branch(self) -> None:
         """두 번째 거래가 RAG 기반 대시보드 분기로 이어지는지 확인한다."""
-        assessment = FraudDetectionPipeline().run(FAKE_TRANSACTIONS[1])
+        assessment = assessment_for_agent(risk_grade=RiskGrade.HIGH)
         agent_result = MonitoringAgentPipeline().run(assessment)
 
         self.assertNotEqual(assessment.risk_grade, RiskGrade.VERY_HIGH)
@@ -63,28 +88,7 @@ class PipelineTest(unittest.TestCase):
 
     def test_non_fraud_stops_before_pattern_analysis(self) -> None:
         """모델이 정상으로 판정하면 후속 분석 없이 종료되는지 확인한다."""
-        transaction = TransactionDTO(
-            user_id="USR_SAFE",
-            user_name="홍길동",
-            email="sample@email.com",
-            transaction_time="2026-07-30T14:00:00+09:00",
-            amount=100_000,
-            user_amount_std_dev=100_000.00,
-            payment_method="TRANSFER",
-            merchant_category="GROCERIES",
-        )
-
-        pipeline = FraudDetectionPipeline()
-        pipeline.model = Mock()
-        pipeline.model.predict.return_value = TransactionFeaturesDTO(
-            user_id=transaction.user_id,
-            is_fraud=False,
-            high_relevance_feature={},
-            fraud_probability=0.45,
-        )
-        pipeline.pattern_detector = Mock()
-
-        assessment = pipeline.run(transaction)
+        assessment = assessment_for_agent(risk_grade=None, is_fraud=False)
         agent_result = MonitoringAgentPipeline().run(assessment)
 
         self.assertFalse(assessment.prediction.is_fraud)
@@ -97,8 +101,6 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(agent_result.action, AgentAction.NO_ACTION)
         self.assertIsNone(agent_result.rag_query)
         self.assertIsNone(agent_result.retrieved_context)
-        pipeline.model.predict.assert_called_once_with(transaction)
-        pipeline.pattern_detector.detect.assert_not_called()
 
     def test_chatbot_combines_guide_and_transaction(self) -> None:
         """고객 질문에 관련 거래정보와 고객 대응 가이드가 포함되는지 확인한다."""

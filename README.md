@@ -1,19 +1,23 @@
 # AI 기반 금융 이상거래 탐지 및 대응 파이프라인
 
-실제 외부 API, 머신러닝 모델, VectorDB, RDB를 연결하지 않고 전체 데이터 흐름과 팀 간 DTO 계약을 확인하기 위한 Python 스켈레톤입니다.
+FastAPI가 거래 한 건을 받아 PostgreSQL에 저장하고, ML Serving의 실제 모델 예측과
+동적 사기유형 룰 점수를 함께 기록하는 Backend입니다. Agent와 고객 챗봇 영역은
+각 담당자가 교체할 수 있도록 기존 스켈레톤을 별도로 유지합니다.
 
 ## 실행
 
-Python 표준 라이브러리만 사용합니다.
+uv로 의존성을 설치하고 DB 마이그레이션을 적용한 뒤 FastAPI를 실행합니다.
 
 ```bash
-python3 main.py
+uv sync
+uv run --env-file .env alembic upgrade head
+uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 테스트:
 
 ```bash
-python3 -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 ## Docker 실행
@@ -57,9 +61,9 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - Health Check: `http://localhost:8000/health`
 - Swagger UI: `http://localhost:8000/docs`
 
-### ML Stub 연동 확인
+### 실제 ML Serving 연동 확인
 
-ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 요청합니다.
+ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 한 건씩 요청합니다.
 `raw_data`는 새 전처리가 요구하는 원본 Feature 54개를 모두 포함해야 합니다.
 Backend는 타입과 필수 컬럼을 검증해 원본 JSON을 저장하고, One-hot Encoding 없이
 ML `/predict` 요청의 `features`로 그대로 전달합니다.
@@ -75,8 +79,14 @@ curl -X POST http://localhost:8000/transactions \
 `Time_difference`, `Transaction_Failure_Status`,
 `Customer_flag_terminal_malicious_behavior_4`는 허용하지 않습니다.
 
+거래 식별정보는 `transaction_id`, `customer_id`, 고객 식별 토큰, 출금·수취 계좌번호를
+함께 전달합니다. `customer_birth_date`가 있으면 실제 생년월일을 저장하고, 없으면
+`Customer_Birthyear`의 1월 1일로 보충합니다. CSV 컬럼명(`ID`, `Customer_ID` 등)으로
+평평하게 전달하는 형식과 위 예제처럼 `raw_data`를 분리한 형식을 모두 허용합니다.
+
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
-꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 상태만 `FAILED`로 저장됩니다.
+꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.
+현재 ERD에는 실패 이력 컬럼이 없으므로 ML 실패 자체는 별도 결과 행으로 저장하지 않습니다.
 
 ML이 사기로 예측한 거래는 활성 룰셋으로 모든 사기유형 점수를 계산합니다.
 Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 유형별 점수를 전부
@@ -250,20 +260,18 @@ Cloud Run Service는 요청이 없으면 자동 scale-to-zero 되므로 별도�
 ## 전체 흐름
 
 ```text
-거래정보
-  -> Fake 이진 분류 모델
-  -> 이상패턴 탐지
-  -> 사기유형별 패턴 점수 가중합
-  -> 위험등급 / 대표 사기유형 / 근거
-  -> 위험등급 분기
-       ├─ VERY_HIGH: 피해자 안내 이메일 전송(print)
-       └─ 그 외: RAG 쿼리 -> Fake VectorDB -> Fake LLM -> 담당자 대시보드(print)
+POST /transactions
+  -> 고객·출금계좌·수취계좌·거래 원본 저장
+  -> ML Serving /predict 호출
+  -> 모델 예측·확률·SHAP·모델 버전 저장
+  -> 사기 예측이면 활성 룰셋으로 5개 유형 점수 계산·저장
+  -> 거래와 최신 ML·룰 결과 응답
 
-고객 질문
+Agent / 고객 질문 스켈레톤
+  -> 저장된 탐지 결과를 각 담당 영역에서 사용
   -> Fake 임베딩
-  -> Fake 고객 가이드 검색
-  -> Fake RDB 거래 조회
-  -> Fake LLM 챗봇 답변(print)
+  -> Fake VectorDB / 가이드 검색
+  -> Fake LLM / 알림
 ```
 
 ## 프로젝트 구조
@@ -272,63 +280,63 @@ Cloud Run Service는 요청이 없으면 자동 scale-to-zero 되므로 별도�
 .
 ├── main.py
 ├── app
-│   ├── domain
-│   │   └── enums.py
+│   ├── api
+│   │   ├── transaction.py
+│   │   ├── fraud_rule.py
+│   │   └── mlops.py
 │   ├── dto
 │   │   ├── transaction.py
-│   │   ├── fraud.py
-│   │   ├── agent.py
-│   │   └── chatbot.py
+│   │   ├── ml_prediction.py
+│   │   └── fraud_rule.py
 │   ├── data
-│   │   └── fake_data.py
-│   ├── services
-│   │   ├── classification
-│   │   │   └── fake_fraud_model.py
-│   │   ├── analysis
-│   │   │   ├── pattern_detector.py
-│   │   │   ├── fraud_type_scorer.py
-│   │   │   └── risk_grader.py
-│   │   ├── rag
-│   │   │   ├── query_builder.py
-│   │   │   ├── fake_vector_db.py
-│   │   │   └── fake_llm.py
-│   │   ├── notification
-│   │   │   └── fake_email_sender.py
-│   │   └── chatbot
-│   │       ├── fake_embedder.py
-│   │       ├── fake_guide_retriever.py
-│   │       └── fake_transaction_repository.py
+│   │   └── model
+│   │       ├── customer.py
+│   │       ├── account.py
+│   │       ├── transaction.py
+│   │       ├── ml_prediction_result.py
+│   │       └── fraud_rule.py
+│   ├── repositories
+│   │   └── transaction.py
 │   ├── pipelines
-│   │   ├── fraud_detection_pipeline.py
-│   │   ├── monitoring_agent_pipeline.py
-│   │   └── customer_chatbot_pipeline.py
-│   └── presentation
-│       └── console_renderer.py
+│   │   └── fraud_detection_pipeline.py
+│   ├── services
+│   │   ├── ml_serving
+│   │   │   └── client.py
+│   │   └── rules
+│   │       ├── engine.py
+│   │       ├── feature_builder.py
+│   │       └── scoring.py
+│   └── ... Agent·챗봇 스켈레톤
+├── migrations
+├── examples
+│   └── transaction-request.json
 └── tests
-    └── test_pipelines.py
 ```
 
 ## 팀 간 DTO 계약
 
 | DTO | 생산자 | 소비자 |
 |---|---|---|
-| `TransactionDTO` | 입력/데이터 담당 | 분류 모델, 패턴 분석, 챗봇 |
-| `FraudPredictionDTO` | 머신러닝 담당 | 사기 탐지 파이프라인 |
-| `PatternScoreDTO` | 이상패턴 담당 | 사기유형 점수 담당 |
-| `FraudAssessmentDTO` | 사기 탐지 파이프라인 | Agent, 대시보드 |
+| `TransactionCreateDTO` | 거래 API 클라이언트 | 사기 탐지 파이프라인 |
+| `MLTransactionFeatures` | 거래 API 클라이언트 | ML Serving |
+| `MLPredictionResponse` | ML Serving | 사기 탐지 파이프라인 |
+| `TransactionResponseDTO` | 사기 탐지 파이프라인 | 거래 API 클라이언트 |
+| `TransactionDTO` | 구형 Agent 스켈레톤 | 구형 Agent 스켈레톤 |
+| `FraudAssessmentDTO` | 구형 Agent 스켈레톤 | Agent, 대시보드 |
 | `RagQueryDTO` | Agent/RAG 쿼리 담당 | VectorDB 검색 담당 |
 | `RetrievedContextDTO` | VectorDB 검색 담당 | LLM 답변 담당 |
 | `ChatbotRequestDTO` | 고객 채널 담당 | 대응가이드 챗봇 |
 | `ChatbotResponseDTO` | 대응가이드 챗봇 | 고객 채널 담당 |
 
-DTO 필드를 먼저 합의하면 각 담당자는 다른 구현이 완성되지 않아도 Fake 서비스를 사용해 독립 개발할 수 있습니다.
+실제 거래 탐지는 `TransactionCreateDTO`를 받아 ML Serving과 룰 점수를 차례로 실행합니다.
+구형 Agent DTO는 실제 거래 탐지 결과에 맞춘 Agent 계약을 확정한 뒤 제거합니다.
 
-## Fake 구현 범위
+## Agent·챗봇 Fake 구현 범위
 
-- 머신러닝: 금액, 사용자 평소 금액 대비 편차, 결제수단, 업종을 이용한 규칙 기반 확률
 - VectorDB: 어떤 쿼리에도 동일한 모니터링 문맥 반환
 - RDB: 코드에 하드코딩된 거래 리스트에서 사용자 거래 조회
 - LLM: 입력 DTO의 문맥을 문자열 템플릿으로 조합
 - 이메일/대시보드: `print()`로 출력
-- 예외처리: 요구사항에 따라 의도적으로 구현하지 않음
+
+거래 수신, ML Serving 호출, PostgreSQL 저장, 동적 룰 점수 계산은 Fake 범위가 아닙니다.
 

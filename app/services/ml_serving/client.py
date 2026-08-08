@@ -1,4 +1,4 @@
-"""현재 ML Stub의 HTTP 계약을 호출하는 최소 클라이언트."""
+"""Backend에서 ML Serving의 HTTP 계약을 호출하는 클라이언트."""
 
 from collections.abc import Callable
 from functools import lru_cache
@@ -20,7 +20,7 @@ from app.core.config import (
 
 
 class MLPredictionResponse(BaseModel):
-    """ML Stub이 반환하는 이진 분류 응답."""
+    """ML Serving이 반환하는 이진 분류 응답."""
 
     transaction_id: str
     is_fraud: bool
@@ -71,7 +71,7 @@ def _google_id_token_provider(audience: str) -> GoogleIDTokenProvider:
 
 
 class MLServingClient:
-    """Backend와 ML Stub 사이의 동기 `/predict` 호출만 담당한다."""
+    """Backend와 ML Serving 사이의 동기 `/predict` 호출을 담당한다."""
 
     def __init__(
         self,

@@ -62,3 +62,26 @@ def valid_ml_raw_data() -> dict[str, Any]:
         "First_time_iOS_by_vulnerable_user": 0,
         "Transaction_resumed_date": None,
     }
+
+
+def valid_transaction_row(
+    transaction_id: str = "T00000001",
+    *,
+    confirmed_is_fraud: bool | None = None,
+) -> dict[str, Any]:
+    """CSV 한 행과 같은 추적 컬럼·54개 Feature를 반환한다."""
+
+    row = {
+        "ID": transaction_id,
+        "Customer_personal_identifier": "오민현",
+        "Customer_identification_number": "upTALE-VwSUVKY",
+        "Account_account_number": "TLBxRCjZdK",
+        "IP_Address": "104.255.200.109",
+        "MAC_Address": "26:a4:59:d5:b7:da",
+        "Recipient_Account_Number": "yeTPcVrUhr",
+        "Customer_ID": "C000494",
+        **valid_ml_raw_data(),
+    }
+    if confirmed_is_fraud is not None:
+        row["Is_Fraud"] = int(confirmed_is_fraud)
+    return row

@@ -1,131 +1,120 @@
-from datetime import datetime
-
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy.exc import IntegrityError
-from sqlmodel import Field, SQLModel, select
+from sqlmodel import select
 
 from app.core.db import SessionDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
+from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
-from app.dto.ml_prediction import MLTransactionFeatures
-from app.services.ml_serving.client import MLServingClientDep, MLServingError
-from app.services.rules.scoring import score_transaction_fraud_types
+from app.dto.transaction import TransactionCreateDTO, TransactionResponseDTO
+from app.pipelines.fraud_detection_pipeline import (
+    DuplicateTransactionError,
+    FraudDetectionPipeline,
+)
+from app.repositories.transaction import PredictionResultRepository
+from app.services.ml_serving.client import MLServingClientDep
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
-class TransactionCreate(SQLModel):
-    """전처리 전 ML 원본 Feature 54개를 포함하는 거래 수신 DTO."""
-
-    transaction_id: str = Field(min_length=1, max_length=64)
-    occurred_at: datetime | None = None
-    raw_data: MLTransactionFeatures
-
-
-class TransactionResponse(SQLModel):
-    """거래·ML 결과와 전체 사기유형 룰 점수를 함께 반환한다."""
-
-    id: int
-    transaction_id: str
-    occurred_at: datetime
-    raw_data: dict[str, object]
-    payment_method: str | None
-    prediction_status: str
-    ml_is_fraud: bool | None
-    fraud_probability: float | None
-    shap: dict[str, float] | None
-    model_name: str | None
-    model_version: str | None
-    created_at: datetime
-    updated_at: datetime
-    rule_scores: dict[str, float] | None = None
-
-
 def _transaction_response(
     transaction: Transaction,
+    prediction_result: MLPredictionResult | None,
     score_result: FraudTypeScoreResult | None,
-) -> TransactionResponse:
-    return TransactionResponse.model_validate(
+    *,
+    prediction_status: str | None = None,
+) -> TransactionResponseDTO:
+    return TransactionResponseDTO.model_validate(
         {
-            **transaction.model_dump(),
+            # SQLAlchemy가 commit 뒤 객체를 expire하면 SQLModel.model_dump()가
+            # 빈 dict를 반환할 수 있다. 응답 계약의 필드를 명시적으로 읽어
+            # 세션 상태와 관계없이 같은 응답을 만든다.
+            "transaction_id": transaction.transaction_id,
+            "customer_id": transaction.customer_id,
+            "source_account_id": transaction.source_account_id,
+            "recipient_account_id": transaction.recipient_account_id,
+            "transaction_datetime": transaction.transaction_datetime,
+            "transaction_amount": transaction.transaction_amount,
+            "channel": transaction.channel,
+            "location": transaction.location,
+            "raw_features": transaction.raw_features,
+            "created_at": transaction.created_at,
+            "prediction_status": prediction_status or (
+                "COMPLETED" if prediction_result else "NOT_AVAILABLE"
+            ),
+            "ml_is_fraud": (
+                prediction_result.prediction_is_fraud
+                if prediction_result
+                else None
+            ),
+            "fraud_probability": (
+                prediction_result.fraud_probability
+                if prediction_result
+                else None
+            ),
+            "shap": prediction_result.shap if prediction_result else None,
+            "model_name": (
+                prediction_result.model_name if prediction_result else None
+            ),
+            "model_version": (
+                prediction_result.model_version if prediction_result else None
+            ),
+            "latency_ms": (
+                prediction_result.latency_ms if prediction_result else None
+            ),
             "rule_scores": score_result.type_scores if score_result else None,
+            "rule_set_id": score_result.rule_set_id if score_result else None,
         }
     )
 
 
 @router.post(
     "",
-    response_model=TransactionResponse,
+    response_model=TransactionResponseDTO,
     status_code=status.HTTP_201_CREATED,
 )
 def create_transaction(
-    payload: TransactionCreate,
+    payload: TransactionCreateDTO,
     session: SessionDep,
     ml_client: MLServingClientDep,
-) -> TransactionResponse:
-    """거래 원본을 먼저 저장한 뒤 현재 ML Stub에 동기 추론을 요청한다."""
+) -> TransactionResponseDTO:
+    """HTTP 요청을 실제 사기 탐지 Pipeline에 전달한다."""
 
-    # Pydantic이 검증한 날짜와 alias를 JSON에서 사용하는 원본 컬럼명으로 되돌린다.
-    # 특히 Python 식별자로 쓸 수 없는 "Time Difference" 키를 그대로 보존한다.
-    raw_data = payload.raw_data.model_dump(mode="json", by_alias=True)
-
-    tx = Transaction(
-        transaction_id=payload.transaction_id,
-        occurred_at=payload.occurred_at or datetime.now(),
-        raw_data=raw_data,
-    )
-    session.add(tx)
-    score_result: FraudTypeScoreResult | None = None
+    pipeline = FraudDetectionPipeline(session=session, ml_client=ml_client)
     try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
+        result = pipeline.run(payload)
+    except DuplicateTransactionError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="이미 존재하는 transaction_id입니다.",
         ) from exc
-    session.refresh(tx)
-
-    try:
-        prediction = ml_client.predict(
-            transaction_id=tx.transaction_id,
-            features=raw_data,
-        )
-    except MLServingError:
-        tx.prediction_status = "FAILED"
-    else:
-        tx.prediction_status = "COMPLETED"
-        tx.ml_is_fraud = prediction.is_fraud
-        tx.fraud_probability = prediction.fraud_probability
-        tx.shap = prediction.shap
-        tx.model_name = prediction.model_name
-        tx.model_version = prediction.model_version
-
-        if prediction.is_fraud:
-            score_result = score_transaction_fraud_types(
-                session=session,
-                transaction_id=tx.transaction_id,
-                raw_data=raw_data,
-            )
-            if score_result is not None:
-                session.add(score_result)
-
-    tx.updated_at = datetime.now()
-    session.add(tx)
-    session.commit()
-    session.refresh(tx)
-    return _transaction_response(tx, score_result)
+    return _transaction_response(
+        result.transaction,
+        result.prediction_result,
+        result.score_result,
+        prediction_status=result.prediction_status,
+    )
 
 
-@router.get("", response_model=list[TransactionResponse])
-def list_transactions(session: SessionDep) -> list[TransactionResponse]:
-    # SELECT * FROM transactions ORDER BY id DESC LIMIT 20
-    stmt = select(Transaction).order_by(Transaction.id.desc()).limit(20)
+@router.get("", response_model=list[TransactionResponseDTO])
+def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
+    stmt = select(Transaction).order_by(Transaction.created_at.desc()).limit(20)
     transactions = list(session.exec(stmt).all())
     transaction_ids = [item.transaction_id for item in transactions]
     if not transaction_ids:
         return []
+
+    prediction_results = session.exec(
+        select(MLPredictionResult)
+        .where(MLPredictionResult.transaction_id.in_(transaction_ids))
+        .order_by(
+            MLPredictionResult.created_at.desc(),
+            MLPredictionResult.id.desc(),
+        )
+    ).all()
+    prediction_by_transaction_id: dict[str, MLPredictionResult] = {}
+    for item in prediction_results:
+        prediction_by_transaction_id.setdefault(item.transaction_id, item)
 
     score_results = session.exec(
         select(FraudTypeScoreResult).where(
@@ -136,16 +125,20 @@ def list_transactions(session: SessionDep) -> list[TransactionResponse]:
         item.transaction_id: item for item in score_results
     }
     return [
-        _transaction_response(tx, score_by_transaction_id.get(tx.transaction_id))
+        _transaction_response(
+            tx,
+            prediction_by_transaction_id.get(tx.transaction_id),
+            score_by_transaction_id.get(tx.transaction_id),
+        )
         for tx in transactions
     ]
 
 
-@router.get("/{transaction_id}", response_model=TransactionResponse)
+@router.get("/{transaction_id}", response_model=TransactionResponseDTO)
 def get_transaction(
     transaction_id: str,
     session: SessionDep,
-) -> TransactionResponse:
+) -> TransactionResponseDTO:
     transaction = session.exec(
         select(Transaction).where(Transaction.transaction_id == transaction_id)
     ).first()
@@ -159,4 +152,7 @@ def get_transaction(
             FraudTypeScoreResult.transaction_id == transaction_id
         )
     ).first()
-    return _transaction_response(transaction, score_result)
+    prediction_result = PredictionResultRepository(
+        session
+    ).latest_for_transaction(transaction_id)
+    return _transaction_response(transaction, prediction_result, score_result)
