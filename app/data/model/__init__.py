@@ -7,8 +7,7 @@ from app.data.model.fraud_rule import (  # noqa: F401
     FraudRuleComponent,
     FraudRuleSet,
     FraudRuleSetStatus,
-    FraudTypeClassificationResult,
-    FraudTypeClassificationStatus,
+    FraudTypeScoreResult,
 )
 from app.data.model.transaction import Transaction  # noqa: F401
 
@@ -19,7 +18,6 @@ __all__ = [
     "FraudRuleComponent",
     "FraudRuleSet",
     "FraudRuleSetStatus",
-    "FraudTypeClassificationResult",
-    "FraudTypeClassificationStatus",
+    "FraudTypeScoreResult",
     "Transaction",
 ]

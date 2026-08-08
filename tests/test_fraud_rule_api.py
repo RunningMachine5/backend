@@ -93,7 +93,7 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertIn("card_context_proxy", fields)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_rule_set_test_uses_method_c_and_default_rules(self) -> None:
+    def test_rule_set_test_returns_all_default_rule_scores(self) -> None:
         draft = self.client.post(
             "/rule-sets/drafts",
             headers=ADMIN_HEADERS,
@@ -111,11 +111,13 @@ class FraudRuleApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(body["status"], "CLASSIFIED")
-        self.assertEqual(body["fraud_type"], "VOICE_PHISHING")
-        self.assertEqual(body["decision_reason"], "CLASSIFIED")
-        self.assertAlmostEqual(body["top_score"], 0.70)
         self.assertEqual(len(body["type_scores"]), 5)
+        score_by_type = {
+            item["type_code"]: item["score"] for item in body["type_scores"]
+        }
+        self.assertAlmostEqual(score_by_type["VOICE_PHISHING"], 0.70)
+        self.assertNotIn("status", body)
+        self.assertNotIn("fraud_type", body)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_activation_archives_previous_set_and_clone_is_editable(self) -> None:
@@ -131,9 +133,9 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(activated.json()["status"], "ACTIVE")
 
         immutable = self.client.put(
-            f"/rule-sets/{first['id']}",
+            f"/rule-sets/{first['id']}/rules/{first['rules'][0]['id']}",
             headers=ADMIN_HEADERS,
-            json={"minimum_score": 0.6},
+            json={"display_name": "수정 불가"},
         )
         self.assertEqual(immutable.status_code, 409)
 

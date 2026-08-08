@@ -193,8 +193,6 @@ class FraudRuleSetSummaryResponse(BaseModel):
     id: int
     version: int
     status: FraudRuleSetStatus
-    minimum_score: float
-    ambiguity_margin: float
     created_at: datetime
     updated_at: datetime
     activated_at: datetime | None
@@ -208,19 +206,6 @@ class FraudRuleSetDraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_rule_set_id: int | None = Field(default=None, gt=0)
-
-
-class FraudRuleSetUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    minimum_score: float | None = Field(default=None, ge=0.0, le=1.0)
-    ambiguity_margin: float | None = Field(default=None, ge=0.0, le=1.0)
-
-    @model_validator(mode="after")
-    def reject_empty_update(self) -> Self:
-        if not self.model_fields_set:
-            raise ValueError("수정할 룰셋 필드가 하나 이상 필요합니다.")
-        return self
 
 
 class FraudRuleValidationIssue(BaseModel):
@@ -248,16 +233,6 @@ class FraudRuleTypeScoreResponse(BaseModel):
 
 
 class FraudRuleTestResponse(BaseModel):
-    status: Literal["CLASSIFIED", "UNCLASSIFIED"]
-    fraud_type: str | None
-    decision_reason: Literal[
-        "CLASSIFIED",
-        "BELOW_MINIMUM_SCORE",
-        "AMBIGUOUS_TOP_SCORES",
-    ]
-    top_score: float
-    second_score: float
-    score_gap: float
     rule_set_version: int
     type_scores: list[FraudRuleTypeScoreResponse]
 
@@ -277,7 +252,6 @@ __all__ = [
     "FraudRuleSetDraftCreate",
     "FraudRuleSetResponse",
     "FraudRuleSetSummaryResponse",
-    "FraudRuleSetUpdate",
     "FraudRuleTestRequest",
     "FraudRuleTestResponse",
     "FraudRuleTypeScoreResponse",

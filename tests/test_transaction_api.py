@@ -13,8 +13,7 @@ from app.data.model.fraud_rule import (
     FraudRule,
     FraudRuleComponent,
     FraudRuleSet,
-    FraudTypeClassificationResult,
-    FraudTypeClassificationStatus,
+    FraudTypeScoreResult,
 )
 from app.data.model.transaction import Transaction
 from app.dto.ml_prediction import (
@@ -93,7 +92,7 @@ class TransactionApiTest(unittest.TestCase):
         FraudRuleSet.__table__.create(self.engine)
         FraudRule.__table__.create(self.engine)
         FraudRuleComponent.__table__.create(self.engine)
-        FraudTypeClassificationResult.__table__.create(self.engine)
+        FraudTypeScoreResult.__table__.create(self.engine)
 
         def override_session():
             with Session(self.engine) as session:
@@ -139,14 +138,9 @@ class TransactionApiTest(unittest.TestCase):
             self.assertEqual(stored.prediction_status, "COMPLETED")
             self.assertEqual(stored.model_name, "fdshield-rule-based-stub")
 
-            classification = session.exec(
-                select(FraudTypeClassificationResult)
-            ).one()
-            self.assertEqual(
-                classification.status,
-                FraudTypeClassificationStatus.FAILED,
-            )
-            self.assertIn("활성 룰셋", classification.error_message)
+            score_results = session.exec(select(FraudTypeScoreResult)).all()
+            self.assertEqual(score_results, [])
+            self.assertIsNone(body["rule_scores"])
 
     def test_create_transaction_keeps_input_when_ml_call_fails(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = lambda: FailedMLStub()
@@ -170,12 +164,10 @@ class TransactionApiTest(unittest.TestCase):
                 set(RAW_TRANSACTION_FEATURE_COLUMNS),
             )
             self.assertIsNone(stored.fraud_probability)
-            classifications = session.exec(
-                select(FraudTypeClassificationResult)
-            ).all()
-            self.assertEqual(classifications, [])
+            score_results = session.exec(select(FraudTypeScoreResult)).all()
+            self.assertEqual(score_results, [])
 
-    def test_normal_prediction_skips_fraud_type_classification(self) -> None:
+    def test_normal_prediction_does_not_create_rule_scores(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
             lambda: SuccessfulNormalMLStub()
         )
@@ -189,18 +181,13 @@ class TransactionApiTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 201, response.text)
+        self.assertIsNone(response.json()["rule_scores"])
         with Session(self.engine) as session:
-            classification = session.exec(
-                select(FraudTypeClassificationResult)
-            ).one()
-            self.assertEqual(
-                classification.status,
-                FraudTypeClassificationStatus.SKIPPED,
-            )
-            self.assertIsNone(classification.fraud_type)
+            score_results = session.exec(select(FraudTypeScoreResult)).all()
+            self.assertEqual(score_results, [])
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_fraud_prediction_is_classified_with_active_rule_set(self) -> None:
+    def test_fraud_prediction_returns_and_saves_all_rule_scores(self) -> None:
         ml_stub = SuccessfulMLStub()
         app.dependency_overrides[get_ml_serving_client] = lambda: ml_stub
         headers = {"X-MLOps-Admin-Token": "admin-secret"}
@@ -217,35 +204,44 @@ class TransactionApiTest(unittest.TestCase):
         transaction = self.client.post(
             "/transactions",
             json={
-                "transaction_id": "TX_RULE_CLASSIFIED_001",
+                "transaction_id": "TX_RULE_SCORED_001",
                 "raw_data": valid_ml_raw_data(),
             },
         )
 
         self.assertEqual(transaction.status_code, 201, transaction.text)
-        self.assertEqual(transaction.json()["prediction_status"], "COMPLETED")
+        body = transaction.json()
+        self.assertEqual(body["prediction_status"], "COMPLETED")
+        self.assertEqual(len(body["rule_scores"]), 5)
+        self.assertAlmostEqual(body["rule_scores"]["VOICE_PHISHING"], 0.70)
 
         with Session(self.engine) as session:
-            classification = session.exec(
-                select(FraudTypeClassificationResult).where(
-                    FraudTypeClassificationResult.transaction_id
-                    == "TX_RULE_CLASSIFIED_001"
+            score_result = session.exec(
+                select(FraudTypeScoreResult).where(
+                    FraudTypeScoreResult.transaction_id
+                    == "TX_RULE_SCORED_001"
                 )
             ).one()
-            self.assertEqual(
-                classification.status,
-                FraudTypeClassificationStatus.CLASSIFIED,
-            )
-            self.assertEqual(
-                classification.fraud_type,
+            self.assertEqual(set(score_result.type_scores), {
                 "VOICE_PHISHING",
-            )
-            self.assertAlmostEqual(classification.top_score, 0.70)
-            self.assertEqual(classification.rule_set_version, 1)
+                "MESSENGER_PHISHING",
+                "ACCOUNT_TAKEOVER",
+                "FRAUD_USED_ACCOUNT",
+                "CARD_FRAUD",
+            })
+            self.assertEqual(score_result.rule_set_version, 1)
             self.assertIn(
                 "loan_related",
-                classification.matched_components["VOICE_PHISHING"],
+                score_result.matched_components["VOICE_PHISHING"],
             )
+
+        detail = self.client.get("/transactions/TX_RULE_SCORED_001")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["rule_scores"], body["rule_scores"])
+
+        listed = self.client.get("/transactions")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()[0]["rule_scores"], body["rule_scores"])
 
     def test_create_transaction_rejects_missing_ml_feature(self) -> None:
         raw_data = valid_ml_raw_data()

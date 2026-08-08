@@ -78,6 +78,29 @@ curl -X POST http://localhost:8000/transactions \
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
 꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 상태만 `FAILED`로 저장됩니다.
 
+ML이 사기로 예측한 거래는 활성 룰셋으로 모든 사기유형 점수를 계산합니다.
+Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 유형별 점수를 전부
+저장하고 응답합니다. 화면에서 필요한 상위 N개 선택과 정렬은 이 값을 사용하는
+클라이언트가 담당합니다. 정상 거래이거나 점수를 계산하지 못한 경우에는
+`rule_scores`가 `null`입니다.
+
+```json
+{
+  "prediction_status": "COMPLETED",
+  "ml_is_fraud": true,
+  "fraud_probability": 0.9959,
+  "rule_scores": {
+    "VOICE_PHISHING": 0.70,
+    "FRAUD_USED_ACCOUNT": 0.20,
+    "ACCOUNT_TAKEOVER": 0.10,
+    "MESSENGER_PHISHING": 0.05,
+    "CARD_FRAUD": 0.00
+  }
+}
+```
+
+저장된 거래와 점수는 `GET /transactions/{transaction_id}`로 다시 조회할 수 있습니다.
+
 DB 로그와 종료 명령:
 
 ```bash

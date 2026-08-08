@@ -30,43 +30,15 @@ class FraudRuleSetStatus(str, Enum):
     ARCHIVED = "ARCHIVED"
 
 
-class FraudTypeClassificationStatus(str, Enum):
-    """Outcome of rule classification for an accepted transaction."""
-
-    CLASSIFIED = "CLASSIFIED"
-    UNCLASSIFIED = "UNCLASSIFIED"
-    SKIPPED = "SKIPPED"
-    FAILED = "FAILED"
-
-
 class FraudRuleSet(SQLModel, table=True):
-    """Versioned container for fraud-type classification rules."""
+    """Versioned container for fraud-type scoring rules."""
 
     __tablename__ = "fraud_rule_sets"
-    __table_args__ = (
-        CheckConstraint(
-            "minimum_score >= 0 AND minimum_score <= 1",
-            name="ck_fraud_rule_sets_minimum_score",
-        ),
-        CheckConstraint(
-            "ambiguity_margin >= 0 AND ambiguity_margin <= 1",
-            name="ck_fraud_rule_sets_ambiguity_margin",
-        ),
-    )
-
     id: int | None = Field(default=None, primary_key=True)
     version: int = Field(gt=0, unique=True, index=True)
     status: FraudRuleSetStatus = Field(
         default=FraudRuleSetStatus.DRAFT,
         sa_column=Column(String(16), nullable=False, index=True),
-    )
-    minimum_score: float = Field(
-        default=0.50,
-        sa_column=Column(Float, nullable=False),
-    )
-    ambiguity_margin: float = Field(
-        default=0.10,
-        sa_column=Column(Float, nullable=False),
     )
     created_at: datetime = Field(
         default_factory=datetime.now,
@@ -160,22 +132,14 @@ class FraudRuleComponent(SQLModel, table=True):
     )
 
 
-class FraudTypeClassificationResult(SQLModel, table=True):
-    """Persisted rule-engine explanation and method-C classification result."""
+class FraudTypeScoreResult(SQLModel, table=True):
+    """사기 거래에 대해 계산한 모든 유형별 룰 점수를 저장한다."""
 
-    __tablename__ = "fraud_type_classification_results"
+    __tablename__ = "fraud_type_score_results"
     __table_args__ = (
-        CheckConstraint(
-            "top_score IS NULL OR (top_score >= 0 AND top_score <= 1)",
-            name="ck_fraud_type_results_top_score",
-        ),
-        CheckConstraint(
-            "second_score IS NULL OR (second_score >= 0 AND second_score <= 1)",
-            name="ck_fraud_type_results_second_score",
-        ),
-        CheckConstraint(
-            "score_gap IS NULL OR (score_gap >= 0 AND score_gap <= 1)",
-            name="ck_fraud_type_results_score_gap",
+        UniqueConstraint(
+            "transaction_id",
+            name="uq_fraud_type_score_results_transaction_id",
         ),
     )
 
@@ -186,13 +150,6 @@ class FraudTypeClassificationResult(SQLModel, table=True):
         max_length=64,
         index=True,
     )
-    status: FraudTypeClassificationStatus = Field(
-        sa_column=Column(String(16), nullable=False, index=True),
-    )
-    fraud_type: str | None = Field(default=None, max_length=64, index=True)
-    top_score: float | None = Field(default=None)
-    second_score: float | None = Field(default=None)
-    score_gap: float | None = Field(default=None)
     type_scores: dict[str, float] = Field(
         default_factory=dict,
         sa_column=Column(JSON_COLUMN, nullable=False),
@@ -201,8 +158,7 @@ class FraudTypeClassificationResult(SQLModel, table=True):
         default_factory=dict,
         sa_column=Column(JSON_COLUMN, nullable=False),
     )
-    rule_set_version: int | None = Field(default=None, index=True)
-    error_message: str | None = Field(default=None, max_length=1000)
+    rule_set_version: int = Field(index=True)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
@@ -214,6 +170,5 @@ __all__ = [
     "FraudRuleComponent",
     "FraudRuleSet",
     "FraudRuleSetStatus",
-    "FraudTypeClassificationResult",
-    "FraudTypeClassificationStatus",
+    "FraudTypeScoreResult",
 ]

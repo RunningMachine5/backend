@@ -56,8 +56,6 @@ def rule_set_definition_from_database(
     return RuleSetDefinition(
         version=f"v{rule_set.version}",
         rules=tuple(definitions),
-        minimum_score=rule_set.minimum_score,
-        ambiguity_margin=rule_set.ambiguity_margin,
     )
 
 
