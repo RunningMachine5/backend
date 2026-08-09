@@ -212,7 +212,9 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 
 권장 실행 순서는 다음과 같습니다.
 
-1. `POST /mlops/datasets`로 GCS 학습 데이터셋을 불변 버전으로 등록합니다.
+1. 이미 준비된 GCS CSV는 `POST /mlops/datasets`로 등록합니다. DB 확정 라벨을
+   반영할 때는 `POST /mlops/datasets/build`로 기존 버전에서 새 불변 CSV와
+   데이터셋 버전을 함께 만듭니다.
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
    `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
 3. Training Job은 후보와 현재 champion을 같은 검증 행에서 평가하고 결과를
@@ -236,6 +238,12 @@ POST /mlops/datasets
  "row_count": 210000,
  "split_datetime": "2026-04-01 00:00:00"}
 
+POST /mlops/datasets/build
+{"base_dataset_version_id": 1,
+ "version": "generated-v2",
+ "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv",
+ "split_datetime": "2026-07-01 00:00:00"}
+
 POST /mlops/training/runs
 {"dataset_version_id": 2, "min_pr_auc": 0.75, "min_recall": 0.8}
 
@@ -258,6 +266,13 @@ API에서 지원하지 않습니다.
 아니라 데이터셋 버전에 고정됩니다. 자동 alias 변경은 금지하며 Backend는 항상
 `MLFLOW_AUTO_PROMOTE=false`로 Job을 실행합니다.
 
+`POST /mlops/datasets/build`는 `transaction_labels`의 확정 이진 라벨을 기준으로
+동작합니다. 기준 CSV에 같은 `ID`가 있으면 `Is_Fraud`를 확정값으로 교체하고, 없는
+거래는 `transactions.raw_features`의 54개 원본 Feature로 새 행을 추가합니다. 기준
+객체는 수정하지 않으며 GCS generation precondition으로 목적 객체 덮어쓰기도
+금지합니다. 새 라벨 거래가 실제 학습 구간에 들어가도록 `split_datetime`은 요청자가
+명시해야 합니다. 병합 결과의 행 수와 교체·추가 라벨 수는 API 응답에 포함됩니다.
+
 Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
 Secret Manager로 주입합니다.
 
@@ -268,6 +283,8 @@ TRAINING_RESULT_CALLBACK_TOKEN=<MLOPS_ADMIN_TOKEN과 동일한 보호 값>
 
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회, Service 조회·수정 권한과
 Serving 리비전 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한이 필요합니다.
+데이터셋 빌드 기능을 사용할 때는 기준 객체 읽기와 새 객체 생성에 필요한
+`storage.objects.get`, `storage.objects.create` 권한도 학습 데이터 버킷에 필요합니다.
 학습 Job 서비스 계정에는 GCS 학습 객체 읽기와 MLflow Secret 접근 권한이, Serving
 서비스 계정에는 MLflow Secret 접근 권한이 필요합니다. 새 리비전 생성 또는 스모크
 테스트가 실패하면 승격 API가 호출되지 않으므로 기존 추론 리비전은 계속 서비스합니다.
