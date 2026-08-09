@@ -1,0 +1,385 @@
+# 시연용 내부 대응 정책이다. 실제 운영 시 금융회사의 승인된 정책으로 교체해야 한다.
+policies:
+  - policy_id: POLICY-VOICE-PHISHING-LOW
+    fraud_type: VOICE_PHISHING
+    risk_grade: LOW
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: REVIEW_VOICE_PHISHING_EVIDENCE
+        action: 보이스피싱 적중 근거를 확인한다
+        reason: 낮은 위험도에서도 판정 근거의 유효성을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_IMPERSONATION_SIGNAL
+        label: 기관·대출 사칭 관련 적중 근거 확인
+        required: true
+
+  - policy_id: POLICY-VOICE-PHISHING-MEDIUM
+    fraud_type: VOICE_PHISHING
+    risk_grade: MEDIUM
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: VERIFY_VOICE_PHISHING_CONTEXT
+        action: 사칭 유형과 거래 정황을 확인한다
+        reason: 대응 가이드 선택에 필요한 사칭 유형 확인이 필요함
+        required: true
+      - priority: 2
+        action_code: REVIEW_RECIPIENT_ACCOUNT
+        action: 수취계좌의 이상 정황을 검토한다
+        reason: 피해금 이체 가능성을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_IMPERSONATION_SIGNAL
+        label: 기관·대출 사칭 관련 적중 근거 확인
+        required: true
+      - item_code: CHECK_RECIPIENT_RISK
+        label: 수취계좌 위험정보 확인
+        required: true
+
+  - policy_id: POLICY-VOICE-PHISHING-HIGH
+    fraud_type: VOICE_PHISHING
+    risk_grade: HIGH
+    notification_required: true
+    notification_reason: 고위험 보이스피싱 의심 거래에 대한 고객 확인이 필요함
+    actions:
+      - priority: 1
+        action_code: VERIFY_CUSTOMER_TRANSACTION
+        action: 고객에게 본인 거래 여부 확인을 권고한다
+        reason: 보이스피싱 피해 여부를 신속하게 확인해야 함
+        required: true
+      - priority: 2
+        action_code: ESCALATE_MONITORING_REVIEW
+        action: 모니터링 담당자의 우선 검토를 요청한다
+        reason: 추가 피해 가능성에 대한 신속한 검토가 필요함
+        required: true
+    checklist:
+      - item_code: CHECK_CUSTOMER_CONFIRMATION
+        label: 고객 본인 거래 여부 확인
+        required: true
+      - item_code: CHECK_ADDITIONAL_TRANSACTION
+        label: 탐지 이후 추가 거래 발생 여부 확인
+        required: true
+
+  - policy_id: POLICY-VOICE-PHISHING-VERY-HIGH
+    fraud_type: VOICE_PHISHING
+    risk_grade: VERY_HIGH
+    notification_required: true
+    notification_reason: 매우 높은 보이스피싱 위험으로 즉시 고객 확인이 필요함
+    actions:
+      - priority: 1
+        action_code: URGENT_CUSTOMER_CONFIRMATION
+        action: 고객 거래 진위의 긴급 확인을 권고한다
+        reason: 피해 확산을 막기 위한 즉시 확인이 필요함
+        required: true
+      - priority: 2
+        action_code: REQUEST_EMERGENCY_REVIEW
+        action: 긴급 모니터링 검토를 요청한다
+        reason: 고액 또는 연속 피해 가능성을 우선 확인해야 함
+        required: true
+      - priority: 3
+        action_code: GUIDE_VOICE_PHISHING_RESPONSE
+        action: 보이스피싱 피해 대응 절차 안내를 준비한다
+        reason: 고객 확인 결과에 따라 즉시 안내할 수 있어야 함
+        required: true
+    checklist:
+      - item_code: CHECK_CUSTOMER_CONFIRMATION
+        label: 고객 본인 거래 여부 확인
+        required: true
+      - item_code: CHECK_RECIPIENT_RISK
+        label: 수취계좌 위험정보 확인
+        required: true
+      - item_code: CHECK_ADDITIONAL_TRANSACTION
+        label: 탐지 이후 추가 거래 발생 여부 확인
+        required: true
+
+  - policy_id: POLICY-MESSENGER-PHISHING-LOW
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: LOW
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: REVIEW_MESSENGER_EVIDENCE
+        action: 메신저피싱 적중 근거를 확인한다
+        reason: 사칭 정황과 모바일 거래 조건을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_MESSENGER_SIGNAL
+        label: 가족·지인 사칭 관련 적중 근거 확인
+        required: true
+
+  - policy_id: POLICY-MESSENGER-PHISHING-MEDIUM
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: MEDIUM
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: VERIFY_MESSENGER_CONTEXT
+        action: 가족·지인 사칭 정황을 확인한다
+        reason: 메신저피싱 대응 가이드 선택 근거가 필요함
+        required: true
+      - priority: 2
+        action_code: REVIEW_NEW_RECIPIENT
+        action: 신규 수취계좌 여부를 검토한다
+        reason: 사칭 송금에서 새로운 수취계좌가 사용됐는지 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_MESSENGER_SIGNAL
+        label: 가족·지인 사칭 관련 적중 근거 확인
+        required: true
+      - item_code: CHECK_NEW_RECIPIENT
+        label: 신규 수취계좌 여부 확인
+        required: true
+
+  - policy_id: POLICY-MESSENGER-PHISHING-HIGH
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: HIGH
+    notification_required: true
+    notification_reason: 고위험 메신저피싱 의심 거래에 대한 고객 확인이 필요함
+    actions:
+      - priority: 1
+        action_code: VERIFY_CUSTOMER_TRANSACTION
+        action: 고객에게 본인 거래 여부 확인을 권고한다
+        reason: 가족·지인 사칭에 의한 송금 가능성을 확인해야 함
+        required: true
+      - priority: 2
+        action_code: GUIDE_SEPARATE_CONTACT_CHECK
+        action: 사칭 대상자에게 별도 연락수단으로 확인하도록 안내를 준비한다
+        reason: 기존 메신저 대화 외의 수단으로 신원을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_CUSTOMER_CONFIRMATION
+        label: 고객 본인 거래 여부 확인
+        required: true
+      - item_code: CHECK_SEPARATE_CONTACT
+        label: 사칭 대상자 별도 연락 여부 확인
+        required: true
+
+  - policy_id: POLICY-MESSENGER-PHISHING-VERY-HIGH
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: VERY_HIGH
+    notification_required: true
+    notification_reason: 매우 높은 메신저피싱 위험으로 즉시 고객 확인이 필요함
+    actions:
+      - priority: 1
+        action_code: URGENT_CUSTOMER_CONFIRMATION
+        action: 고객 거래 진위의 긴급 확인을 권고한다
+        reason: 추가 송금 전 피해 여부를 신속히 확인해야 함
+        required: true
+      - priority: 2
+        action_code: REQUEST_EMERGENCY_REVIEW
+        action: 긴급 모니터링 검토를 요청한다
+        reason: 고액 또는 반복 송금 가능성을 우선 확인해야 함
+        required: true
+      - priority: 3
+        action_code: GUIDE_MESSENGER_PHISHING_RESPONSE
+        action: 메신저피싱 피해 대응 절차 안내를 준비한다
+        reason: 고객 확인 결과에 따라 즉시 대응해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_CUSTOMER_CONFIRMATION
+        label: 고객 본인 거래 여부 확인
+        required: true
+      - item_code: CHECK_NEW_RECIPIENT
+        label: 신규 수취계좌 여부 확인
+        required: true
+      - item_code: CHECK_ADDITIONAL_TRANSACTION
+        label: 탐지 이후 추가 거래 발생 여부 확인
+        required: true
+
+  - policy_id: POLICY-ACCOUNT-TAKEOVER-LOW
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: LOW
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: REVIEW_ACCOUNT_TAKEOVER_EVIDENCE
+        action: 계정탈취 적중 근거를 확인한다
+        reason: 단말·인증 관련 이상 정황의 유효성을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_DEVICE_AUTH_SIGNAL
+        label: 단말·인증 관련 적중 근거 확인
+        required: true
+
+  - policy_id: POLICY-ACCOUNT-TAKEOVER-MEDIUM
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: MEDIUM
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: VERIFY_ACCOUNT_ACCESS_CONTEXT
+        action: 단말 및 인증 변경 정황을 확인한다
+        reason: 계정 접근 이상 원인을 확인해야 함
+        required: true
+      - priority: 2
+        action_code: REVIEW_TRANSACTION_CONTEXT
+        action: 거래 채널과 수취계좌 정황을 검토한다
+        reason: 탈취 계정을 통한 거래 가능성을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_DEVICE_AUTH_SIGNAL
+        label: 단말·인증 관련 적중 근거 확인
+        required: true
+      - item_code: CHECK_TRANSACTION_CONTEXT
+        label: 거래 채널과 수취계좌 정보 확인
+        required: true
+
+  - policy_id: POLICY-ACCOUNT-TAKEOVER-HIGH
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: HIGH
+    notification_required: true
+    notification_reason: 고위험 계정탈취 의심 거래에 대한 고객 확인이 필요함
+    actions:
+      - priority: 1
+        action_code: VERIFY_CUSTOMER_TRANSACTION
+        action: 고객에게 본인 거래 여부 확인을 권고한다
+        reason: 탈취된 계정에서 발생한 거래인지 확인해야 함
+        required: true
+      - priority: 2
+        action_code: GUIDE_SECURITY_CHECK
+        action: 악성 앱과 원격제어 앱 점검 절차 안내를 준비한다
+        reason: 추가 계정 접근과 거래를 방지해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_CUSTOMER_CONFIRMATION
+        label: 고객 본인 거래 여부 확인
+        required: true
+      - item_code: CHECK_REMOTE_CONTROL_APP
+        label: 악성 앱·원격제어 앱 설치 여부 확인
+        required: true
+
+  - policy_id: POLICY-ACCOUNT-TAKEOVER-VERY-HIGH
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: VERY_HIGH
+    notification_required: true
+    notification_reason: 매우 높은 계정탈취 위험으로 즉시 고객 확인이 필요함
+    actions:
+      - priority: 1
+        action_code: URGENT_CUSTOMER_CONFIRMATION
+        action: 고객 거래 진위의 긴급 확인을 권고한다
+        reason: 계정탈취 피해 확산을 막기 위한 즉시 확인이 필요함
+        required: true
+      - priority: 2
+        action_code: GUIDE_SECURITY_CHECK
+        action: 악성 앱·원격제어 앱 점검 절차 안내를 준비한다
+        reason: 추가 계정 접근 차단을 위한 보안 점검이 필요함
+        required: true
+      - priority: 3
+        action_code: REQUEST_EMERGENCY_REVIEW
+        action: 수취계좌와 추가 거래의 긴급 검토를 요청한다
+        reason: 연속 피해와 자금 이동 가능성을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_CUSTOMER_CONFIRMATION
+        label: 고객 본인 거래 여부 확인
+        required: true
+      - item_code: CHECK_REMOTE_CONTROL_APP
+        label: 악성 앱·원격제어 앱 설치 여부 확인
+        required: true
+      - item_code: CHECK_ADDITIONAL_TRANSACTION
+        label: 탐지 이후 추가 거래 발생 여부 확인
+        required: true
+
+  - policy_id: POLICY-FRAUD-USED-ACCOUNT-LOW
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: LOW
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: REVIEW_FRAUD_ACCOUNT_EVIDENCE
+        action: 사기이용계좌 적중 근거를 확인한다
+        reason: 자금 집결·분산 정황의 유효성을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_ACCOUNT_FLOW_SIGNAL
+        label: 자금 흐름 관련 적중 근거 확인
+        required: true
+
+  - policy_id: POLICY-FRAUD-USED-ACCOUNT-MEDIUM
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: MEDIUM
+    notification_required: false
+    notification_reason: null
+    actions:
+      - priority: 1
+        action_code: REVIEW_ACCOUNT_FLOW
+        action: 계좌의 입출금 흐름을 검토한다
+        reason: 자금 집결과 신속한 유출 정황을 확인해야 함
+        required: true
+      - priority: 2
+        action_code: REVIEW_LINKED_ACCOUNTS
+        action: 연결된 수취계좌의 위험정보를 검토한다
+        reason: 사기 자금 이동 경로 가능성을 확인해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_ACCOUNT_FLOW_SIGNAL
+        label: 자금 흐름 관련 적중 근거 확인
+        required: true
+      - item_code: CHECK_LINKED_ACCOUNT_RISK
+        label: 연결계좌 위험정보 확인
+        required: true
+
+  - policy_id: POLICY-FRAUD-USED-ACCOUNT-HIGH
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: HIGH
+    notification_required: true
+    notification_reason: 고위험 사기이용계좌 의심 거래에 대한 고객 확인이 필요함
+    actions:
+      - priority: 1
+        action_code: PRIORITY_ACCOUNT_FLOW_REVIEW
+        action: 자금 흐름과 연결계좌를 우선 검토한다
+        reason: 피해금의 추가 이동 가능성을 확인해야 함
+        required: true
+      - priority: 2
+        action_code: REQUEST_ACCOUNT_RISK_REVIEW
+        action: 계좌 위험상태에 대한 담당자 검토를 요청한다
+        reason: 사기이용계좌 여부에 대한 후속 판단이 필요함
+        required: true
+    checklist:
+      - item_code: CHECK_ACCOUNT_FLOW_SIGNAL
+        label: 자금 흐름 관련 적중 근거 확인
+        required: true
+      - item_code: CHECK_LINKED_ACCOUNT_RISK
+        label: 연결계좌 위험정보 확인
+        required: true
+
+  - policy_id: POLICY-FRAUD-USED-ACCOUNT-VERY-HIGH
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: VERY_HIGH
+    notification_required: true
+    notification_reason: 매우 높은 사기이용계좌 위험으로 즉시 검토가 필요함
+    actions:
+      - priority: 1
+        action_code: URGENT_ACCOUNT_FLOW_REVIEW
+        action: 자금 흐름과 연결계좌의 긴급 검토를 요청한다
+        reason: 피해금의 신속한 분산 가능성을 확인해야 함
+        required: true
+      - priority: 2
+        action_code: REQUEST_SUSPENSION_REVIEW
+        action: 내부 절차에 따른 계좌 제한 조치 검토를 요청한다
+        reason: 추가 자금 이동 방지 조치의 필요성을 담당자가 판단해야 함
+        required: true
+      - priority: 3
+        action_code: PRESERVE_CASE_EVIDENCE
+        action: 사건의 Rule 근거와 거래정보 보존을 권고한다
+        reason: 후속 조사와 담당자 판단에 필요한 근거를 유지해야 함
+        required: true
+    checklist:
+      - item_code: CHECK_ACCOUNT_FLOW_SIGNAL
+        label: 자금 흐름 관련 적중 근거 확인
+        required: true
+      - item_code: CHECK_LINKED_ACCOUNT_RISK
+        label: 연결계좌 위험정보 확인
+        required: true
+      - item_code: CHECK_RESTRICTION_REQUIREMENT
+        label: 계좌 제한 조치 검토 필요 여부 확인
+        required: true
