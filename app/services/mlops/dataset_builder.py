@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,6 +25,17 @@ from app.dto.ml_prediction import (
 )
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+CSV_DATETIME_COLUMNS = frozenset(
+    {
+        "Customer_registration_datetime",
+        "Account_creation_datetime",
+        "Transaction_Datetime",
+        "Last_atm_transaction_datetime",
+        "Last_bank_branch_transaction_datetime",
+        "Transaction_resumed_date",
+    }
+)
 
 
 class DatasetBuildError(RuntimeError):
@@ -169,6 +181,22 @@ class LabeledDatasetBuilder:
         return fieldnames
 
     @staticmethod
+    def _csv_feature_value(field_name: str, value: object) -> object:
+        """새 행의 날짜를 기존 학습 CSV와 동일한 형식으로 직렬화한다."""
+
+        if value is None:
+            return ""
+        if field_name not in CSV_DATETIME_COLUMNS:
+            return value
+        if not isinstance(value, datetime):
+            raise DatasetBuildError(
+                f"확정 라벨 거래의 {field_name} 값이 datetime이 아닙니다."
+            )
+        if value.tzinfo is not None:
+            value = value.astimezone(UTC).replace(tzinfo=None)
+        return value.strftime(CSV_DATETIME_FORMAT)
+
+    @staticmethod
     def _new_row(
         fieldnames: list[str],
         transaction: Transaction,
@@ -177,7 +205,7 @@ class LabeledDatasetBuilder:
         try:
             features = MLTransactionFeatures.model_validate(
                 transaction.raw_features
-            ).model_dump(mode="json", by_alias=True)
+            ).model_dump(mode="python", by_alias=True)
         except ValidationError as exc:
             raise DatasetBuildError(
                 "확정 라벨 거래의 원본 Feature가 학습 계약과 맞지 않습니다: "
@@ -185,7 +213,15 @@ class LabeledDatasetBuilder:
             ) from exc
 
         row: dict[str, object] = {name: "" for name in fieldnames}
-        row.update(features)
+        row.update(
+            {
+                field_name: LabeledDatasetBuilder._csv_feature_value(
+                    field_name,
+                    value,
+                )
+                for field_name, value in features.items()
+            }
+        )
         row.update(
             {
                 "ID": transaction.transaction_id,

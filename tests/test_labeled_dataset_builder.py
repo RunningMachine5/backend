@@ -131,6 +131,21 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertEqual(rows[1]["Customer_ID"], "C-T-NEW")
         self.assertEqual(rows[1]["Account_account_number"], "A-T-NEW")
         self.assertEqual(rows[1]["Transaction_Amount"], "3995050")
+        self.assertEqual(
+            rows[1]["Customer_registration_datetime"],
+            "2023-01-20 09:41:55",
+        )
+        self.assertEqual(
+            rows[1]["Account_creation_datetime"],
+            "2024-12-02 22:14:22",
+        )
+        self.assertEqual(
+            rows[1]["Transaction_Datetime"],
+            "2025-01-01 00:00:00",
+        )
+        self.assertEqual(rows[1]["Last_atm_transaction_datetime"], "")
+        self.assertEqual(rows[1]["Last_bank_branch_transaction_datetime"], "")
+        self.assertEqual(rows[1]["Transaction_resumed_date"], "")
 
     def test_rejects_overwriting_source_object(self) -> None:
         transaction = _transaction("T-1")
