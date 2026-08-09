@@ -827,10 +827,7 @@ def create_draft_rule_set(
     payload: FraudRuleSetDraftCreate | None = None,
 ) -> FraudRuleSetResponse:
     source: FraudRuleSet | None
-    use_default_rules = payload is not None and payload.use_default_rules
-    if use_default_rules:
-        source = None
-    elif payload is not None and payload.source_rule_set_id is not None:
+    if payload is not None and payload.source_rule_set_id is not None:
         source = _get_rule_set(session, payload.source_rule_set_id)
     else:
         source = session.exec(
@@ -848,7 +845,7 @@ def create_draft_rule_set(
     session.add(draft)
     session.flush()
 
-    if use_default_rules or source is None:
+    if source is None:
         _copy_definition_rules(session, draft, DEFAULT_RULE_SET)
     else:
         _copy_persisted_rules(session, draft, source)

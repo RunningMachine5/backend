@@ -188,36 +188,11 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(activated_second.status_code, 200, activated_second.text)
         self.assertEqual(activated_second.json()["status"], "ACTIVE")
 
-        final_defaults = self.client.post(
-            "/rule-sets/drafts",
-            headers=ADMIN_HEADERS,
-            json={"use_default_rules": True},
-        )
-        self.assertEqual(final_defaults.status_code, 201, final_defaults.text)
-        self.assertEqual(len(final_defaults.json()["rules"]), 4)
-        self.assertNotIn(
-            "CUSTOM_FRAUD",
-            {rule["type_code"] for rule in final_defaults.json()["rules"]},
-        )
-
         with Session(self.engine) as session:
             stored_first = session.get(FraudRuleSet, first["id"])
             stored_second = session.get(FraudRuleSet, second_body["id"])
             self.assertEqual(stored_first.status, FraudRuleSetStatus.ARCHIVED)
             self.assertEqual(stored_second.status, FraudRuleSetStatus.ACTIVE)
-
-    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_draft_rejects_two_rule_sources(self) -> None:
-        response = self.client.post(
-            "/rule-sets/drafts",
-            headers=ADMIN_HEADERS,
-            json={
-                "source_rule_set_id": 1,
-                "use_default_rules": True,
-            },
-        )
-
-        self.assertEqual(response.status_code, 422, response.text)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_invalid_weight_sum_cannot_be_activated(self) -> None:

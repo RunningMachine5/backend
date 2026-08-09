@@ -412,10 +412,10 @@ POST   /rule-sets/{id}/activate
 운영 흐름은 다음과 같다.
 
 ```text
-코드의 8/8 최종안을 강제로 복사하는 DRAFT 생성
-→ POST /rule-sets/drafts {"use_default_rules": true}
-→ 코드의 기본 4개 룰을 DB에 복사
-→ DRAFT의 유형·component·가중치 수정
+현재 ACTIVE를 복제한 DRAFT 생성
+→ POST /rule-sets/drafts
+→ PUT으로 유지할 4개 유형의 component·가중치를 8/8 최종안에 맞게 수정
+→ DELETE로 CARD_FRAUD 룰 제거
 → 유효성 검증
 → 실제 54개 샘플로 모든 유형 점수 확인
 → 활성화
@@ -443,8 +443,10 @@ app/services/rules
 ## 13. 주의사항과 검증 결과
 
 - 기본 룰 코드를 바꿔도 DB의 기존 ACTIVE 룰셋은 자동 변경되지 않는다.
-- 기존 ACTIVE 복제가 아닌 최종안 적용에는 `use_default_rules=true`로 DRAFT를
-  생성한 뒤 검증·테스트·활성화해야 한다.
+- 기존 DB에는 ACTIVE를 복제한 DRAFT의 룰을 관리 API로 하나씩 수정하고,
+  검증·테스트 후 활성화한다.
+- ACTIVE가 하나도 없는 새 DB에서는 코드의 8/8 최종안이 최초 룰셋으로
+  자동 생성된다.
 - 생성형 CSV를 거래 API 요청으로 바꿀 때 숫자 문자열은 숫자로, 빈 날짜는
   `null`로 변환해야 한다.
 - 관리자 프론트 UI는 아직 없고 Backend API와 DB 구조까지만 구현돼 있다.
