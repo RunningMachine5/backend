@@ -1,7 +1,7 @@
 # 사기유형 룰 점수 시스템 정리
 
 결론부터 말하면, 현재 룰 시스템은 **ML이 사기로 판정한 거래만 대상으로 DB의
-활성 룰셋을 읽고, 5개 사기유형 각각의 가중치 점수를 독립적으로 계산해 전부
+활성 룰셋을 읽고, 최종 4개 사기유형 각각의 가중치 점수를 독립적으로 계산해 전부
 저장·응답하는 구조**다.
 
 Backend는 하나의 대표 유형을 확정하지 않는다. `CLASSIFIED`, `UNCLASSIFIED`,
@@ -9,8 +9,7 @@ Backend는 하나의 대표 유형을 확정하지 않는다. `CLASSIFIED`, `UNC
 `if/elif`가 아니라 JSON으로 저장되므로 관리 API를 통해 룰·조건·가중치를
 버전별로 변경하고 활성화할 수 있다.
 
-현재 변경은 로컬 작업 상태이며 아직 `dev`에 병합·배포하지 않았다. 백엔드 전체
-테스트 69개와 PostgreSQL용 Alembic 마이그레이션 SQL 생성을 통과했다.
+최종 룰의 기준은 2026-08-08 확정안이며 카드부정사용 유형은 제거됐다.
 
 ## 1. 전체 실행 흐름
 
@@ -26,9 +25,9 @@ flowchart TD
 
     G -->|"없음 또는 계산 오류"| H["오류 로그 기록<br/>ML 결과는 COMPLETED 유지<br/>룰 점수 행 미생성"]
     G -->|"있음"| I["43개 룰 원본값 정규화"]
-    I --> J["19개 파생 신호 계산"]
+    I --> J["27개 최종 파생 신호 계산"]
     J --> K["JSON 조건식 평가"]
-    K --> L["5개 유형별 가중치 독립 합산"]
+    K --> L["4개 유형별 가중치 독립 합산"]
     L --> M["전체 유형 점수 DB 저장"]
     M --> N["rule_scores 전체 응답"]
 ```
@@ -84,7 +83,7 @@ Feature를 받는다.
 - Backend에서는 One-hot Encoding을 수행하지 않음
 - 검증한 원본값을 ML Serving과 룰 엔진에 전달
 
-룰 엔진은 이 중 43개 원본 Feature를 사용하고 19개 파생 신호를 추가로 만든다.
+룰 엔진은 이 중 43개 원본 Feature를 사용하고 27개 최종 파생 신호를 추가로 만든다.
 나머지 원본 Feature는 ML에는 전달되지만 현재 룰 점수에는 사용하지 않는다.
 
 ML·Generator의 기존 오타 필드도 호환한다.
@@ -101,15 +100,18 @@ ML 전송 호환명: Account_release_suspention
 ```text
 ML 원본 입력: 54개
 룰이 사용하는 원본: 43개
-룰 파생 신호: 19개
-최종 룰 사용 가능 Feature: 62개
+룰 파생 신호: 27개
+최종 룰 사용 가능 Feature: 70개
 ```
 
 주요 파생 신호는 다음과 같다.
 
 ```text
-authentication_changed
-→ 인증정보 변경 플래그 1~4 중 하나라도 1
+strong_auth_change
+→ 인증정보 변경 플래그 1~4 중 3개 이상이 1
+
+all_limit_actions
+→ 한도 문의·증액·해제 3종이 모두 1
 
 loan_related
 → Customer_loan_type이 b, c, d, e 중 하나
@@ -117,8 +119,14 @@ loan_related
 device_compromise_count
 → 템퍼링 + 비신뢰 인증서 + 키로깅 + 루팅·탈옥
 
+device_compromise_2plus
+→ 단말침해 신호가 2개 이상
+
 new_or_rare_recipient
 → 과거 거래 횟수 <= 1
+
+recipient_transfer
+→ 신규·희소 수취인이면서 타인계좌 이체
 
 rapid_repeat
 → 수취계좌 단시간 거래 횟수 >= 3
@@ -126,30 +134,42 @@ rapid_repeat
 amount_anomaly
 → 거래금액 > max(월간 최대 거래금액, 월간 표준편차 × 3)
 
+severe_amount_context
+→ 금액 이상이면서 잔액 소진 또는 일 한도 압박
+
+loan_escalation_context
+→ 대출 관련이면서 번호조작·한도 3종·심각 금액 맥락 중 하나 이상
+
 impossible_travel
 → 거리 >= 100이고 직전 거래 후 경과시간이 0시간 초과 2시간 이하
 
 recently_resumed
 → 휴면계좌이고 거래 재개일부터 0~30일
 
-card_context_proxy
-→ 채널이 ATM/Others이고 타인계좌 이체와 대출 관련 거래가 아님
+suspension_pair / suspension_release_only / recipient_suspended_only
+→ 본인계좌 정지해제와 수취계좌 거래중지의 동시·단독 상태
 ```
 
-`card_context_proxy`는 실제 카드 전용 컬럼이 없어 만든 시연용 대용 지표다.
-
-## 5. 기본 5개 룰과 점수 범위
+## 5. 기본 4개 룰과 점수 범위
 
 기본 룰은 `app/services/rules/defaults.py`에 있다. 이 정의는 최초 DRAFT 룰셋을
 만들 때 DB에 넣는 초기값이며, 런타임에는 DB의 ACTIVE 룰셋을 사용한다.
 
-현재 유형은 다음 5개다.
+현재 유형은 다음 4개다.
 
 - `VOICE_PHISHING`: 보이스피싱
 - `MESSENGER_PHISHING`: 메신저피싱
 - `ACCOUNT_TAKEOVER`: 계정탈취
 - `FRAUD_USED_ACCOUNT`: 사기이용계좌
-- `CARD_FRAUD`: 카드부정사용
+
+8/8 최종 가중치는 다음과 같다.
+
+| 유형 | 조건과 가중치 |
+| --- | --- |
+| 보이스피싱 | 번호조작 0.30, 대출 상승 맥락 0.25, 한도 3종 0.15, 심각 금액 맥락 0.15, 신규 수취인 타계좌·심각 금액 0.10, 원격제어 0.05 |
+| 메신저피싱 | 원격제어 0.30, 오픈뱅킹·반복이체 0.20, 강한 인증변경·원격제어 0.20, 취약 모바일·신규 수취인 타계좌 0.15, 신규 수취인 타계좌·원격제어 0.10, 반복이체 0.05 |
+| 계정탈취 | 미사용 단말·단말침해 2개 이상 0.25, 단말침해 2개 이상 0.20, 원격제어 0.15, 강한 인증변경·단말침해/원격제어 0.15, 불가능 이동 0.15, VPN/로밍·불가능 이동 0.05, 접속 실패 3회 이상 0.05 |
+| 사기이용계좌 | 정지해제·수취정지 동시 충족 0.45, 정지해제만·최근재개/고액입금 0.15, 수취정지만·최근재개/고액입금 0.15, 최근재개·고액입금 0.10, 고액입금·반복이체 0.10, 반복이체 0.05 |
 
 각 유형 내부 component 가중치의 합은 정확히 `1.0`이어야 한다. 해당 유형에서
 충족한 component의 가중치만 더하므로 **각 유형의 점수 범위는 독립적으로
@@ -160,10 +180,9 @@ card_context_proxy
 메신저피싱 점수       0.60
 계정탈취 점수          0.40
 사기이용계좌 점수      0.80
-카드부정사용 점수      0.10
 ```
 
-위 점수의 합이 `2.60`이어도 정상이다. 유형 전체를 합쳐 1로 정규화하지 않는다.
+유형별 점수의 합이 1을 넘어도 정상이다. 유형 전체를 합쳐 1로 정규화하지 않는다.
 룰 점수는 확률도 아니다.
 
 ```text
@@ -231,22 +250,21 @@ IN, BETWEEN
 예를 들어 보이스피싱에서 세 조건만 충족했다면 다음과 같다.
 
 ```text
-전화번호 조작  0.25
-대출 관련      0.20
+전화번호 조작  0.30
+대출 상승 맥락 0.25
 원격제어       0.05
 ------------------
-보이스피싱 점수 0.50
+보이스피싱 점수 0.60
 ```
 
 엔진은 모든 활성 유형에 대해 이 계산을 반복하고 결과를 전부 반환한다.
 
 ```json
 {
-  "VOICE_PHISHING": 0.50,
+  "VOICE_PHISHING": 0.60,
   "MESSENGER_PHISHING": 0.25,
   "ACCOUNT_TAKEOVER": 0.15,
-  "FRAUD_USED_ACCOUNT": 0.00,
-  "CARD_FRAUD": 0.00
+  "FRAUD_USED_ACCOUNT": 0.00
 }
 ```
 
@@ -361,8 +379,7 @@ error_message
     "VOICE_PHISHING": 0.70,
     "MESSENGER_PHISHING": 0.60,
     "ACCOUNT_TAKEOVER": 0.40,
-    "FRAUD_USED_ACCOUNT": 0.80,
-    "CARD_FRAUD": 0.10
+    "FRAUD_USED_ACCOUNT": 0.80
   }
 }
 ```
@@ -395,8 +412,9 @@ POST   /rule-sets/{id}/activate
 운영 흐름은 다음과 같다.
 
 ```text
-최초 DRAFT 생성
-→ 코드의 기본 5개 룰을 DB에 복사
+코드의 8/8 최종안을 강제로 복사하는 DRAFT 생성
+→ POST /rule-sets/drafts {"use_default_rules": true}
+→ 코드의 기본 4개 룰을 DB에 복사
 → DRAFT의 유형·component·가중치 수정
 → 유효성 검증
 → 실제 54개 샘플로 모든 유형 점수 확인
@@ -424,9 +442,9 @@ app/services/rules
 
 ## 13. 주의사항과 검증 결과
 
-- 카드부정사용 점수는 실제 카드 전용 데이터가 아닌 `card_context_proxy` 기반이다.
 - 기본 룰 코드를 바꿔도 DB의 기존 ACTIVE 룰셋은 자동 변경되지 않는다.
-- 새 룰 적용에는 DRAFT 생성·수정·검증·활성화가 필요하다.
+- 기존 ACTIVE 복제가 아닌 최종안 적용에는 `use_default_rules=true`로 DRAFT를
+  생성한 뒤 검증·테스트·활성화해야 한다.
 - 생성형 CSV를 거래 API 요청으로 바꿀 때 숫자 문자열은 숫자로, 빈 날짜는
   `null`로 변환해야 한다.
 - 관리자 프론트 UI는 아직 없고 Backend API와 DB 구조까지만 구현돼 있다.
@@ -434,10 +452,8 @@ app/services/rules
 검증 결과는 다음과 같다.
 
 ```text
-백엔드 전체 테스트: 69개 통과
-PostgreSQL Alembic upgrade SQL 생성: 통과
+백엔드 전체 단위·API 테스트 통과
 대표 유형 판정 관련 애플리케이션 참조 검색: 없음
-현재 상태: 로컬 변경, 미커밋·미배포
 ```
 
 한 문장으로 요약하면 다음과 같다.

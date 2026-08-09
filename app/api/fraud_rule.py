@@ -37,15 +37,15 @@ from app.dto.fraud_rule import (
     RuleFeatureResponse,
     expression_to_json,
 )
+from app.services.rules.defaults import DEFAULT_RULE_SET
 from app.services.rules.engine import (
     RuleEngine,
+    RuleSetDefinition,
     RuleSetValidationError,
 )
-from app.services.rules.defaults import DEFAULT_RULE_SET
 from app.services.rules.expression_evaluator import RuleExpressionError
 from app.services.rules.feature_builder import RuleFeatureError
 from app.services.rules.repository import rule_set_definition_from_database
-
 
 router = APIRouter(
     tags=["fraud-rule-admin"],
@@ -270,6 +270,29 @@ RULE_FEATURES = (
         source_fields=["Customer_Birthyear", "Transaction_Datetime"],
     ),
     _feature(
+        "authentication_change_count",
+        "인증정보 변경 개수",
+        "integer",
+        _NUMERIC_OPERATORS,
+        derived=True,
+        source_fields=[
+            f"Customer_flag_change_of_authentication_{number}"
+            for number in range(1, 5)
+        ],
+    ),
+    _feature(
+        "limit_action_count",
+        "한도 문의·증액·해제 충족 개수",
+        "integer",
+        _NUMERIC_OPERATORS,
+        derived=True,
+        source_fields=[
+            "Customer_inquery_atm_limit",
+            "Customer_increase_atm_limit",
+            "Account_indicator_release_limit_excess",
+        ],
+    ),
+    _feature(
         "device_compromise_count",
         "단말침해 신호 개수",
         "integer",
@@ -293,15 +316,45 @@ RULE_FEATURES = (
         )
         for field, display_name, source_fields in (
             (
-                "authentication_changed",
-                "인증정보 변경 기록 있음",
-                [f"Customer_flag_change_of_authentication_{number}" for number in range(1, 5)],
+                "strong_auth_change",
+                "인증정보 변경 3개 이상",
+                [
+                    f"Customer_flag_change_of_authentication_{number}"
+                    for number in range(1, 5)
+                ],
             ),
             ("loan_related", "대출 관련 여부", ["Customer_loan_type"]),
+            (
+                "all_limit_actions",
+                "한도 문의·증액·해제 3종 모두",
+                [
+                    "Customer_inquery_atm_limit",
+                    "Customer_increase_atm_limit",
+                    "Account_indicator_release_limit_excess",
+                ],
+            ),
+            (
+                "device_compromise_2plus",
+                "단말침해 신호 2개 이상",
+                [
+                    "Customer_flag_terminal_malicious_behavior_3",
+                    "Customer_flag_terminal_malicious_behavior_5",
+                    "Customer_flag_terminal_malicious_behavior_6",
+                    "Customer_rooting_jailbreak_indicator",
+                ],
+            ),
             (
                 "new_or_rare_recipient",
                 "신규·희소 수취인",
                 ["Transaction_history_with_the_account"],
+            ),
+            (
+                "recipient_transfer",
+                "신규·희소 수취인 타계좌 이체",
+                [
+                    "Transaction_history_with_the_account",
+                    "Another_Person_Account",
+                ],
             ),
             (
                 "rapid_repeat",
@@ -313,6 +366,55 @@ RULE_FEATURES = (
                 "월간 기준 금액 이상",
                 [
                     "Transaction_Amount",
+                    "Account_one_month_max_amount",
+                    "Account_one_month_std_dev",
+                ],
+            ),
+            (
+                "balance_depletion",
+                "잔액 소진",
+                [
+                    "Transaction_Amount",
+                    "Account_initial_balance",
+                    "Account_balance",
+                ],
+            ),
+            (
+                "daily_limit_pressure",
+                "일일 한도 근접",
+                [
+                    "Transaction_Amount",
+                    "Account_amount_daily_limit",
+                    "Account_remaining_amount_daily_limit_exceeded",
+                ],
+            ),
+            (
+                "severe_amount_context",
+                "이상금액과 잔액·한도 압박 동시 충족",
+                [
+                    "Transaction_Amount",
+                    "Account_initial_balance",
+                    "Account_balance",
+                    "Account_amount_daily_limit",
+                    "Account_remaining_amount_daily_limit_exceeded",
+                    "Account_one_month_max_amount",
+                    "Account_one_month_std_dev",
+                ],
+            ),
+            (
+                "loan_escalation_context",
+                "대출 상승 맥락",
+                [
+                    "Customer_loan_type",
+                    "Customer_flag_terminal_malicious_behavior_1",
+                    "Customer_inquery_atm_limit",
+                    "Customer_increase_atm_limit",
+                    "Account_indicator_release_limit_excess",
+                    "Transaction_Amount",
+                    "Account_initial_balance",
+                    "Account_balance",
+                    "Account_amount_daily_limit",
+                    "Account_remaining_amount_daily_limit_exceeded",
                     "Account_one_month_max_amount",
                     "Account_one_month_std_dev",
                 ],
@@ -332,11 +434,6 @@ RULE_FEATURES = (
                 ],
             ),
             (
-                "card_context_proxy",
-                "카드거래 맥락 대용 지표",
-                ["Channel", "Another_Person_Account", "Customer_loan_type"],
-            ),
-            (
                 "phone_number_manipulation",
                 "전화번호 조작",
                 ["Customer_flag_terminal_malicious_behavior_1"],
@@ -347,29 +444,7 @@ RULE_FEATURES = (
                 ["Customer_flag_terminal_malicious_behavior_2"],
             ),
             (
-                "limit_adjustment_detected",
-                "한도 문의·증액·해제 정황",
-                [
-                    "Customer_inquery_atm_limit",
-                    "Customer_increase_atm_limit",
-                    "Account_indicator_release_limit_excess",
-                ],
-            ),
-            (
-                "high_value_or_balance_pressure",
-                "금액 이상·잔액 소진·일 한도 근접",
-                [
-                    "Transaction_Amount",
-                    "Account_initial_balance",
-                    "Account_balance",
-                    "Account_amount_daily_limit",
-                    "Account_remaining_amount_daily_limit_exceeded",
-                    "Account_one_month_max_amount",
-                    "Account_one_month_std_dev",
-                ],
-            ),
-            (
-                "vulnerable_mobile_environment",
+                "vulnerable_mobile",
                 "고령자 모바일·취약 iOS 환경",
                 [
                     "Customer_Birthyear",
@@ -377,14 +452,6 @@ RULE_FEATURES = (
                     "Channel",
                     "Operating_System",
                     "First_time_iOS_by_vulnerable_user",
-                ],
-            ),
-            (
-                "new_recipient_transfer",
-                "신규·희소 수취인 타계좌 이체",
-                [
-                    "Transaction_history_with_the_account",
-                    "Another_Person_Account",
                 ],
             ),
             (
@@ -396,6 +463,30 @@ RULE_FEATURES = (
                 "recipient_account_suspended",
                 "수취계좌 거래중지",
                 ["Recipient_account_suspend_status"],
+            ),
+            (
+                "suspension_pair",
+                "정지해제·수취정지 동시 충족",
+                [
+                    "Account_release_suspension",
+                    "Recipient_account_suspend_status",
+                ],
+            ),
+            (
+                "suspension_release_only",
+                "정지해제만 충족",
+                [
+                    "Account_release_suspension",
+                    "Recipient_account_suspend_status",
+                ],
+            ),
+            (
+                "recipient_suspended_only",
+                "수취정지만 충족",
+                [
+                    "Account_release_suspension",
+                    "Recipient_account_suspend_status",
+                ],
             ),
             (
                 "vpn_or_roaming",
@@ -736,7 +827,10 @@ def create_draft_rule_set(
     payload: FraudRuleSetDraftCreate | None = None,
 ) -> FraudRuleSetResponse:
     source: FraudRuleSet | None
-    if payload is not None and payload.source_rule_set_id is not None:
+    use_default_rules = payload is not None and payload.use_default_rules
+    if use_default_rules:
+        source = None
+    elif payload is not None and payload.source_rule_set_id is not None:
         source = _get_rule_set(session, payload.source_rule_set_id)
     else:
         source = session.exec(
@@ -754,7 +848,7 @@ def create_draft_rule_set(
     session.add(draft)
     session.flush()
 
-    if source is None:
+    if use_default_rules or source is None:
         _copy_definition_rules(session, draft, DEFAULT_RULE_SET)
     else:
         _copy_persisted_rules(session, draft, source)

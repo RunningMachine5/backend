@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from app.services.rules.feature_builder import RULE_CONTEXT_FIELDS
+from app.services.rules.feature_builder import RULE_EVALUATION_FIELDS
 
 
 class RuleExpressionError(ValueError):
@@ -28,7 +28,7 @@ class RuleExpressionEvaluator:
     def __init__(
         self,
         *,
-        allowed_fields: frozenset[str] = RULE_CONTEXT_FIELDS,
+        allowed_fields: frozenset[str] = RULE_EVALUATION_FIELDS,
         max_depth: int = 8,
         max_group_size: int = 32,
     ) -> None:

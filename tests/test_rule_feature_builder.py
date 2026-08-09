@@ -4,6 +4,7 @@ from app.services.rules.feature_builder import (
     ACCOUNT_RELEASE_FIELD,
     LEGACY_ACCOUNT_RELEASE_FIELD,
     RULE_CONTEXT_FIELDS,
+    RULE_EVALUATION_FIELDS,
     RuleFeatureBuilder,
     RuleFeatureError,
 )
@@ -76,12 +77,16 @@ class RuleFeatureBuilderTest(unittest.TestCase):
                 "Customer_Birthyear": 1960,
                 "Customer_loan_type": "b",
                 "Customer_inquery_atm_limit": 1,
+                "Customer_increase_atm_limit": 1,
+                "Account_indicator_release_limit_excess": 1,
                 "Customer_flag_terminal_malicious_behavior_1": 1,
                 "Customer_flag_terminal_malicious_behavior_2": 1,
                 "Customer_flag_terminal_malicious_behavior_3": 1,
                 "Customer_flag_terminal_malicious_behavior_5": 1,
                 "Customer_flag_terminal_malicious_behavior_6": 1,
+                "Customer_flag_change_of_authentication_1": 1,
                 "Customer_flag_change_of_authentication_2": 1,
+                "Customer_flag_change_of_authentication_3": 1,
                 "Customer_VPN_Indicator": 1,
                 "Channel": "mobile",
                 "Operating_System": "Android",
@@ -102,34 +107,51 @@ class RuleFeatureBuilderTest(unittest.TestCase):
 
         context = self.builder.build(raw_data)
 
-        self.assertEqual(set(context), set(RULE_CONTEXT_FIELDS))
+        self.assertEqual(set(context), set(RULE_EVALUATION_FIELDS))
         self.assertEqual(context["transaction_age"], 66)
-        self.assertTrue(context["authentication_changed"])
+        self.assertEqual(context["authentication_change_count"], 3)
+        self.assertTrue(context["strong_auth_change"])
         self.assertTrue(context["loan_related"])
+        self.assertEqual(context["limit_action_count"], 3)
+        self.assertTrue(context["all_limit_actions"])
         self.assertEqual(context["device_compromise_count"], 3)
+        self.assertTrue(context["device_compromise_2plus"])
         self.assertTrue(context["new_or_rare_recipient"])
+        self.assertTrue(context["recipient_transfer"])
         self.assertTrue(context["rapid_repeat"])
         self.assertTrue(context["amount_anomaly"])
+        self.assertTrue(context["balance_depletion"])
+        self.assertTrue(context["daily_limit_pressure"])
+        self.assertTrue(context["severe_amount_context"])
+        self.assertTrue(context["loan_escalation_context"])
         self.assertTrue(context["impossible_travel"])
         self.assertTrue(context["recently_resumed"])
-        self.assertFalse(context["card_context_proxy"])
-        self.assertTrue(context["limit_adjustment_detected"])
-        self.assertTrue(context["high_value_or_balance_pressure"])
-        self.assertTrue(context["vulnerable_mobile_environment"])
-        self.assertTrue(context["new_recipient_transfer"])
+        self.assertTrue(context["vulnerable_mobile"])
+        self.assertTrue(context["suspension_pair"])
+        self.assertFalse(context["suspension_release_only"])
+        self.assertFalse(context["recipient_suspended_only"])
         self.assertTrue(context["vpn_or_roaming"])
 
-    def test_card_context_proxy_requires_channel_own_account_and_no_loan(self) -> None:
+    def test_legacy_card_signal_is_not_available_to_new_rules(self) -> None:
         raw_data = valid_rule_raw_data()
         raw_data["Channel"] = "ATM"
 
-        self.assertTrue(self.builder.build(raw_data)["card_context_proxy"])
+        context = self.builder.build(raw_data)
 
-        raw_data["Another_Person_Account"] = 1
-        self.assertFalse(self.builder.build(raw_data)["card_context_proxy"])
-        raw_data["Another_Person_Account"] = 0
-        raw_data["Customer_loan_type"] = "b"
-        self.assertFalse(self.builder.build(raw_data)["card_context_proxy"])
+        self.assertTrue(context["card_context_proxy"])
+        self.assertNotIn("card_context_proxy", RULE_CONTEXT_FIELDS)
+
+    def test_severe_amount_requires_anomaly_and_additional_pressure(self) -> None:
+        raw_data = valid_rule_raw_data()
+        raw_data["Transaction_Amount"] = 9_000_000
+        raw_data["Account_one_month_max_amount"] = 10_000_000
+
+        context = self.builder.build(raw_data)
+
+        self.assertTrue(context["balance_depletion"])
+        self.assertTrue(context["daily_limit_pressure"])
+        self.assertFalse(context["amount_anomaly"])
+        self.assertFalse(context["severe_amount_context"])
 
     def test_impossible_travel_uses_inclusive_distance_and_two_hour_boundary(self) -> None:
         raw_data = valid_rule_raw_data()

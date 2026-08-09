@@ -19,17 +19,12 @@ def _and(*conditions: dict[str, Any]) -> dict[str, Any]:
     return {"operator": "AND", "conditions": list(conditions)}
 
 
-def _card_context(condition: dict[str, Any]) -> dict[str, Any]:
-    """카드 대용 맥락이 아니면 카드부정사용 점수가 항상 0이 되게 한다."""
-
-    return _and(
-        _condition("card_context_proxy", "EQ", True),
-        condition,
-    )
+def _or(*conditions: dict[str, Any]) -> dict[str, Any]:
+    return {"operator": "OR", "conditions": list(conditions)}
 
 
 DEFAULT_RULE_SET = RuleSetDefinition(
-    version="v1",
+    version="2026-08-08-final",
     rules=(
         FraudRuleDefinition(
             type_code="VOICE_PHISHING",
@@ -43,51 +38,44 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                         "EQ",
                         True,
                     ),
+                    weight=0.30,
+                ),
+                RuleComponentDefinition(
+                    component_key="loan_escalation_context",
+                    name="대출 상승 맥락",
+                    condition_expression=_condition(
+                        "loan_escalation_context",
+                        "EQ",
+                        True,
+                    ),
                     weight=0.25,
                 ),
                 RuleComponentDefinition(
-                    component_key="loan_related",
-                    name="대출 관련",
-                    condition_expression=_condition("loan_related", "EQ", True),
-                    weight=0.20,
-                ),
-                RuleComponentDefinition(
-                    component_key="limit_adjustment_detected",
-                    name="한도 문의·증액·해제",
+                    component_key="all_limit_actions",
+                    name="한도 문의·증액·해제 3종 모두",
                     condition_expression=_condition(
-                        "limit_adjustment_detected",
+                        "all_limit_actions",
                         "EQ",
                         True,
                     ),
                     weight=0.15,
                 ),
                 RuleComponentDefinition(
-                    component_key="high_value_or_balance_pressure",
-                    name="금액 이상·잔액 소진·일 한도 근접",
+                    component_key="severe_amount_context",
+                    name="이상금액과 잔액·한도 압박 동시 충족",
                     condition_expression=_condition(
-                        "high_value_or_balance_pressure",
+                        "severe_amount_context",
                         "EQ",
                         True,
                     ),
                     weight=0.15,
                 ),
                 RuleComponentDefinition(
-                    component_key="new_or_rare_recipient",
-                    name="신규·희소 수취인",
-                    condition_expression=_condition(
-                        "new_or_rare_recipient",
-                        "EQ",
-                        True,
-                    ),
-                    weight=0.10,
-                ),
-                RuleComponentDefinition(
-                    component_key="another_person_account",
-                    name="타계좌 이체",
-                    condition_expression=_condition(
-                        "Another_Person_Account",
-                        "EQ",
-                        1,
+                    component_key="recipient_transfer_with_severe_amount",
+                    name="신규 수취인 타계좌 이체와 심각 금액 맥락",
+                    condition_expression=_and(
+                        _condition("recipient_transfer", "EQ", True),
+                        _condition("severe_amount_context", "EQ", True),
                     ),
                     weight=0.10,
                 ),
@@ -107,53 +95,53 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     component_key="remote_control",
                     name="원격제어",
                     condition_expression=_condition("remote_control", "EQ", True),
-                    weight=0.25,
+                    weight=0.30,
                 ),
                 RuleComponentDefinition(
-                    component_key="open_banking_used",
-                    name="오픈뱅킹 사용",
-                    condition_expression=_condition(
-                        "Account_indicator_Openbanking",
-                        "EQ",
-                        1,
+                    component_key="open_banking_with_rapid_repeat",
+                    name="오픈뱅킹과 반복이체 동시 충족",
+                    condition_expression=_and(
+                        _condition(
+                            "Account_indicator_Openbanking",
+                            "EQ",
+                            1,
+                        ),
+                        _condition("rapid_repeat", "EQ", True),
                     ),
                     weight=0.20,
                 ),
                 RuleComponentDefinition(
-                    component_key="authentication_changed",
-                    name="최근 인증정보 변경",
-                    condition_expression=_condition(
-                        "authentication_changed",
-                        "EQ",
-                        True,
+                    component_key="strong_auth_change_with_remote_control",
+                    name="강한 인증변경과 원격제어 동시 충족",
+                    condition_expression=_and(
+                        _condition("strong_auth_change", "EQ", True),
+                        _condition("remote_control", "EQ", True),
+                    ),
+                    weight=0.20,
+                ),
+                RuleComponentDefinition(
+                    component_key="vulnerable_mobile_recipient_transfer",
+                    name="취약 모바일과 신규 수취인 타계좌 이체",
+                    condition_expression=_and(
+                        _condition("vulnerable_mobile", "EQ", True),
+                        _condition("recipient_transfer", "EQ", True),
                     ),
                     weight=0.15,
                 ),
                 RuleComponentDefinition(
-                    component_key="vulnerable_mobile_environment",
-                    name="고령자 모바일·취약 iOS 환경",
-                    condition_expression=_condition(
-                        "vulnerable_mobile_environment",
-                        "EQ",
-                        True,
+                    component_key="recipient_transfer_with_remote_control",
+                    name="신규 수취인 타계좌 이체와 원격제어",
+                    condition_expression=_and(
+                        _condition("recipient_transfer", "EQ", True),
+                        _condition("remote_control", "EQ", True),
                     ),
-                    weight=0.15,
-                ),
-                RuleComponentDefinition(
-                    component_key="new_recipient_transfer",
-                    name="신규·희소 수취인 타계좌 이체",
-                    condition_expression=_condition(
-                        "new_recipient_transfer",
-                        "EQ",
-                        True,
-                    ),
-                    weight=0.15,
+                    weight=0.10,
                 ),
                 RuleComponentDefinition(
                     component_key="rapid_repeat",
                     name="단시간 반복 이체",
                     condition_expression=_condition("rapid_repeat", "EQ", True),
-                    weight=0.10,
+                    weight=0.05,
                 ),
             ),
         ),
@@ -162,22 +150,21 @@ DEFAULT_RULE_SET = RuleSetDefinition(
             display_name="계정탈취",
             components=(
                 RuleComponentDefinition(
-                    component_key="unused_terminal",
-                    name="미사용 단말",
-                    condition_expression=_condition(
-                        "Unused_terminal_status",
-                        "EQ",
-                        1,
+                    component_key="unused_terminal_with_device_compromise",
+                    name="미사용 단말과 단말침해 2개 이상",
+                    condition_expression=_and(
+                        _condition("Unused_terminal_status", "EQ", 1),
+                        _condition("device_compromise_2plus", "EQ", True),
                     ),
-                    weight=0.20,
+                    weight=0.25,
                 ),
                 RuleComponentDefinition(
-                    component_key="device_compromise_count",
+                    component_key="device_compromise_2plus",
                     name="단말침해 신호 2개 이상",
                     condition_expression=_condition(
-                        "device_compromise_count",
-                        "GTE",
-                        2,
+                        "device_compromise_2plus",
+                        "EQ",
+                        True,
                     ),
                     weight=0.20,
                 ),
@@ -188,12 +175,18 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     weight=0.15,
                 ),
                 RuleComponentDefinition(
-                    component_key="authentication_changed",
-                    name="최근 인증정보 변경",
-                    condition_expression=_condition(
-                        "authentication_changed",
-                        "EQ",
-                        True,
+                    component_key="strong_auth_change_with_compromise",
+                    name="강한 인증변경과 단말침해·원격제어",
+                    condition_expression=_and(
+                        _condition("strong_auth_change", "EQ", True),
+                        _or(
+                            _condition(
+                                "device_compromise_2plus",
+                                "EQ",
+                                True,
+                            ),
+                            _condition("remote_control", "EQ", True),
+                        ),
                     ),
                     weight=0.15,
                 ),
@@ -208,14 +201,13 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     weight=0.15,
                 ),
                 RuleComponentDefinition(
-                    component_key="vpn_or_roaming",
-                    name="VPN 또는 로밍",
-                    condition_expression=_condition(
-                        "vpn_or_roaming",
-                        "EQ",
-                        True,
+                    component_key="vpn_or_roaming_with_impossible_travel",
+                    name="VPN·로밍과 불가능 이동 동시 충족",
+                    condition_expression=_and(
+                        _condition("vpn_or_roaming", "EQ", True),
+                        _condition("impossible_travel", "EQ", True),
                     ),
-                    weight=0.10,
+                    weight=0.05,
                 ),
                 RuleComponentDefinition(
                     component_key="connection_failures",
@@ -236,49 +228,68 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                 RuleComponentDefinition(
                     component_key="both_accounts_restricted",
                     name="정지해제·거래중지 동시 충족",
+                    condition_expression=_condition(
+                        "suspension_pair",
+                        "EQ",
+                        True,
+                    ),
+                    weight=0.45,
+                ),
+                RuleComponentDefinition(
+                    component_key="suspension_release_only_with_context",
+                    name="정지해제만 충족하고 최근재개·고액입금",
                     condition_expression=_and(
-                        _condition("account_suspension_released", "EQ", True),
-                        _condition("recipient_account_suspended", "EQ", True),
+                        _condition("suspension_release_only", "EQ", True),
+                        _or(
+                            _condition("recently_resumed", "EQ", True),
+                            _condition(
+                                "Flag_deposit_more_than_tenMillion",
+                                "EQ",
+                                1,
+                            ),
+                        ),
                     ),
-                    weight=0.35,
+                    weight=0.15,
                 ),
                 RuleComponentDefinition(
-                    component_key="account_suspension_released",
-                    name="본인계좌 최근 정지해제",
-                    condition_expression=_condition(
-                        "account_suspension_released",
-                        "EQ",
-                        True,
+                    component_key="recipient_suspended_only_with_context",
+                    name="수취정지만 충족하고 최근재개·고액입금",
+                    condition_expression=_and(
+                        _condition("recipient_suspended_only", "EQ", True),
+                        _or(
+                            _condition("recently_resumed", "EQ", True),
+                            _condition(
+                                "Flag_deposit_more_than_tenMillion",
+                                "EQ",
+                                1,
+                            ),
+                        ),
                     ),
-                    weight=0.20,
+                    weight=0.15,
                 ),
                 RuleComponentDefinition(
-                    component_key="recipient_account_suspended",
-                    name="수취계좌 거래중지",
-                    condition_expression=_condition(
-                        "recipient_account_suspended",
-                        "EQ",
-                        True,
-                    ),
-                    weight=0.20,
-                ),
-                RuleComponentDefinition(
-                    component_key="recently_resumed",
-                    name="휴면계좌의 최근 거래 재개",
-                    condition_expression=_condition(
-                        "recently_resumed",
-                        "EQ",
-                        True,
+                    component_key="recently_resumed_with_large_deposit",
+                    name="최근재개와 고액입금 동시 충족",
+                    condition_expression=_and(
+                        _condition("recently_resumed", "EQ", True),
+                        _condition(
+                            "Flag_deposit_more_than_tenMillion",
+                            "EQ",
+                            1,
+                        ),
                     ),
                     weight=0.10,
                 ),
                 RuleComponentDefinition(
-                    component_key="large_recent_deposit",
-                    name="최근 7일 1천만원 이상 입금",
-                    condition_expression=_condition(
-                        "Flag_deposit_more_than_tenMillion",
-                        "EQ",
-                        1,
+                    component_key="large_deposit_with_rapid_repeat",
+                    name="고액입금과 반복이체 동시 충족",
+                    condition_expression=_and(
+                        _condition(
+                            "Flag_deposit_more_than_tenMillion",
+                            "EQ",
+                            1,
+                        ),
+                        _condition("rapid_repeat", "EQ", True),
                     ),
                     weight=0.10,
                 ),
@@ -286,70 +297,6 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     component_key="rapid_repeat",
                     name="단시간 반복 이체",
                     condition_expression=_condition("rapid_repeat", "EQ", True),
-                    weight=0.05,
-                ),
-            ),
-        ),
-        FraudRuleDefinition(
-            type_code="CARD_FRAUD",
-            display_name="카드부정사용",
-            components=(
-                RuleComponentDefinition(
-                    component_key="card_context_proxy",
-                    name="카드거래 맥락 대용 지표",
-                    condition_expression=_condition(
-                        "card_context_proxy",
-                        "EQ",
-                        True,
-                    ),
-                    weight=0.25,
-                ),
-                RuleComponentDefinition(
-                    component_key="unused_terminal",
-                    name="미사용 단말",
-                    condition_expression=_card_context(
-                        _condition("Unused_terminal_status", "EQ", 1)
-                    ),
-                    weight=0.20,
-                ),
-                RuleComponentDefinition(
-                    component_key="impossible_travel",
-                    name="불가능 이동",
-                    condition_expression=_card_context(
-                        _condition("impossible_travel", "EQ", True)
-                    ),
-                    weight=0.20,
-                ),
-                RuleComponentDefinition(
-                    component_key="rapid_repeat",
-                    name="단시간 반복 거래",
-                    condition_expression=_card_context(
-                        _condition("rapid_repeat", "EQ", True)
-                    ),
-                    weight=0.15,
-                ),
-                RuleComponentDefinition(
-                    component_key="new_or_rare_recipient",
-                    name="신규·희소 수취인",
-                    condition_expression=_card_context(
-                        _condition("new_or_rare_recipient", "EQ", True)
-                    ),
-                    weight=0.10,
-                ),
-                RuleComponentDefinition(
-                    component_key="general_transaction",
-                    name="일반거래",
-                    condition_expression=_card_context(
-                        _condition("Type_General_Automatic", "EQ", "general")
-                    ),
-                    weight=0.05,
-                ),
-                RuleComponentDefinition(
-                    component_key="vpn_or_roaming",
-                    name="VPN 또는 로밍",
-                    condition_expression=_card_context(
-                        _condition("vpn_or_roaming", "EQ", True)
-                    ),
                     weight=0.05,
                 ),
             ),

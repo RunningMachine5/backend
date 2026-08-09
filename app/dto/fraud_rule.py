@@ -206,6 +206,15 @@ class FraudRuleSetDraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_rule_set_id: int | None = Field(default=None, gt=0)
+    use_default_rules: bool = False
+
+    @model_validator(mode="after")
+    def select_only_one_source(self) -> Self:
+        if self.use_default_rules and self.source_rule_set_id is not None:
+            raise ValueError(
+                "source_rule_set_id와 use_default_rules는 함께 지정할 수 없습니다."
+            )
+        return self
 
 
 class FraudRuleValidationIssue(BaseModel):
@@ -244,6 +253,7 @@ def expression_to_json(expression: RuleExpression) -> dict[str, Any]:
 
 
 __all__ = [
+    "GROUP_OPERATORS",
     "FraudRuleComponentCreate",
     "FraudRuleComponentResponse",
     "FraudRuleComponentUpdate",
@@ -258,7 +268,6 @@ __all__ = [
     "FraudRuleUpdate",
     "FraudRuleValidationIssue",
     "FraudRuleValidationResponse",
-    "GROUP_OPERATORS",
     "RuleExpression",
     "RuleExpressionOperator",
     "RuleFeatureResponse",

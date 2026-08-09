@@ -65,27 +65,49 @@ RULE_RAW_FEATURES = (
 
 RULE_DERIVED_FEATURES = (
     "transaction_age",
-    "authentication_changed",
+    "authentication_change_count",
+    "strong_auth_change",
     "loan_related",
+    "limit_action_count",
+    "all_limit_actions",
     "device_compromise_count",
+    "device_compromise_2plus",
     "new_or_rare_recipient",
+    "recipient_transfer",
     "rapid_repeat",
     "amount_anomaly",
+    "balance_depletion",
+    "daily_limit_pressure",
+    "severe_amount_context",
+    "loan_escalation_context",
     "impossible_travel",
     "recently_resumed",
-    "card_context_proxy",
     "phone_number_manipulation",
     "remote_control",
-    "limit_adjustment_detected",
-    "high_value_or_balance_pressure",
-    "vulnerable_mobile_environment",
-    "new_recipient_transfer",
+    "vulnerable_mobile",
     "account_suspension_released",
     "recipient_account_suspended",
+    "suspension_pair",
+    "suspension_release_only",
+    "recipient_suspended_only",
     "vpn_or_roaming",
 )
 
 RULE_CONTEXT_FIELDS = frozenset((*RULE_RAW_FEATURES, *RULE_DERIVED_FEATURES))
+
+# 배포 직후 DB의 이전 ACTIVE 룰셋을 새 최종 룰셋으로 교체할 때까지 평가가
+# 중단되지 않도록 내부 엔진에서만 유지한다. 신규 룰 관리 API에는 노출하지 않는다.
+LEGACY_RULE_DERIVED_FEATURES = (
+    "authentication_changed",
+    "card_context_proxy",
+    "high_value_or_balance_pressure",
+    "limit_adjustment_detected",
+    "new_recipient_transfer",
+    "vulnerable_mobile_environment",
+)
+RULE_EVALUATION_FIELDS = frozenset(
+    (*RULE_CONTEXT_FIELDS, *LEGACY_RULE_DERIVED_FEATURES)
+)
 
 _BINARY_FIELDS = (
     "Customer_inquery_atm_limit",
@@ -233,11 +255,20 @@ class RuleFeatureBuilder:
         )
 
         age = transaction_datetime.year - birthyear
-        authentication_changed = any(
+        authentication_change_count = sum(
             normalized[f"Customer_flag_change_of_authentication_{number}"] == 1
             for number in range(1, 5)
         )
+        strong_auth_change = authentication_change_count >= 3
         loan_related = loan_type in {"b", "c", "d", "e"}
+        limit_action_count = sum(
+            (
+                normalized["Customer_inquery_atm_limit"] == 1,
+                normalized["Customer_increase_atm_limit"] == 1,
+                normalized["Account_indicator_release_limit_excess"] == 1,
+            )
+        )
+        all_limit_actions = limit_action_count == 3
         device_compromise_count = sum(
             (
                 normalized["Customer_flag_terminal_malicious_behavior_3"] == 1,
@@ -246,8 +277,13 @@ class RuleFeatureBuilder:
                 normalized["Customer_rooting_jailbreak_indicator"] == 1,
             )
         )
+        device_compromise_2plus = device_compromise_count >= 2
         new_or_rare_recipient = (
             normalized["Transaction_history_with_the_account"] <= 1
+        )
+        recipient_transfer = (
+            new_or_rare_recipient
+            and normalized["Another_Person_Account"] == 1
         )
         rapid_repeat = normalized["Number_of_transaction_with_the_account"] >= 3
 
@@ -258,15 +294,24 @@ class RuleFeatureBuilder:
             monthly_max,
             3 * max(monthly_std, 1),
         )
-        high_value_or_balance_pressure = (
-            amount_anomaly
-            or transaction_amount
+        balance_depletion = (
+            transaction_amount
             >= 0.8 * max(abs(normalized["Account_initial_balance"]), 1)
             or normalized["Account_balance"] < 0
-            or transaction_amount
+        )
+        daily_limit_pressure = (
+            transaction_amount
             >= 0.8 * max(normalized["Account_amount_daily_limit"], 1)
             or normalized["Account_remaining_amount_daily_limit_exceeded"]
             <= 0.1 * max(normalized["Account_amount_daily_limit"], 1)
+        )
+        severe_amount_context = amount_anomaly and (
+            balance_depletion or daily_limit_pressure
+        )
+        loan_escalation_context = loan_related and (
+            normalized["Customer_flag_terminal_malicious_behavior_1"] == 1
+            or all_limit_actions
+            or severe_amount_context
         )
         impossible_travel = (
             normalized["Distance"] >= 100
@@ -286,51 +331,69 @@ class RuleFeatureBuilder:
             channel.lower() == "mobile"
             or operating_system.lower() in {"android", "ios"}
         )
-        vulnerable_mobile_environment = (
+        vulnerable_mobile = (
             age >= 60 and mobile_environment
         ) or normalized["First_time_iOS_by_vulnerable_user"] == 1
         account_suspension_released = normalized[ACCOUNT_RELEASE_FIELD] == 1
         recipient_account_suspended = (
             normalized["Recipient_account_suspend_status"] == 1
         )
+        suspension_pair = (
+            account_suspension_released and recipient_account_suspended
+        )
+        suspension_release_only = (
+            account_suspension_released and not recipient_account_suspended
+        )
+        recipient_suspended_only = (
+            recipient_account_suspended and not account_suspension_released
+        )
+        vpn_or_roaming = (
+            normalized["Customer_VPN_Indicator"] == 1
+            or normalized["Customer_mobile_roaming_indicator"] == 1
+        )
 
         return {
             **normalized,
             "transaction_age": age,
-            "authentication_changed": authentication_changed,
+            "authentication_change_count": authentication_change_count,
+            "strong_auth_change": strong_auth_change,
             "loan_related": loan_related,
+            "limit_action_count": limit_action_count,
+            "all_limit_actions": all_limit_actions,
             "device_compromise_count": device_compromise_count,
+            "device_compromise_2plus": device_compromise_2plus,
             "new_or_rare_recipient": new_or_rare_recipient,
+            "recipient_transfer": recipient_transfer,
             "rapid_repeat": rapid_repeat,
             "amount_anomaly": amount_anomaly,
+            "balance_depletion": balance_depletion,
+            "daily_limit_pressure": daily_limit_pressure,
+            "severe_amount_context": severe_amount_context,
+            "loan_escalation_context": loan_escalation_context,
             "impossible_travel": impossible_travel,
             "recently_resumed": recently_resumed,
-            "card_context_proxy": card_context_proxy,
             "phone_number_manipulation": (
                 normalized["Customer_flag_terminal_malicious_behavior_1"] == 1
             ),
             "remote_control": (
                 normalized["Customer_flag_terminal_malicious_behavior_2"] == 1
             ),
-            "limit_adjustment_detected": any(
-                (
-                    normalized["Customer_inquery_atm_limit"] == 1,
-                    normalized["Customer_increase_atm_limit"] == 1,
-                    normalized["Account_indicator_release_limit_excess"] == 1,
-                )
-            ),
-            "high_value_or_balance_pressure": high_value_or_balance_pressure,
-            "vulnerable_mobile_environment": vulnerable_mobile_environment,
-            "new_recipient_transfer": (
-                new_or_rare_recipient
-                and normalized["Another_Person_Account"] == 1
-            ),
+            "vulnerable_mobile": vulnerable_mobile,
             "account_suspension_released": account_suspension_released,
             "recipient_account_suspended": recipient_account_suspended,
-            "vpn_or_roaming": (
-                normalized["Customer_VPN_Indicator"] == 1
-                or normalized["Customer_mobile_roaming_indicator"] == 1
+            "suspension_pair": suspension_pair,
+            "suspension_release_only": suspension_release_only,
+            "recipient_suspended_only": recipient_suspended_only,
+            "vpn_or_roaming": vpn_or_roaming,
+            # 이전 ACTIVE 룰셋 평가 전용 호환 신호
+            "authentication_changed": authentication_change_count >= 1,
+            "card_context_proxy": card_context_proxy,
+            "high_value_or_balance_pressure": (
+                amount_anomaly or balance_depletion or daily_limit_pressure
             ),
+            "limit_adjustment_detected": limit_action_count >= 1,
+            "new_recipient_transfer": recipient_transfer,
+            "vulnerable_mobile_environment": vulnerable_mobile,
         }
 
     def _normalize_raw_features(
@@ -481,8 +544,10 @@ class RuleFeatureBuilder:
 __all__ = [
     "ACCOUNT_RELEASE_FIELD",
     "LEGACY_ACCOUNT_RELEASE_FIELD",
+    "LEGACY_RULE_DERIVED_FEATURES",
     "RULE_CONTEXT_FIELDS",
     "RULE_DERIVED_FEATURES",
+    "RULE_EVALUATION_FIELDS",
     "RULE_RAW_FEATURES",
     "TIME_DIFFERENCE_FIELD",
     "RuleFeatureBuilder",

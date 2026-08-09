@@ -17,8 +17,7 @@ from app.data.model.fraud_rule import (
 )
 from app.services.rules.feature_builder import RULE_CONTEXT_FIELDS
 from main import app
-from tests.ml_feature_fixture import valid_ml_raw_data
-
+from tests.test_rule_feature_builder import valid_rule_raw_data
 
 ADMIN_HEADERS = {"X-MLOps-Admin-Token": "admin-secret"}
 
@@ -52,14 +51,14 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_first_draft_bootstraps_five_default_rules_and_validates(self) -> None:
+    def test_first_draft_bootstraps_four_default_rules_and_validates(self) -> None:
         response = self.client.post("/rule-sets/drafts", headers=ADMIN_HEADERS)
 
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
         self.assertEqual(body["version"], 1)
         self.assertEqual(body["status"], "DRAFT")
-        self.assertEqual(len(body["rules"]), 5)
+        self.assertEqual(len(body["rules"]), 4)
         self.assertEqual(
             {rule["type_code"] for rule in body["rules"]},
             {
@@ -67,7 +66,6 @@ class FraudRuleApiTest(unittest.TestCase):
                 "MESSENGER_PHISHING",
                 "ACCOUNT_TAKEOVER",
                 "FRAUD_USED_ACCOUNT",
-                "CARD_FRAUD",
             },
         )
 
@@ -88,9 +86,12 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertIn("Account_release_suspension", fields)
         self.assertNotIn("Account_release_suspention", fields)
         self.assertIn("transaction_age", fields)
+        self.assertIn("strong_auth_change", fields)
+        self.assertIn("all_limit_actions", fields)
+        self.assertIn("severe_amount_context", fields)
         self.assertIn("amount_anomaly", fields)
         self.assertIn("impossible_travel", fields)
-        self.assertIn("card_context_proxy", fields)
+        self.assertNotIn("card_context_proxy", fields)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_rule_set_test_returns_all_default_rule_scores(self) -> None:
@@ -99,9 +100,19 @@ class FraudRuleApiTest(unittest.TestCase):
             headers=ADMIN_HEADERS,
         ).json()
 
-        raw_data = valid_ml_raw_data()
-        raw_data["Account_release_suspension"] = raw_data.pop(
-            "Account_release_suspention"
+        raw_data = valid_rule_raw_data()
+        raw_data.update(
+            {
+                "Customer_flag_terminal_malicious_behavior_1": 1,
+                "Customer_flag_terminal_malicious_behavior_2": 1,
+                "Customer_loan_type": "b",
+                "Customer_inquery_atm_limit": 1,
+                "Customer_increase_atm_limit": 1,
+                "Account_indicator_release_limit_excess": 1,
+                "Transaction_Amount": 9_000_000,
+                "Transaction_history_with_the_account": 1,
+                "Another_Person_Account": 1,
+            }
         )
         response = self.client.post(
             f"/rule-sets/{draft['id']}/test",
@@ -111,11 +122,11 @@ class FraudRuleApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(len(body["type_scores"]), 5)
+        self.assertEqual(len(body["type_scores"]), 4)
         score_by_type = {
             item["type_code"]: item["score"] for item in body["type_scores"]
         }
-        self.assertAlmostEqual(score_by_type["VOICE_PHISHING"], 0.70)
+        self.assertAlmostEqual(score_by_type["VOICE_PHISHING"], 1.0)
         self.assertNotIn("status", body)
         self.assertNotIn("fraud_type", body)
 
@@ -146,7 +157,7 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(second.status_code, 201, second.text)
         second_body = second.json()
         self.assertEqual(second_body["version"], 2)
-        self.assertEqual(len(second_body["rules"]), 5)
+        self.assertEqual(len(second_body["rules"]), 4)
 
         added = self.client.post(
             f"/rule-sets/{second_body['id']}/rules",
@@ -177,11 +188,36 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(activated_second.status_code, 200, activated_second.text)
         self.assertEqual(activated_second.json()["status"], "ACTIVE")
 
+        final_defaults = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+            json={"use_default_rules": True},
+        )
+        self.assertEqual(final_defaults.status_code, 201, final_defaults.text)
+        self.assertEqual(len(final_defaults.json()["rules"]), 4)
+        self.assertNotIn(
+            "CUSTOM_FRAUD",
+            {rule["type_code"] for rule in final_defaults.json()["rules"]},
+        )
+
         with Session(self.engine) as session:
             stored_first = session.get(FraudRuleSet, first["id"])
             stored_second = session.get(FraudRuleSet, second_body["id"])
             self.assertEqual(stored_first.status, FraudRuleSetStatus.ARCHIVED)
             self.assertEqual(stored_second.status, FraudRuleSetStatus.ACTIVE)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_draft_rejects_two_rule_sources(self) -> None:
+        response = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+            json={
+                "source_rule_set_id": 1,
+                "use_default_rules": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_invalid_weight_sum_cannot_be_activated(self) -> None:
@@ -245,7 +281,7 @@ class FraudRuleApiTest(unittest.TestCase):
             remaining = session.exec(
                 select(FraudRule).where(FraudRule.rule_set_id == draft["id"])
             ).all()
-            self.assertEqual(len(remaining), 4)
+            self.assertEqual(len(remaining), 3)
 
 
 if __name__ == "__main__":
