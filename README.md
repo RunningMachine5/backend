@@ -103,8 +103,7 @@ Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 �
     "VOICE_PHISHING": 0.70,
     "FRAUD_USED_ACCOUNT": 0.20,
     "ACCOUNT_TAKEOVER": 0.10,
-    "MESSENGER_PHISHING": 0.05,
-    "CARD_FRAUD": 0.00
+    "MESSENGER_PHISHING": 0.05
   }
 }
 ```
@@ -312,7 +311,7 @@ POST /transactions
   -> 고객·출금계좌·수취계좌·거래 원본 저장
   -> ML Serving /predict 호출
   -> 모델 예측·확률·SHAP·모델 버전 저장
-  -> 사기 예측이면 활성 룰셋으로 5개 유형 점수 계산·저장
+  -> 사기 예측이면 활성 룰셋으로 최종 4개 유형 점수 계산·저장
   -> 거래와 최신 ML·룰 결과 응답
 
 Agent / 고객 질문 스켈레톤

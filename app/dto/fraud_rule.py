@@ -244,6 +244,7 @@ def expression_to_json(expression: RuleExpression) -> dict[str, Any]:
 
 
 __all__ = [
+    "GROUP_OPERATORS",
     "FraudRuleComponentCreate",
     "FraudRuleComponentResponse",
     "FraudRuleComponentUpdate",
@@ -258,7 +259,6 @@ __all__ = [
     "FraudRuleUpdate",
     "FraudRuleValidationIssue",
     "FraudRuleValidationResponse",
-    "GROUP_OPERATORS",
     "RuleExpression",
     "RuleExpressionOperator",
     "RuleFeatureResponse",

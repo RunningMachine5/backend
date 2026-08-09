@@ -346,8 +346,8 @@ class TransactionApiTest(unittest.TestCase):
         self.assertEqual(transaction.status_code, 201, transaction.text)
         body = transaction.json()
         self.assertEqual(body["prediction_status"], "COMPLETED")
-        self.assertEqual(len(body["rule_scores"]), 5)
-        self.assertAlmostEqual(body["rule_scores"]["VOICE_PHISHING"], 0.70)
+        self.assertEqual(len(body["rule_scores"]), 4)
+        self.assertAlmostEqual(body["rule_scores"]["VOICE_PHISHING"], 0.0)
 
         with Session(self.engine) as session:
             score_result = session.exec(
@@ -362,11 +362,10 @@ class TransactionApiTest(unittest.TestCase):
                 "MESSENGER_PHISHING",
                 "ACCOUNT_TAKEOVER",
                 "FRAUD_USED_ACCOUNT",
-                "CARD_FRAUD",
             })
-            self.assertIn(
-                "loan_related",
+            self.assertEqual(
                 score_result.matched_components["VOICE_PHISHING"],
+                [],
             )
 
         detail = self.client.get("/transactions/TX_RULE_SCORED_001")

@@ -10,13 +10,11 @@ from app.services.rules.engine import (
 )
 from tests.test_rule_feature_builder import valid_rule_raw_data
 
-
 FINAL_TYPE_CODES = {
     "VOICE_PHISHING",
     "MESSENGER_PHISHING",
     "ACCOUNT_TAKEOVER",
     "FRAUD_USED_ACCOUNT",
-    "CARD_FRAUD",
 }
 
 
@@ -24,14 +22,58 @@ class RuleEngineTest(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = RuleEngine()
 
-    def test_default_rule_set_contains_final_five_fraud_types(self) -> None:
+    def test_default_rule_set_contains_final_four_fraud_types(self) -> None:
         self.engine.validate_rule_set(DEFAULT_RULE_SET)
 
-        self.assertEqual(len(DEFAULT_RULE_SET.rules), 5)
+        self.assertEqual(len(DEFAULT_RULE_SET.rules), 4)
         self.assertEqual(
             {rule.type_code for rule in DEFAULT_RULE_SET.rules},
             FINAL_TYPE_CODES,
         )
+
+        expected_weights = {
+            "VOICE_PHISHING": {
+                "phone_number_manipulation": 0.30,
+                "loan_escalation_context": 0.25,
+                "all_limit_actions": 0.15,
+                "severe_amount_context": 0.15,
+                "recipient_transfer_with_severe_amount": 0.10,
+                "remote_control": 0.05,
+            },
+            "MESSENGER_PHISHING": {
+                "remote_control": 0.30,
+                "open_banking_with_rapid_repeat": 0.20,
+                "strong_auth_change_with_remote_control": 0.20,
+                "vulnerable_mobile_recipient_transfer": 0.15,
+                "recipient_transfer_with_remote_control": 0.10,
+                "rapid_repeat": 0.05,
+            },
+            "ACCOUNT_TAKEOVER": {
+                "unused_terminal_with_device_compromise": 0.25,
+                "device_compromise_2plus": 0.20,
+                "remote_control": 0.15,
+                "strong_auth_change_with_compromise": 0.15,
+                "impossible_travel": 0.15,
+                "vpn_or_roaming_with_impossible_travel": 0.05,
+                "connection_failures": 0.05,
+            },
+            "FRAUD_USED_ACCOUNT": {
+                "both_accounts_restricted": 0.45,
+                "suspension_release_only_with_context": 0.15,
+                "recipient_suspended_only_with_context": 0.15,
+                "recently_resumed_with_large_deposit": 0.10,
+                "large_deposit_with_rapid_repeat": 0.10,
+                "rapid_repeat": 0.05,
+            },
+        }
+        actual_weights = {
+            rule.type_code: {
+                component.component_key: component.weight
+                for component in rule.components
+            }
+            for rule in DEFAULT_RULE_SET.rules
+        }
+        self.assertEqual(actual_weights, expected_weights)
 
     def test_voice_phishing_uses_final_weighted_signals(self) -> None:
         raw_data = valid_rule_raw_data()
@@ -40,6 +82,8 @@ class RuleEngineTest(unittest.TestCase):
                 "Customer_flag_terminal_malicious_behavior_1": 1,
                 "Customer_loan_type": "b",
                 "Customer_inquery_atm_limit": 1,
+                "Customer_increase_atm_limit": 1,
+                "Account_indicator_release_limit_excess": 1,
                 "Transaction_Amount": 9_000_000,
                 "Transaction_history_with_the_account": 1,
                 "Another_Person_Account": 1,
@@ -54,15 +98,33 @@ class RuleEngineTest(unittest.TestCase):
             set(result.matched_components["VOICE_PHISHING"]),
             {
                 "phone_number_manipulation",
-                "loan_related",
-                "limit_adjustment_detected",
-                "high_value_or_balance_pressure",
-                "new_or_rare_recipient",
-                "another_person_account",
+                "loan_escalation_context",
+                "all_limit_actions",
+                "severe_amount_context",
+                "recipient_transfer_with_severe_amount",
                 "remote_control",
             },
         )
         self.assertEqual(set(result.type_scores), FINAL_TYPE_CODES)
+
+    def test_voice_phishing_rejects_former_single_signal_scores(self) -> None:
+        raw_data = valid_rule_raw_data()
+        raw_data.update(
+            {
+                "Customer_loan_type": "b",
+                "Customer_inquery_atm_limit": 1,
+                "Transaction_Amount": 301,
+                "Account_one_month_max_amount": 300,
+                "Account_one_month_std_dev": 100,
+                "Transaction_history_with_the_account": 1,
+                "Another_Person_Account": 1,
+            }
+        )
+
+        result = self.engine.score(raw_data)
+
+        self.assertEqual(result.type_scores["VOICE_PHISHING"], 0.0)
+        self.assertEqual(result.matched_components["VOICE_PHISHING"], [])
 
     def test_messenger_phishing_uses_final_weighted_signals(self) -> None:
         raw_data = valid_rule_raw_data()
@@ -74,6 +136,8 @@ class RuleEngineTest(unittest.TestCase):
                 "Customer_flag_terminal_malicious_behavior_2": 1,
                 "Account_indicator_Openbanking": 1,
                 "Customer_flag_change_of_authentication_1": 1,
+                "Customer_flag_change_of_authentication_2": 1,
+                "Customer_flag_change_of_authentication_3": 1,
                 "Transaction_history_with_the_account": 1,
                 "Another_Person_Account": 1,
                 "Number_of_transaction_with_the_account": 3,
@@ -85,6 +149,24 @@ class RuleEngineTest(unittest.TestCase):
         self.assertEqual(result.type_scores["MESSENGER_PHISHING"], 1.0)
         self.assertEqual(len(result.matched_components["MESSENGER_PHISHING"]), 6)
 
+    def test_messenger_phishing_requires_combined_context(self) -> None:
+        raw_data = valid_rule_raw_data()
+        raw_data.update(
+            {
+                "Customer_Birthyear": 1960,
+                "Channel": "mobile",
+                "Account_indicator_Openbanking": 1,
+                "Customer_flag_change_of_authentication_1": 1,
+                "Customer_flag_change_of_authentication_2": 1,
+                "Customer_flag_change_of_authentication_3": 1,
+            }
+        )
+
+        result = self.engine.score(raw_data)
+
+        self.assertEqual(result.type_scores["MESSENGER_PHISHING"], 0.0)
+        self.assertEqual(result.matched_components["MESSENGER_PHISHING"], [])
+
     def test_account_takeover_uses_final_weighted_signals(self) -> None:
         raw_data = valid_rule_raw_data()
         raw_data.update(
@@ -93,7 +175,9 @@ class RuleEngineTest(unittest.TestCase):
                 "Customer_flag_terminal_malicious_behavior_3": 1,
                 "Customer_flag_terminal_malicious_behavior_5": 1,
                 "Customer_flag_terminal_malicious_behavior_2": 1,
+                "Customer_flag_change_of_authentication_1": 1,
                 "Customer_flag_change_of_authentication_2": 1,
+                "Customer_flag_change_of_authentication_3": 1,
                 "Distance": 100,
                 "Time Difference": "0 days 02:00:00",
                 "Customer_VPN_Indicator": 1,
@@ -105,6 +189,23 @@ class RuleEngineTest(unittest.TestCase):
 
         self.assertEqual(result.type_scores["ACCOUNT_TAKEOVER"], 1.0)
         self.assertEqual(len(result.matched_components["ACCOUNT_TAKEOVER"]), 7)
+
+    def test_account_takeover_requires_compromise_and_travel_context(self) -> None:
+        raw_data = valid_rule_raw_data()
+        raw_data.update(
+            {
+                "Unused_terminal_status": 1,
+                "Customer_flag_change_of_authentication_1": 1,
+                "Customer_flag_change_of_authentication_2": 1,
+                "Customer_flag_change_of_authentication_3": 1,
+                "Customer_VPN_Indicator": 1,
+            }
+        )
+
+        result = self.engine.score(raw_data)
+
+        self.assertEqual(result.type_scores["ACCOUNT_TAKEOVER"], 0.0)
+        self.assertEqual(result.matched_components["ACCOUNT_TAKEOVER"], [])
 
     def test_fraud_used_account_uses_final_weighted_signals(self) -> None:
         raw_data = valid_rule_raw_data()
@@ -121,35 +222,16 @@ class RuleEngineTest(unittest.TestCase):
 
         result = self.engine.score(raw_data)
 
-        self.assertEqual(result.type_scores["FRAUD_USED_ACCOUNT"], 1.0)
-        self.assertEqual(len(result.matched_components["FRAUD_USED_ACCOUNT"]), 6)
-
-    def test_card_fraud_uses_proxy_gate_and_final_weighted_signals(self) -> None:
-        raw_data = valid_rule_raw_data()
-        raw_data.update(
+        self.assertEqual(result.type_scores["FRAUD_USED_ACCOUNT"], 0.70)
+        self.assertEqual(
+            set(result.matched_components["FRAUD_USED_ACCOUNT"]),
             {
-                "Channel": "ATM",
-                "Another_Person_Account": 0,
-                "Customer_loan_type": "a",
-                "Unused_terminal_status": 1,
-                "Distance": 100,
-                "Time Difference": "0 days 02:00:00",
-                "Number_of_transaction_with_the_account": 3,
-                "Transaction_history_with_the_account": 1,
-                "Type_General_Automatic": "general",
-                "Customer_mobile_roaming_indicator": 1,
-            }
+                "both_accounts_restricted",
+                "recently_resumed_with_large_deposit",
+                "large_deposit_with_rapid_repeat",
+                "rapid_repeat",
+            },
         )
-
-        result = self.engine.score(raw_data)
-
-        self.assertEqual(result.type_scores["CARD_FRAUD"], 1.0)
-        self.assertEqual(len(result.matched_components["CARD_FRAUD"]), 7)
-
-        raw_data["Channel"] = "internet"
-        gated = self.engine.score(raw_data)
-        self.assertEqual(gated.type_scores["CARD_FRAUD"], 0.0)
-        self.assertEqual(gated.matched_components["CARD_FRAUD"], [])
 
     def test_returns_every_type_even_when_all_scores_are_zero(self) -> None:
         result = self.engine.score(valid_rule_raw_data())
@@ -162,9 +244,11 @@ class RuleEngineTest(unittest.TestCase):
         raw_data.update(
             {
                 "Customer_flag_terminal_malicious_behavior_2": 1,
+                "Customer_flag_terminal_malicious_behavior_3": 1,
+                "Customer_flag_terminal_malicious_behavior_5": 1,
                 "Customer_flag_change_of_authentication_1": 1,
-                "Number_of_transaction_with_the_account": 3,
-                "Unused_terminal_status": 1,
+                "Customer_flag_change_of_authentication_2": 1,
+                "Customer_flag_change_of_authentication_3": 1,
             }
         )
 
