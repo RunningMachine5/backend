@@ -22,6 +22,11 @@ from app.services.mlops.cloud_run import (
     CloudRunAdminClientDep,
     CloudRunAdminError,
 )
+from app.services.mlops.dataset_builder import (
+    DatasetBuildError,
+    DatasetStorageError,
+    LabeledDatasetBuilderDep,
+)
 
 
 def require_mlops_admin(
@@ -90,6 +95,38 @@ class DatasetVersionRequest(BaseModel):
     @classmethod
     def validate_split_datetime(cls, value: datetime | None) -> datetime | None:
         if value is not None and value.tzinfo is not None:
+            raise ValueError("split_datetime에는 시간대를 포함할 수 없습니다.")
+        return value
+
+
+class LabeledDatasetBuildRequest(BaseModel):
+    """기존 불변 CSV에 DB 확정 라벨을 반영할 새 데이터셋 계약."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    base_dataset_version_id: int = Field(gt=0)
+    version: str = Field(min_length=1, max_length=64)
+    gcs_uri: str = Field(min_length=1, max_length=2048)
+    split_datetime: datetime
+
+    @field_validator("gcs_uri")
+    @classmethod
+    def validate_gcs_uri(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "gs"
+            or not parsed.netloc
+            or parsed.path in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("학습 데이터 URI는 gs://bucket/object 형식이어야 합니다.")
+        return value
+
+    @field_validator("split_datetime")
+    @classmethod
+    def validate_split_datetime(cls, value: datetime) -> datetime:
+        if value.tzinfo is not None:
             raise ValueError("split_datetime에는 시간대를 포함할 수 없습니다.")
         return value
 
@@ -232,6 +269,71 @@ def list_dataset_versions(session: SessionDep) -> list[dict[str, Any]]:
         select(DatasetVersion).order_by(DatasetVersion.created_at.desc())
     ).all()
     return [_dataset_payload(dataset) for dataset in datasets]
+
+
+@router.post("/datasets/build", status_code=status.HTTP_201_CREATED)
+def build_labeled_dataset_version(
+    payload: LabeledDatasetBuildRequest,
+    builder: LabeledDatasetBuilderDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """기존 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
+
+    base_dataset = session.get(
+        DatasetVersion,
+        payload.base_dataset_version_id,
+    )
+    if base_dataset is None:
+        raise HTTPException(
+            status_code=404,
+            detail="기준 학습 데이터셋 버전을 찾을 수 없습니다.",
+        )
+    existing_version = session.exec(
+        select(DatasetVersion).where(DatasetVersion.version == payload.version)
+    ).first()
+    if existing_version is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="이미 존재하는 데이터셋 버전입니다.",
+        )
+
+    try:
+        result = builder.build(
+            session,
+            source_uri=base_dataset.gcs_uri,
+            destination_uri=payload.gcs_uri,
+        )
+    except DatasetStorageError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except DatasetBuildError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    dataset = DatasetVersion(
+        version=payload.version,
+        gcs_uri=payload.gcs_uri,
+        row_count=result.output_row_count,
+        split_datetime=payload.split_datetime,
+    )
+    session.add(dataset)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="이미 존재하는 데이터셋 버전입니다.",
+        ) from exc
+    session.refresh(dataset)
+    return {
+        **_dataset_payload(dataset),
+        "base_dataset_version_id": base_dataset.id,
+        "build": {
+            "source_row_count": result.source_row_count,
+            "confirmed_label_count": result.confirmed_label_count,
+            "replaced_label_count": result.replaced_label_count,
+            "appended_label_count": result.appended_label_count,
+        },
+    }
 
 
 @router.post(

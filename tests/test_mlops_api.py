@@ -11,6 +11,10 @@ from sqlmodel import Session, create_engine, select
 from app.core.db import get_session
 from app.data.model.mlops import DatasetVersion, TrainingRun
 from app.services.mlops.cloud_run import get_cloud_run_admin_client
+from app.services.mlops.dataset_builder import (
+    DatasetBuildResult,
+    get_labeled_dataset_builder,
+)
 from main import app
 from tests.ml_feature_fixture import valid_ml_raw_data
 
@@ -30,8 +34,12 @@ class MLOpsApiTest(unittest.TestCase):
                 yield session
 
         self.admin = Mock()
+        self.dataset_builder = Mock()
         app.dependency_overrides[get_session] = override_session
         app.dependency_overrides[get_cloud_run_admin_client] = lambda: self.admin
+        app.dependency_overrides[get_labeled_dataset_builder] = (
+            lambda: self.dataset_builder
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -209,6 +217,57 @@ class MLOpsApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
         self.admin.run_training.assert_not_called()
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_build_labeled_dataset_registers_immutable_version(self) -> None:
+        base_dataset_id = self.create_dataset()
+        self.dataset_builder.build.return_value = DatasetBuildResult(
+            source_row_count=200000,
+            output_row_count=200120,
+            confirmed_label_count=150,
+            replaced_label_count=30,
+            appended_label_count=120,
+        )
+
+        response = self.client.post(
+            "/mlops/datasets/build",
+            headers={"X-MLOps-Admin-Token": "admin-secret"},
+            json={
+                "base_dataset_version_id": base_dataset_id,
+                "version": "generated-v2",
+                "gcs_uri": "gs://bucket/generated/v2/transactions.csv",
+                "split_datetime": "2026-07-01T00:00:00",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["version"], "generated-v2")
+        self.assertEqual(body["row_count"], 200120)
+        self.assertEqual(body["base_dataset_version_id"], base_dataset_id)
+        self.assertEqual(body["build"]["replaced_label_count"], 30)
+        self.assertEqual(body["build"]["appended_label_count"], 120)
+        call = self.dataset_builder.build.call_args
+        self.assertEqual(
+            call.kwargs["source_uri"],
+            "gs://bucket/generated/v1/transactions.csv",
+        )
+        self.assertEqual(
+            call.kwargs["destination_uri"],
+            "gs://bucket/generated/v2/transactions.csv",
+        )
+
+        with Session(self.engine) as session:
+            dataset = session.exec(
+                select(DatasetVersion).where(
+                    DatasetVersion.version == "generated-v2"
+                )
+            ).one()
+            self.assertEqual(dataset.row_count, 200120)
+            self.assertEqual(
+                dataset.split_datetime.isoformat(),
+                "2026-07-01T00:00:00",
+            )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_candidate_result_requires_admin_approval_before_staging(self) -> None:
