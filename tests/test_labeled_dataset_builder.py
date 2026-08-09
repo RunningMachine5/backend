@@ -178,6 +178,33 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
                 destination_uri="gs://bucket/generated/v2/transactions.csv",
             )
 
+    def test_rejects_labeled_transaction_with_invalid_location(self) -> None:
+        transaction = _transaction("T-BAD-LOCATION")
+        transaction.raw_features = {
+            **transaction.raw_features,
+            "Location": "깨진 위치",
+        }
+        self.session.add_all(
+            [
+                transaction,
+                TransactionLabel(
+                    transaction_id=transaction.transaction_id,
+                    confirmed_is_fraud=True,
+                ),
+            ]
+        )
+        self.session.commit()
+
+        source_uri = "gs://bucket/generated/v1/transactions.csv"
+        storage = FakeObjectStorage({source_uri: _csv_bytes([])})
+
+        with self.assertRaisesRegex(DatasetBuildError, "T-BAD-LOCATION"):
+            LabeledDatasetBuilder(storage).build(
+                self.session,
+                source_uri=source_uri,
+                destination_uri="gs://bucket/generated/v2/transactions.csv",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

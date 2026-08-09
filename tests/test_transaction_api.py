@@ -388,6 +388,17 @@ class TransactionApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("Location", response.text)
 
+    def test_create_transaction_rejects_location_outside_ml_contract(self) -> None:
+        row = valid_transaction_row("TX_INVALID_LOCATION")
+        row["Location"] = "깨진 위치"
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("Location", response.text)
+        with Session(self.engine) as session:
+            self.assertEqual(session.exec(select(Transaction)).all(), [])
+
     def test_create_transaction_rejects_obsolete_or_unknown_feature(self) -> None:
         raw_data = valid_ml_raw_data()
         raw_data["Transaction_Failure_Status"] = 0
