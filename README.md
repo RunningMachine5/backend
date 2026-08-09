@@ -110,6 +110,20 @@ Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 �
 ```
 
 저장된 거래와 점수는 `GET /transactions/{transaction_id}`로 다시 조회할 수 있습니다.
+담당자가 거래의 사기 여부를 확정하면 다음 API로 재학습용 이진 라벨을 저장합니다.
+
+```bash
+curl -X PUT http://localhost:8000/transactions/TX-001/label \
+  -H "Content-Type: application/json" \
+  -d '{"confirmed_is_fraud":true}'
+```
+
+라벨이 없으면 `transaction_labels`에 생성하고, 기존 값과 다르면 확정값과
+`labeled_at`을 갱신합니다. 같은 값을 반복 요청하면 기존 행과 확정 시각을 유지합니다.
+거래가 없으면 `404`를 반환합니다. `POST /transactions`, `GET /transactions`,
+`GET /transactions/{transaction_id}` 응답에서도 `confirmed_is_fraud`와 `labeled_at`을
+확인할 수 있습니다. 사기 유형 확정값은 Agent 검토 영역에서 별도로 관리하며, 이
+테이블에는 ML 이진 재학습에 필요한 정답만 저장합니다.
 
 DB 로그와 종료 명령:
 

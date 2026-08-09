@@ -2,12 +2,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import AliasChoices, ConfigDict, model_validator
+from pydantic import AliasChoices, ConfigDict, StrictBool, model_validator
 from sqlmodel import Field, SQLModel
 
 from app.dto.ml_prediction import (
-    MLTransactionFeatures,
     RAW_TRANSACTION_FEATURE_COLUMNS,
+    MLTransactionFeatures,
 )
 
 
@@ -107,6 +107,7 @@ class TransactionCreateDTO(SQLModel):
         remaining["raw_features"] = raw_features
         return remaining
 
+
 class TransactionResponseDTO(SQLModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
 
@@ -129,6 +130,24 @@ class TransactionResponseDTO(SQLModel):
     created_at: datetime
     rule_scores: dict[str, float] | None = None
     rule_set_id: int | None = None
+    confirmed_is_fraud: bool | None = None
+    labeled_at: datetime | None = None
+
+
+class TransactionLabelUpdateDTO(SQLModel):
+    """담당자가 확정한 거래의 이진 정답 라벨."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_is_fraud: StrictBool
+
+
+class TransactionLabelResponseDTO(SQLModel):
+    """저장된 거래 정답 라벨 응답."""
+
+    transaction_id: str
+    confirmed_is_fraud: bool
+    labeled_at: datetime
 
 
 @dataclass(frozen=True)
@@ -157,7 +176,9 @@ class TransactionFeaturesDTO:
 
 __all__ = [
     "TransactionCreateDTO",
-    "TransactionResponseDTO",
     "TransactionDTO",
     "TransactionFeaturesDTO",
+    "TransactionLabelResponseDTO",
+    "TransactionLabelUpdateDTO",
+    "TransactionResponseDTO",
 ]
