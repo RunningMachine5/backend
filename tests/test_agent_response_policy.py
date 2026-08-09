@@ -197,13 +197,13 @@ class ResponsePolicyValidationTest(PolicyFileTestCase):
                 "    risk_grade: VERY_HIGH",
                 "    risk_grade: VERY_HIGH\n    unexpected: value",
             ),
-            "알 수 없는 필드",
+            "대응 정책 값이 올바르지 않다",
         )
 
     def test_boolean_must_not_be_integer(self) -> None:
         self.assert_invalid(
             VALID_POLICY.replace("notification_required: true", "notification_required: 1"),
-            "true 또는 false",
+            "대응 정책 값이 올바르지 않다",
         )
 
 
