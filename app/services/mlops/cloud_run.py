@@ -198,16 +198,16 @@ class CloudRunAdminClient:
         min_pr_auc: float,
         min_recall: float,
         dataset_uri: str | None = None,
-        transactions_uri: str | None = None,
         split_datetime: str | None = None,
+        training_run_id: int | None = None,
+        champion_model_version: str | None = None,
     ) -> dict[str, Any]:
         """기존 Cloud Run Job을 환경변수 override와 함께 한 번 실행한다."""
 
-        if transactions_uri and not dataset_uri:
+        if auto_promote:
             raise CloudRunAdminError(
-                "TRAINING_TRANSACTIONS_URI는 TRAINING_DATA_URI와 함께 지정해야 합니다."
+                "자동 모델 승격은 비활성화되어 있으며 관리자 승인이 필요합니다."
             )
-
         env = [
             {"name": "TRAINING_MODE", "value": "train"},
             {
@@ -221,16 +221,22 @@ class CloudRunAdminClient:
         ]
         if dataset_uri:
             env.append({"name": "TRAINING_DATA_URI", "value": dataset_uri})
-        if transactions_uri:
-            env.append(
-                {
-                    "name": "TRAINING_TRANSACTIONS_URI",
-                    "value": transactions_uri,
-                }
-            )
         if split_datetime:
             env.append(
                 {"name": "TRAINING_SPLIT_DATETIME", "value": split_datetime}
+            )
+        if training_run_id is not None:
+            env.append(
+                {"name": "BACKEND_TRAINING_RUN_ID", "value": str(training_run_id)}
+            )
+        if champion_model_version is not None:
+            if not champion_model_version.isdigit():
+                raise CloudRunAdminError("champion model version은 숫자여야 합니다.")
+            env.append(
+                {
+                    "name": "CHAMPION_MODEL_VERSION",
+                    "value": champion_model_version,
+                }
             )
 
         container_override: dict[str, Any] = {"env": env}

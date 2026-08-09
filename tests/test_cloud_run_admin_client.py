@@ -74,12 +74,13 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client()
 
         result = client.run_training(
-            auto_promote=True,
+            auto_promote=False,
             min_pr_auc=0.75,
             min_recall=0.8,
-            dataset_uri="gs://bucket/train.csv",
-            transactions_uri="gs://bucket/transactions.csv",
+            dataset_uri="gs://bucket/transactions.csv",
             split_datetime="2026-04-01 00:00:00",
+            training_run_id=12,
+            champion_model_version="1",
         )
 
         self.assertTrue(result["name"].endswith("/train-op"))
@@ -89,16 +90,30 @@ class CloudRunAdminClientTest(unittest.TestCase):
         env = call.kwargs["json"]["overrides"]["containerOverrides"][0]["env"]
         env_by_name = {item["name"]: item["value"] for item in env}
         self.assertEqual(env_by_name["TRAINING_MODE"], "train")
-        self.assertEqual(env_by_name["TRAINING_DATA_URI"], "gs://bucket/train.csv")
         self.assertEqual(
-            env_by_name["TRAINING_TRANSACTIONS_URI"],
+            env_by_name["TRAINING_DATA_URI"],
             "gs://bucket/transactions.csv",
         )
         self.assertEqual(
             env_by_name["TRAINING_SPLIT_DATETIME"],
             "2026-04-01 00:00:00",
         )
-        self.assertEqual(env_by_name["MLFLOW_AUTO_PROMOTE"], "true")
+        self.assertEqual(env_by_name["MLFLOW_AUTO_PROMOTE"], "false")
+        self.assertEqual(env_by_name["BACKEND_TRAINING_RUN_ID"], "12")
+        self.assertEqual(env_by_name["CHAMPION_MODEL_VERSION"], "1")
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_rejects_automatic_promotion(self, request: Mock) -> None:
+        client = self.make_client()
+
+        with self.assertRaisesRegex(CloudRunAdminError, "관리자 승인"):
+            client.run_training(
+                auto_promote=True,
+                min_pr_auc=0.0,
+                min_recall=0.0,
+            )
+
+        request.assert_not_called()
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_run_training_omits_optional_dataset_overrides(self, request: Mock) -> None:
@@ -118,7 +133,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         ]
         env_names = {item["name"] for item in env}
         self.assertNotIn("TRAINING_DATA_URI", env_names)
-        self.assertNotIn("TRAINING_TRANSACTIONS_URI", env_names)
         self.assertNotIn("TRAINING_SPLIT_DATETIME", env_names)
 
     @patch("app.services.mlops.cloud_run.httpx.request")
@@ -146,24 +160,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
             env_by_name["TRAINING_DATA_URI"],
             "gs://bucket/transactions.csv",
         )
-        self.assertNotIn("TRAINING_TRANSACTIONS_URI", env_by_name)
-
-    @patch("app.services.mlops.cloud_run.httpx.request")
-    def test_run_training_rejects_companion_without_dataset(
-        self,
-        request: Mock,
-    ) -> None:
-        client = self.make_client()
-
-        with self.assertRaisesRegex(CloudRunAdminError, "함께 지정"):
-            client.run_training(
-                auto_promote=False,
-                min_pr_auc=0.0,
-                min_recall=0.0,
-                transactions_uri="gs://bucket/transactions.csv",
-            )
-
-        request.assert_not_called()
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_create_revision_pins_current_traffic_and_preserves_secret_env(

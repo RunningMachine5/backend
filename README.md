@@ -212,42 +212,59 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 
 권장 실행 순서는 다음과 같습니다.
 
-1. `POST /mlops/training/runs`로 Cloud Run Training Job을 시작합니다.
-2. 응답의 `operation_id`를 `GET /mlops/operations/{id}`로 조회하고,
-   `GET /mlops/training/status`에서 최신 Execution 성공을 확인합니다.
-3. MLflow에 등록된 정확한 숫자 버전으로 `POST /mlops/serving/revisions`를 호출합니다.
-   이 단계는 기존 리비전의 트래픽 100%를 고정하고 새 리비전을 태그 URL에만 띄웁니다.
-4. operation 완료와 `GET /mlops/serving/status`의 Ready 상태를 확인합니다.
-5. 같은 버전과 원본 Feature 54개로 `POST /mlops/serving/promotions`를 호출합니다.
-   Backend가 태그 URL에 실제 `/predict` 요청을 보내 모델명·버전을 검증한 경우에만
-   새 리비전으로 트래픽 100% 이동을 요청합니다.
+1. `POST /mlops/datasets`로 GCS 학습 데이터셋을 불변 버전으로 등록합니다.
+2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
+   `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
+3. Training Job은 후보와 현재 champion을 같은 검증 행에서 평가하고 결과를
+   `POST /mlops/training/runs/{id}/result`로 되돌려 보냅니다.
+4. 관리자는 `GET /mlops/training/runs/{id}`에서 PR-AUC·Recall·FPR과 추천 상태를
+   확인한 뒤 `POST /mlops/training/runs/{id}/decision`으로 승인 또는 거절합니다.
+5. 승인하면 Backend가 정확한 후보 버전으로 트래픽 0% 리비전을 생성합니다.
+6. Ready 상태를 확인한 뒤 `POST /mlops/serving/promotions`로 실제 예측 스모크를
+   실행하고, 성공한 경우에만 새 리비전으로 트래픽 100% 이동을 요청합니다.
+7. `POST /mlops/training/runs/{id}/deployment/complete`로 비동기 traffic operation의
+   성공을 확인한 뒤 학습 이력을 `PRODUCTION`으로 확정합니다.
 
 핵심 요청 형태는 다음과 같습니다. 승격의 `features`에는
 [`examples/transaction-request.json`](examples/transaction-request.json)의 `raw_data`
 54개 필드를 넣습니다.
 
 ```text
-POST /mlops/training/runs
-{"auto_promote": true, "min_pr_auc": 0.75, "min_recall": 0.8,
- "dataset_uri": "gs://bucket/datasets/generated/v1/transactions.csv",
+POST /mlops/datasets
+{"version": "generated-v2",
+ "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv",
+ "row_count": 210000,
  "split_datetime": "2026-04-01 00:00:00"}
 
-POST /mlops/serving/revisions
-{"model_version": "17"}
+POST /mlops/training/runs
+{"dataset_version_id": 2, "min_pr_auc": 0.75, "min_recall": 0.8}
+
+POST /mlops/training/runs/12/decision
+{"decision": "APPROVE", "reason": "동일 검증셋에서 Recall 상승, FPR 감소"}
 
 POST /mlops/serving/promotions
-{"model_version": "17", "transaction_id": "TX-SMOKE", "features": {}}
+{"training_run_id": 12, "model_version": "17",
+ "transaction_id": "TX-SMOKE", "features": {}}
+
+POST /mlops/training/runs/12/deployment/complete
 ```
 
-기본 운영 학습은 생성형 원본 `transactions.csv`를 `dataset_uri` 하나로 지정하며,
-ML이 내부에서 54→91 전처리를 수행합니다. 이미 전처리된 `train.csv`를 직접 지정하는
-경우에만 행 수와 행 순서가 같은 원본 `transactions.csv`를 `transactions_uri`로 함께
-보내야 합니다. Backend는 각각 `TRAINING_DATA_URI`, `TRAINING_TRANSACTIONS_URI`
-override로 전달하고, 실제 데이터 종류와 두 파일의 정렬은 ML Job이 검증합니다.
+운영 재학습 데이터는 생성형 원본 `transactions.csv` 하나로 고정합니다. 데이터셋
+버전의 `gcs_uri`를 `TRAINING_DATA_URI`로 전달하고 ML이 내부에서 54→91 전처리를
+수행합니다. 과거 전처리 `train.csv`와 보조 `transactions.csv` 조합은 Backend 관리
+API에서 지원하지 않습니다.
 `split_datetime`은 원본 `Transaction_Datetime` 기준 시간 분할 경계이며
-`TRAINING_SPLIT_DATETIME`으로 전달됩니다. URI 필드를 생략하면 Cloud Run Job에 미리
-설정된 값을 그대로 사용하므로 기존 `{}` 실행 요청은 호환됩니다. 의도하지 않은 모델
-자동 승격을 막기 위해 `auto_promote` 기본값은 `false`입니다.
+`TRAINING_SPLIT_DATETIME`으로 전달됩니다. 학습 데이터 URI와 분할 기준은 실행 요청이
+아니라 데이터셋 버전에 고정됩니다. 자동 alias 변경은 금지하며 Backend는 항상
+`MLFLOW_AUTO_PROMOTE=false`로 Job을 실행합니다.
+
+Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
+Secret Manager로 주입합니다.
+
+```text
+TRAINING_RESULT_CALLBACK_URL=https://api.fdshield.cloud/mlops/training/runs/{training_run_id}/result
+TRAINING_RESULT_CALLBACK_TOKEN=<MLOPS_ADMIN_TOKEN과 동일한 보호 값>
+```
 
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회, Service 조회·수정 권한과
 Serving 리비전 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한이 필요합니다.
