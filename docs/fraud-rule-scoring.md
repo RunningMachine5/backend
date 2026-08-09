@@ -398,6 +398,7 @@ GET    /rule-sets/active
 GET    /rule-sets/{id}
 
 POST   /rule-sets/drafts
+DELETE /rule-sets/{id}
 POST   /rule-sets/{id}/rules
 PUT    /rule-sets/{id}/rules/{rule_id}
 DELETE /rule-sets/{id}/rules/{rule_id}
@@ -412,8 +413,9 @@ POST   /rule-sets/{id}/activate
 운영 흐름은 다음과 같다.
 
 ```text
-현재 ACTIVE를 복제한 DRAFT 생성
-→ POST /rule-sets/drafts
+GET /rule-sets?rule_set_status=DRAFT로 수정 중인 DRAFT 확인
+→ 있으면 해당 DRAFT를 이어서 수정
+→ 없으면 POST /rule-sets/drafts로 현재 ACTIVE를 복제
 → PUT으로 유지할 4개 유형의 component·가중치를 8/8 최종안에 맞게 수정
 → DELETE로 CARD_FRAUD 룰 제거
 → 유효성 검증
@@ -423,6 +425,10 @@ POST   /rule-sets/{id}/activate
 → 새 버전이 ACTIVE
 → 이후 사기 거래부터 새 룰 적용
 ```
+
+동시에 여러 DRAFT를 만들 수 없다. 작업을 취소하려면
+`DELETE /rule-sets/{id}`로 DRAFT 전체를 폐기한 뒤 다시 생성한다. 이 API는 DRAFT에만
+허용되며 ACTIVE와 ARCHIVED는 삭제할 수 없다.
 
 ## 12. 구형 스켈레톤 코드
 

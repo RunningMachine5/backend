@@ -258,6 +258,57 @@ class FraudRuleApiTest(unittest.TestCase):
             ).all()
             self.assertEqual(len(remaining), 3)
 
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_existing_draft_must_be_reused_or_discarded(self) -> None:
+        first = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+        ).json()
+
+        duplicate = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+        )
+
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.assertIn(str(first["id"]), duplicate.json()["detail"])
+
+        discarded = self.client.delete(
+            f"/rule-sets/{first['id']}",
+            headers=ADMIN_HEADERS,
+        )
+        self.assertEqual(discarded.status_code, 204, discarded.text)
+
+        with Session(self.engine) as session:
+            self.assertIsNone(session.get(FraudRuleSet, first["id"]))
+            self.assertEqual(session.exec(select(FraudRule)).all(), [])
+            self.assertEqual(session.exec(select(FraudRuleComponent)).all(), [])
+
+        replacement = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+        )
+        self.assertEqual(replacement.status_code, 201, replacement.text)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_active_rule_set_cannot_be_discarded(self) -> None:
+        draft = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+        ).json()
+        activated = self.client.post(
+            f"/rule-sets/{draft['id']}/activate",
+            headers=ADMIN_HEADERS,
+        )
+        self.assertEqual(activated.status_code, 200, activated.text)
+
+        response = self.client.delete(
+            f"/rule-sets/{draft['id']}",
+            headers=ADMIN_HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+
 
 if __name__ == "__main__":
     unittest.main()

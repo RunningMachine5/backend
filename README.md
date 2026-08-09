@@ -78,6 +78,8 @@ curl -X POST http://localhost:8000/transactions \
 있습니다. `Location`과 `Time Difference`는 필수이며, 이전 계약의
 `Time_difference`, `Transaction_Failure_Status`,
 `Customer_flag_terminal_malicious_behavior_4`는 허용하지 않습니다.
+`Location`은 ML 전처리와 동일하게 `지역명 2~4개 + 위도 + 경도` 형식이어야 하고,
+위도 33~39·경도 124~132 범위를 벗어나면 거래 저장 전에 `422`로 거부합니다.
 
 거래 식별정보는 `transaction_id`, `customer_id`, 고객 식별 토큰, 출금·수취 계좌번호를
 함께 전달합니다. `customer_birth_date`가 있으면 실제 생년월일을 저장하고, 없으면
@@ -87,6 +89,10 @@ curl -X POST http://localhost:8000/transactions \
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
 꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.
 현재 ERD에는 실패 이력 컬럼이 없으므로 ML 실패 자체는 별도 결과 행으로 저장하지 않습니다.
+Timeout·네트워크 오류와 `429`, `5xx` 응답은 scale-to-zero 재기동 같은 일시 오류로
+보고 기본 2회까지 호출하며, `4xx` 입력 오류와 응답 계약 오류는 재시도하지 않습니다.
+횟수와 간격은 `ML_SERVING_MAX_ATTEMPTS`, `ML_SERVING_RETRY_DELAY_SECONDS`로
+조절합니다.
 
 ML이 사기로 예측한 거래는 활성 룰셋으로 모든 사기유형 점수를 계산합니다.
 Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 유형별 점수를 전부

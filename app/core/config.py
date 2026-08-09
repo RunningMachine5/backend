@@ -8,6 +8,11 @@ DATABASE_URL = os.getenv(
 ML_SERVING_URL = os.getenv("ML_SERVING_URL", "http://localhost:8001").rstrip("/")
 ML_SERVING_TIMEOUT_SECONDS = float(os.getenv("ML_SERVING_TIMEOUT_SECONDS", "5"))
 ML_SERVING_AUTH_MODE = os.getenv("ML_SERVING_AUTH_MODE", "none").strip().lower()
+ML_SERVING_MAX_ATTEMPTS = max(1, int(os.getenv("ML_SERVING_MAX_ATTEMPTS", "2")))
+ML_SERVING_RETRY_DELAY_SECONDS = max(
+    0.0,
+    float(os.getenv("ML_SERVING_RETRY_DELAY_SECONDS", "0.25")),
+)
 
 # Backend가 Cloud Run Training Job과 Serving Service를 제어할 때 사용하는 설정입니다.
 # 운영 VM에서는 연결된 서비스 계정의 ADC(메타데이터 자격 증명)를 사용합니다.

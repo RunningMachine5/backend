@@ -1,12 +1,16 @@
 """Backend가 ML Serving에 전달하는 전처리 전 거래 Feature 계약."""
 
+import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 BinaryFlag = Literal[0, 1]
+LOCATION_PATTERN = re.compile(
+    r"(?P<latitude>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
+    r"(?P<longitude>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*$"
+)
 
 
 class MLTransactionFeatures(BaseModel):
@@ -91,6 +95,26 @@ class MLTransactionFeatures(BaseModel):
     First_time_iOS_by_vulnerable_user: BinaryFlag
     Transaction_resumed_date: datetime | None
 
+    @field_validator("Location")
+    @classmethod
+    def validate_location(cls, value: str) -> str:
+        """학습·추론 전처리가 허용하는 국내 위치 문자열만 받는다."""
+
+        normalized = value.strip()
+        match = LOCATION_PATTERN.search(normalized)
+        if match is None or not 4 <= len(normalized.split()) <= 6:
+            raise ValueError(
+                "Location은 지역명 2~4개와 위도·경도 순서여야 합니다."
+            )
+
+        latitude = float(match.group("latitude"))
+        longitude = float(match.group("longitude"))
+        if not 33 <= latitude <= 39:
+            raise ValueError("Location 위도는 33 이상 39 이하여야 합니다.")
+        if not 124 <= longitude <= 132:
+            raise ValueError("Location 경도는 124 이상 132 이하여야 합니다.")
+        return normalized
+
 
 RAW_TRANSACTION_FEATURE_COLUMNS = tuple(
     field.serialization_alias or field.alias or name
@@ -99,6 +123,6 @@ RAW_TRANSACTION_FEATURE_COLUMNS = tuple(
 
 
 __all__ = [
-    "MLTransactionFeatures",
     "RAW_TRANSACTION_FEATURE_COLUMNS",
+    "MLTransactionFeatures",
 ]

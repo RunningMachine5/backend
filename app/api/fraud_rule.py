@@ -826,6 +826,16 @@ def create_draft_rule_set(
     session: SessionDep,
     payload: FraudRuleSetDraftCreate | None = None,
 ) -> FraudRuleSetResponse:
+    existing_draft = session.exec(
+        select(FraudRuleSet)
+        .where(FraudRuleSet.status == FraudRuleSetStatus.DRAFT)
+        .order_by(FraudRuleSet.version.desc())
+    ).first()
+    if existing_draft is not None:
+        raise _conflict(
+            f"이미 수정 중인 DRAFT 룰셋이 있습니다: {existing_draft.id}"
+        )
+
     source: FraudRuleSet | None
     if payload is not None and payload.source_rule_set_id is not None:
         source = _get_rule_set(session, payload.source_rule_set_id)
@@ -853,6 +863,29 @@ def create_draft_rule_set(
     _commit_or_conflict(session, "동일한 룰셋 버전이 이미 생성되었습니다.")
     session.refresh(draft)
     return _rule_set_response(session, draft)
+
+
+@router.delete(
+    "/rule-sets/{rule_set_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_draft_rule_set(
+    rule_set_id: int,
+    session: SessionDep,
+) -> Response:
+    """저장하지 않을 DRAFT와 그 하위 룰·조건을 함께 폐기한다."""
+
+    rule_set = _get_rule_set(session, rule_set_id)
+    _assert_draft(rule_set)
+    for rule in _rules_for_set(session, rule_set.id):
+        for component in _components_for_rule(session, rule.id):
+            session.delete(component)
+        session.flush()
+        session.delete(rule)
+    session.flush()
+    session.delete(rule_set)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -940,6 +973,7 @@ def delete_rule(
     rule = _get_rule(session, rule_set_id, rule_id)
     for component in _components_for_rule(session, rule.id):
         session.delete(component)
+    session.flush()
     session.delete(rule)
     rule_set.updated_at = datetime.now()
     session.add(rule_set)
