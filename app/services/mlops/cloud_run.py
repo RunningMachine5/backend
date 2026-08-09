@@ -405,6 +405,15 @@ class CloudRunAdminClient:
             "새 모델의 태그 URL이 아직 준비되지 않았습니다. operation을 먼저 확인하세요."
         )
 
+    @staticmethod
+    def _revision_name(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            return None
+        return normalized.rsplit("/", maxsplit=1)[-1]
+
     def promote_model_revision(
         self,
         *,
@@ -420,14 +429,22 @@ class CloudRunAdminClient:
             raise CloudRunAdminError("Serving Service가 아직 리비전을 준비 중입니다.")
 
         target = self._tagged_target(service, tag)
-        revision = target.get("revision")
+        latest_created_revision = self._revision_name(
+            service.get("latestCreatedRevision")
+        )
+        latest_ready_revision = self._revision_name(
+            service.get("latestReadyRevision")
+        )
+        revision = self._revision_name(target.get("revision"))
+        if revision is None and target.get("type") == TRAFFIC_LATEST:
+            revision = latest_created_revision
         tagged_url = target.get("uri")
         service_uri = service.get("uri")
         if not revision or not tagged_url or not service_uri:
             raise CloudRunAdminError("승격 대상 리비전 URL 정보가 비어 있습니다.")
-        if revision != service.get("latestCreatedRevision"):
+        if revision != latest_created_revision:
             raise CloudRunAdminError("승격 대상이 가장 최근에 생성된 리비전이 아닙니다.")
-        if revision != service.get("latestReadyRevision"):
+        if revision != latest_ready_revision:
             raise CloudRunAdminError("가장 최근 리비전이 아직 Ready 상태가 아닙니다.")
 
         smoke_client = self._smoke_client_factory(tagged_url, service_uri)

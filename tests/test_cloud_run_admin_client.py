@@ -194,7 +194,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         self.assertEqual(payload["traffic"][1]["tag"], "model-v17")
 
     @patch("app.services.mlops.cloud_run.httpx.request")
-    def test_promote_smoke_tests_exact_model_then_moves_all_traffic(
+    def test_promote_resolves_latest_tag_then_smoke_tests_and_moves_traffic(
         self,
         request: Mock,
     ) -> None:
@@ -202,8 +202,14 @@ class CloudRunAdminClientTest(unittest.TestCase):
         service.update(
             {
                 "etag": "etag-new",
-                "latestCreatedRevision": "serving-00002-new",
-                "latestReadyRevision": "serving-00002-new",
+                "latestCreatedRevision": (
+                    "projects/test/locations/region/services/serving/"
+                    "revisions/serving-00002-new"
+                ),
+                "latestReadyRevision": (
+                    "projects/test/locations/region/services/serving/"
+                    "revisions/serving-00002-new"
+                ),
                 "trafficStatuses": [
                     {
                         "type": TRAFFIC_REVISION,
@@ -212,7 +218,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
                     },
                     {
                         "type": TRAFFIC_LATEST,
-                        "revision": "serving-00002-new",
                         "percent": 0,
                         "tag": "model-v17",
                         "uri": "https://model-v17---serving.run.app",
