@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from hashlib import sha256
 
 from sqlmodel import Session, select
@@ -101,6 +101,35 @@ class TransactionRepository:
         return transaction
 
 
+class TransactionLabelRepository:
+    """담당자가 확정한 이진 라벨을 거래별 한 행으로 관리한다."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get(self, transaction_id: str) -> TransactionLabel | None:
+        return self.session.get(TransactionLabel, transaction_id)
+
+    def upsert(
+        self,
+        *,
+        transaction_id: str,
+        confirmed_is_fraud: bool,
+    ) -> TransactionLabel:
+        label = self.get(transaction_id)
+        if label is None:
+            label = TransactionLabel(
+                transaction_id=transaction_id,
+                confirmed_is_fraud=confirmed_is_fraud,
+            )
+            self.session.add(label)
+        elif label.confirmed_is_fraud != confirmed_is_fraud:
+            label.confirmed_is_fraud = confirmed_is_fraud
+            label.labeled_at = datetime.now(UTC)
+            self.session.add(label)
+        return label
+
+
 class PredictionResultRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -123,4 +152,8 @@ class PredictionResultRepository:
         ).first()
 
 
-__all__ = ["PredictionResultRepository", "TransactionRepository"]
+__all__ = [
+    "PredictionResultRepository",
+    "TransactionLabelRepository",
+    "TransactionRepository",
+]

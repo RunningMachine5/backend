@@ -5,12 +5,21 @@ from app.core.db import SessionDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
-from app.dto.transaction import TransactionCreateDTO, TransactionResponseDTO
+from app.data.model.transaction_label import TransactionLabel
+from app.dto.transaction import (
+    TransactionCreateDTO,
+    TransactionLabelResponseDTO,
+    TransactionLabelUpdateDTO,
+    TransactionResponseDTO,
+)
 from app.pipelines.fraud_detection_pipeline import (
     DuplicateTransactionError,
     FraudDetectionPipeline,
 )
-from app.repositories.transaction import PredictionResultRepository
+from app.repositories.transaction import (
+    PredictionResultRepository,
+    TransactionLabelRepository,
+)
 from app.services.ml_serving.client import MLServingClientDep
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
@@ -21,6 +30,7 @@ def _transaction_response(
     transaction: Transaction,
     prediction_result: MLPredictionResult | None,
     score_result: FraudTypeScoreResult | None,
+    label: TransactionLabel | None,
     *,
     prediction_status: str | None = None,
 ) -> TransactionResponseDTO:
@@ -64,6 +74,8 @@ def _transaction_response(
             ),
             "rule_scores": score_result.type_scores if score_result else None,
             "rule_set_id": score_result.rule_set_id if score_result else None,
+            "confirmed_is_fraud": (label.confirmed_is_fraud if label else None),
+            "labeled_at": label.labeled_at if label else None,
         }
     )
 
@@ -92,6 +104,9 @@ def create_transaction(
         result.transaction,
         result.prediction_result,
         result.score_result,
+        TransactionLabelRepository(session).get(
+            result.transaction.transaction_id
+        ),
         prediction_status=result.prediction_status,
     )
 
@@ -124,14 +139,49 @@ def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
     score_by_transaction_id = {
         item.transaction_id: item for item in score_results
     }
+    labels = session.exec(
+        select(TransactionLabel).where(
+            TransactionLabel.transaction_id.in_(transaction_ids)
+        )
+    ).all()
+    label_by_transaction_id = {
+        item.transaction_id: item for item in labels
+    }
     return [
         _transaction_response(
             tx,
             prediction_by_transaction_id.get(tx.transaction_id),
             score_by_transaction_id.get(tx.transaction_id),
+            label_by_transaction_id.get(tx.transaction_id),
         )
         for tx in transactions
     ]
+
+
+@router.put(
+    "/{transaction_id}/label",
+    response_model=TransactionLabelResponseDTO,
+)
+def upsert_transaction_label(
+    transaction_id: str,
+    payload: TransactionLabelUpdateDTO,
+    session: SessionDep,
+) -> TransactionLabel:
+    """담당자가 확정한 거래 라벨을 생성하거나 변경한다."""
+
+    if session.get(Transaction, transaction_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="거래를 찾을 수 없습니다.",
+        )
+
+    label = TransactionLabelRepository(session).upsert(
+        transaction_id=transaction_id,
+        confirmed_is_fraud=payload.confirmed_is_fraud,
+    )
+    session.commit()
+    session.refresh(label)
+    return label
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponseDTO)
@@ -155,4 +205,10 @@ def get_transaction(
     prediction_result = PredictionResultRepository(
         session
     ).latest_for_transaction(transaction_id)
-    return _transaction_response(transaction, prediction_result, score_result)
+    label = TransactionLabelRepository(session).get(transaction_id)
+    return _transaction_response(
+        transaction,
+        prediction_result,
+        score_result,
+        label,
+    )

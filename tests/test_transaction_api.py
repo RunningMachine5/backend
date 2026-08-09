@@ -21,8 +21,8 @@ from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.ml_prediction import (
-    MLTransactionFeatures,
     RAW_TRANSACTION_FEATURE_COLUMNS,
+    MLTransactionFeatures,
 )
 from app.services.ml_serving.client import (
     MLPredictionResponse,
@@ -140,6 +140,8 @@ class TransactionApiTest(unittest.TestCase):
         self.assertTrue(body["ml_is_fraud"])
         self.assertEqual(body["fraud_probability"], 0.75)
         self.assertEqual(body["shap"], {"Transaction_Amount": 0.2})
+        self.assertTrue(body["confirmed_is_fraud"])
+        self.assertIsNotNone(body["labeled_at"])
         self.assertEqual(ml_stub.last_transaction_id, "TX_STUB_001")
         self.assertEqual(ml_stub.last_features, normalized_raw_data)
 
@@ -177,6 +179,90 @@ class TransactionApiTest(unittest.TestCase):
             score_results = session.exec(select(FraudTypeScoreResult)).all()
             self.assertEqual(score_results, [])
             self.assertIsNone(body["rule_scores"])
+
+    def test_label_api_creates_updates_and_returns_saved_label(self) -> None:
+        app.dependency_overrides[get_ml_serving_client] = (
+            lambda: SuccessfulNormalMLStub()
+        )
+        transaction_id = "TX_LABEL_API_001"
+        created = self.client.post(
+            "/transactions",
+            json=valid_transaction_row(transaction_id),
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertIsNone(created.json()["confirmed_is_fraud"])
+        self.assertIsNone(created.json()["labeled_at"])
+
+        labeled = self.client.put(
+            f"/transactions/{transaction_id}/label",
+            json={"confirmed_is_fraud": True},
+        )
+        self.assertEqual(labeled.status_code, 200, labeled.text)
+        self.assertEqual(labeled.json()["transaction_id"], transaction_id)
+        self.assertTrue(labeled.json()["confirmed_is_fraud"])
+        first_labeled_at = labeled.json()["labeled_at"]
+        self.assertIsNotNone(first_labeled_at)
+
+        repeated = self.client.put(
+            f"/transactions/{transaction_id}/label",
+            json={"confirmed_is_fraud": True},
+        )
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(repeated.json()["labeled_at"], first_labeled_at)
+
+        updated = self.client.put(
+            f"/transactions/{transaction_id}/label",
+            json={"confirmed_is_fraud": False},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertFalse(updated.json()["confirmed_is_fraud"])
+
+        detail = self.client.get(f"/transactions/{transaction_id}")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertFalse(detail.json()["confirmed_is_fraud"])
+        self.assertEqual(
+            detail.json()["labeled_at"],
+            updated.json()["labeled_at"],
+        )
+
+        listed = self.client.get("/transactions")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertFalse(listed.json()[0]["confirmed_is_fraud"])
+
+        with Session(self.engine) as session:
+            labels = session.exec(select(TransactionLabel)).all()
+            self.assertEqual(len(labels), 1)
+            self.assertEqual(labels[0].transaction_id, transaction_id)
+            self.assertFalse(labels[0].confirmed_is_fraud)
+
+    def test_label_api_returns_404_for_unknown_transaction(self) -> None:
+        response = self.client.put(
+            "/transactions/TX_UNKNOWN/label",
+            json={"confirmed_is_fraud": True},
+        )
+
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json()["detail"], "거래를 찾을 수 없습니다.")
+
+    def test_label_api_rejects_non_boolean_label(self) -> None:
+        app.dependency_overrides[get_ml_serving_client] = (
+            lambda: SuccessfulNormalMLStub()
+        )
+        transaction_id = "TX_LABEL_INVALID_001"
+        created = self.client.post(
+            "/transactions",
+            json=valid_transaction_row(transaction_id),
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        response = self.client.put(
+            f"/transactions/{transaction_id}/label",
+            json={"confirmed_is_fraud": "true"},
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        with Session(self.engine) as session:
+            self.assertEqual(session.exec(select(TransactionLabel)).all(), [])
 
     def test_create_transaction_keeps_input_when_ml_call_fails(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = lambda: FailedMLStub()
