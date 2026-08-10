@@ -13,6 +13,7 @@ from app.dto.transaction import (
     TransactionResponseDTO,
 )
 from app.pipelines.fraud_detection_pipeline import (
+    CustomerIdentificationConflictError,
     DuplicateTransactionError,
     FraudDetectionPipeline,
 )
@@ -99,6 +100,11 @@ def create_transaction(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="이미 존재하는 transaction_id입니다.",
+        ) from exc
+    except CustomerIdentificationConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="이미 다른 고객에 사용 중인 identification_number입니다.",
         ) from exc
     return _transaction_response(
         result.transaction,

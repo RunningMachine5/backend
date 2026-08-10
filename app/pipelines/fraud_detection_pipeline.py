@@ -11,6 +11,7 @@ from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.dto.transaction import TransactionCreateDTO
 from app.repositories.transaction import (
+    CustomerIdentificationConflictError,
     PredictionResultRepository,
     TransactionRepository,
 )
@@ -47,12 +48,35 @@ class FraudDetectionPipeline:
         if self.transaction_repository.get(payload.transaction_id) is not None:
             raise DuplicateTransactionError(payload.transaction_id)
 
-        transaction = self.transaction_repository.add_received(payload)
         try:
+            # add_received 내부의 조회가 pending INSERT를 autoflush할 수 있으므로
+            # 저장 구성부터 commit까지 같은 IntegrityError 경계로 묶는다.
+            transaction = self.transaction_repository.add_received(payload)
             self.session.commit()
+        except CustomerIdentificationConflictError:
+            self.session.rollback()
+            raise
         except IntegrityError as exc:
             self.session.rollback()
-            raise DuplicateTransactionError(payload.transaction_id) from exc
+            constraint_name = getattr(
+                getattr(exc.orig, "diag", None),
+                "constraint_name",
+                None,
+            )
+            error_message = str(exc.orig)
+            if (
+                constraint_name == "uq_customers_identification_number"
+                or "customers.identification_number" in error_message
+            ):
+                raise CustomerIdentificationConflictError(
+                    payload.customer_identification_number
+                ) from exc
+            if (
+                constraint_name in {"transactions_pkey", "pk_transactions"}
+                or "transactions.transaction_id" in error_message
+            ):
+                raise DuplicateTransactionError(payload.transaction_id) from exc
+            raise
         self.session.refresh(transaction)
         raw_features = transaction.raw_features
 
@@ -104,6 +128,7 @@ class FraudDetectionPipeline:
 
 
 __all__ = [
+    "CustomerIdentificationConflictError",
     "DuplicateTransactionError",
     "FraudDetectionPipeline",
     "FraudDetectionResult",

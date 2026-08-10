@@ -20,6 +20,10 @@ def _account_id(account_number: str) -> str:
     return f"ACC_{digest[:32]}"
 
 
+class CustomerIdentificationConflictError(RuntimeError):
+    """같은 식별번호가 서로 다른 고객 ID에 사용된 경우."""
+
+
 class TransactionRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -33,6 +37,16 @@ class TransactionRepository:
 
         customer = self.session.get(Customer, payload.customer_id)
         if customer is None:
+            customer_with_identification = self.session.exec(
+                select(Customer).where(
+                    Customer.identification_number
+                    == payload.customer_identification_number
+                )
+            ).first()
+            if customer_with_identification is not None:
+                raise CustomerIdentificationConflictError(
+                    payload.customer_identification_number
+                )
             customer = Customer(
                 customer_id=payload.customer_id,
                 birth_date=(
@@ -46,6 +60,10 @@ class TransactionRepository:
                 credit_rating=str(features.Customer_credit_rating),
             )
             self.session.add(customer)
+        elif customer.identification_number != payload.customer_identification_number:
+            raise CustomerIdentificationConflictError(
+                payload.customer_identification_number
+            )
         elif payload.customer_birth_date is not None:
             # 이전 거래에서 출생연도만 받아 1월 1일로 보완했더라도,
             # 실제 생년월일이 들어오면 최신 원본 값으로 교체한다.
