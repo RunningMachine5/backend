@@ -33,7 +33,7 @@ from main import app
 from tests.ml_feature_fixture import valid_ml_raw_data, valid_transaction_row
 
 
-class SuccessfulMLStub:
+class SuccessfulFraudMLClient:
     """Backend의 ML Serving 요청·응답 계약을 검증하는 성공 테스트 대역."""
 
     def __init__(self) -> None:
@@ -53,12 +53,12 @@ class SuccessfulMLStub:
             is_fraud=True,
             fraud_probability=0.75,
             shap={"Transaction_Amount": 0.2},
-            model_name="fdshield-rule-based-stub",
-            model_version="0",
+            model_name="fdshield-fraud-detector",
+            model_version="5",
         )
 
 
-class FailedMLStub:
+class FailingMLClient:
     def predict(
         self,
         *,
@@ -68,7 +68,7 @@ class FailedMLStub:
         raise MLServingError("테스트용 ML 서버 연결 실패")
 
 
-class SuccessfulNormalMLStub:
+class SuccessfulNormalMLClient:
     def predict(
         self,
         *,
@@ -80,8 +80,8 @@ class SuccessfulNormalMLStub:
             is_fraud=False,
             fraud_probability=0.05,
             shap={},
-            model_name="fdshield-rule-based-stub",
-            model_version="0",
+            model_name="fdshield-fraud-detector",
+            model_version="5",
         )
 
 
@@ -114,8 +114,8 @@ class TransactionApiTest(unittest.TestCase):
         self.engine.dispose()
 
     def test_create_transaction_saves_ml_serving_response(self) -> None:
-        ml_stub = SuccessfulMLStub()
-        app.dependency_overrides[get_ml_serving_client] = lambda: ml_stub
+        ml_client = SuccessfulFraudMLClient()
+        app.dependency_overrides[get_ml_serving_client] = lambda: ml_client
 
         raw_data = valid_ml_raw_data()
         normalized_raw_data = MLTransactionFeatures.model_validate(raw_data).model_dump(
@@ -126,7 +126,7 @@ class TransactionApiTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row(
-                    "TX_STUB_001",
+                    "TX_FAKE_001",
                     confirmed_is_fraud=True,
                 ),
                 "Customer_birth_date": "1981-06-15",
@@ -142,8 +142,8 @@ class TransactionApiTest(unittest.TestCase):
         self.assertEqual(body["shap"], {"Transaction_Amount": 0.2})
         self.assertTrue(body["confirmed_is_fraud"])
         self.assertIsNotNone(body["labeled_at"])
-        self.assertEqual(ml_stub.last_transaction_id, "TX_STUB_001")
-        self.assertEqual(ml_stub.last_features, normalized_raw_data)
+        self.assertEqual(ml_client.last_transaction_id, "TX_FAKE_001")
+        self.assertEqual(ml_client.last_features, normalized_raw_data)
 
         with Session(self.engine) as session:
             stored = session.exec(select(Transaction)).one()
@@ -167,12 +167,12 @@ class TransactionApiTest(unittest.TestCase):
             self.assertTrue(label.confirmed_is_fraud)
 
             prediction_result = session.exec(select(MLPredictionResult)).one()
-            self.assertEqual(prediction_result.transaction_id, "TX_STUB_001")
+            self.assertEqual(prediction_result.transaction_id, "TX_FAKE_001")
             self.assertTrue(prediction_result.prediction_is_fraud)
             self.assertEqual(prediction_result.fraud_probability, 0.75)
             self.assertEqual(
                 prediction_result.model_name,
-                "fdshield-rule-based-stub",
+                "fdshield-fraud-detector",
             )
             self.assertGreaterEqual(prediction_result.latency_ms, 0)
 
@@ -182,7 +182,7 @@ class TransactionApiTest(unittest.TestCase):
 
     def test_label_api_creates_updates_and_returns_saved_label(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
-            lambda: SuccessfulNormalMLStub()
+            lambda: SuccessfulNormalMLClient()
         )
         transaction_id = "TX_LABEL_API_001"
         created = self.client.post(
@@ -246,7 +246,7 @@ class TransactionApiTest(unittest.TestCase):
 
     def test_label_api_rejects_non_boolean_label(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
-            lambda: SuccessfulNormalMLStub()
+            lambda: SuccessfulNormalMLClient()
         )
         transaction_id = "TX_LABEL_INVALID_001"
         created = self.client.post(
@@ -265,11 +265,11 @@ class TransactionApiTest(unittest.TestCase):
             self.assertEqual(session.exec(select(TransactionLabel)).all(), [])
 
     def test_create_transaction_keeps_input_when_ml_call_fails(self) -> None:
-        app.dependency_overrides[get_ml_serving_client] = lambda: FailedMLStub()
+        app.dependency_overrides[get_ml_serving_client] = lambda: FailingMLClient()
 
         response = self.client.post(
             "/transactions",
-            json=valid_transaction_row("TX_STUB_FAILED_001"),
+            json=valid_transaction_row("TX_FAKE_FAILED_001"),
         )
 
         self.assertEqual(response.status_code, 201)
@@ -277,7 +277,7 @@ class TransactionApiTest(unittest.TestCase):
 
         with Session(self.engine) as session:
             stored = session.exec(select(Transaction)).one()
-            self.assertEqual(stored.transaction_id, "TX_STUB_FAILED_001")
+            self.assertEqual(stored.transaction_id, "TX_FAKE_FAILED_001")
             self.assertEqual(
                 set(stored.raw_features),
                 set(RAW_TRANSACTION_FEATURE_COLUMNS),
@@ -291,7 +291,7 @@ class TransactionApiTest(unittest.TestCase):
 
     def test_create_transaction_rejects_duplicate_transaction_id(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
-            lambda: SuccessfulNormalMLStub()
+            lambda: SuccessfulNormalMLClient()
         )
         payload = {
             **valid_transaction_row("TX_DUPLICATE_001"),
@@ -311,7 +311,7 @@ class TransactionApiTest(unittest.TestCase):
         self,
     ) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
-            lambda: SuccessfulNormalMLStub()
+            lambda: SuccessfulNormalMLClient()
         )
         first_payload = {
             **valid_transaction_row("TX_SAME_NAME_001"),
@@ -351,7 +351,7 @@ class TransactionApiTest(unittest.TestCase):
         self,
     ) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
-            lambda: SuccessfulNormalMLStub()
+            lambda: SuccessfulNormalMLClient()
         )
         first_payload = {
             **valid_transaction_row("TX_IDENTITY_001"),
@@ -385,7 +385,7 @@ class TransactionApiTest(unittest.TestCase):
 
     def test_normal_prediction_does_not_create_rule_scores(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
-            lambda: SuccessfulNormalMLStub()
+            lambda: SuccessfulNormalMLClient()
         )
 
         response = self.client.post(
@@ -401,8 +401,8 @@ class TransactionApiTest(unittest.TestCase):
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_fraud_prediction_returns_and_saves_all_rule_scores(self) -> None:
-        ml_stub = SuccessfulMLStub()
-        app.dependency_overrides[get_ml_serving_client] = lambda: ml_stub
+        ml_client = SuccessfulFraudMLClient()
+        app.dependency_overrides[get_ml_serving_client] = lambda: ml_client
         headers = {"X-MLOps-Admin-Token": "admin-secret"}
 
         draft_response = self.client.post("/rule-sets/drafts", headers=headers)
