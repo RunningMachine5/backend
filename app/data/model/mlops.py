@@ -1,10 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Column, DateTime, Integer, JSON, Text
+from sqlalchemy import BigInteger, Column, DateTime
 from sqlmodel import Field, SQLModel
 
-
-BIGINT_PRIMARY_KEY = BigInteger().with_variant(Integer(), "sqlite")
+from app.data.model.types import BIGINT_PRIMARY_KEY
 
 
 class DatasetVersion(SQLModel, table=True):
@@ -23,7 +22,6 @@ class DatasetVersion(SQLModel, table=True):
     version: str = Field(max_length=64, unique=True)
     gcs_uri: str = Field(max_length=2048)
     row_count: int = Field(ge=0, sa_type=BigInteger)
-    split_datetime: datetime | None = Field(default=None)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False),
@@ -48,30 +46,14 @@ class TrainingRun(SQLModel, table=True):
         foreign_key="dataset_versions.id",
         ondelete="RESTRICT",
         index=True,
-        sa_type=BigInteger,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
-    cloud_run_operation_name: str | None = Field(default=None, max_length=512)
+    cloud_run_execution_name: str | None = Field(default=None, max_length=512)
     mlflow_run_id: str | None = Field(default=None, max_length=255)
-    model_version: str | None = Field(default=None, max_length=64)
-    comparison_result: dict[str, object] | None = Field(
-        default=None,
-        sa_column=Column(JSON),
-    )
-    decision_reason: str | None = Field(default=None, sa_column=Column(Text))
-    serving_revision: str | None = Field(default=None, max_length=255)
-    serving_operation_name: str | None = Field(default=None, max_length=512)
     status: str = Field(max_length=32, index=True)
     created_at: datetime = Field(
         default_factory=datetime.now,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-    )
-    updated_at: datetime = Field(
-        default_factory=datetime.now,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-    )
-    decided_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
     )
 
 

@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, status
 from sqlmodel import select
 
@@ -20,11 +22,24 @@ from app.pipelines.fraud_detection_pipeline import (
 from app.repositories.transaction import (
     PredictionResultRepository,
     TransactionLabelRepository,
+    TransactionRepository,
 )
 from app.services.ml_serving.client import MLServingClientDep
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
+
+
+def _dumped_features(
+    repository: TransactionRepository,
+    transaction: Transaction,
+) -> dict[str, Any] | None:
+    """평탄 컬럼에서 조립한 54개 Feature를 응답용 JSON dict로 바꾼다."""
+
+    features = repository.load_ml_features(transaction)
+    if features is None:
+        return None
+    return features.model_dump(mode="json", by_alias=True)
 
 
 def _transaction_response(
@@ -34,6 +49,7 @@ def _transaction_response(
     label: TransactionLabel | None,
     *,
     prediction_status: str | None = None,
+    ml_features: dict[str, Any] | None = None,
 ) -> TransactionResponseDTO:
     return TransactionResponseDTO.model_validate(
         {
@@ -48,7 +64,7 @@ def _transaction_response(
             "transaction_amount": transaction.transaction_amount,
             "channel": transaction.channel,
             "location": transaction.location,
-            "raw_features": transaction.raw_features,
+            "raw_features": ml_features,
             "created_at": transaction.created_at,
             "prediction_status": prediction_status or (
                 "COMPLETED" if prediction_result else "NOT_AVAILABLE"
@@ -63,7 +79,6 @@ def _transaction_response(
                 if prediction_result
                 else None
             ),
-            "shap": prediction_result.shap if prediction_result else None,
             "model_name": (
                 prediction_result.model_name if prediction_result else None
             ),
@@ -114,6 +129,7 @@ def create_transaction(
             result.transaction.transaction_id
         ),
         prediction_status=result.prediction_status,
+        ml_features=result.ml_features,
     )
 
 
@@ -153,12 +169,14 @@ def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
     label_by_transaction_id = {
         item.transaction_id: item for item in labels
     }
+    repository = TransactionRepository(session)
     return [
         _transaction_response(
             tx,
             prediction_by_transaction_id.get(tx.transaction_id),
             score_by_transaction_id.get(tx.transaction_id),
             label_by_transaction_id.get(tx.transaction_id),
+            ml_features=_dumped_features(repository, tx),
         )
         for tx in transactions
     ]
@@ -217,4 +235,8 @@ def get_transaction(
         prediction_result,
         score_result,
         label,
+        ml_features=_dumped_features(
+            TransactionRepository(session),
+            transaction,
+        ),
     )

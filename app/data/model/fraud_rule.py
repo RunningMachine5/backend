@@ -7,19 +7,15 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import (
-    JSON,
-    CheckConstraint,
     Column,
     DateTime,
     Float,
     String,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
-
-JSON_COLUMN = JSON().with_variant(JSONB(), "postgresql")
+from app.data.model.types import BIGINT_PRIMARY_KEY, JSON_COLUMN
 
 
 class FraudRuleSetStatus(str, Enum):
@@ -34,7 +30,14 @@ class FraudRuleSet(SQLModel, table=True):
     """Versioned container for fraud-type scoring rules."""
 
     __tablename__ = "fraud_rule_sets"
-    id: int | None = Field(default=None, primary_key=True)
+    id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BIGINT_PRIMARY_KEY,
+            primary_key=True,
+            autoincrement=True,
+        ),
+    )
     version: int = Field(gt=0, unique=True, index=True)
     status: FraudRuleSetStatus = Field(
         default=FraudRuleSetStatus.DRAFT,
@@ -64,14 +67,21 @@ class FraudRule(SQLModel, table=True):
             "type_code",
             name="uq_fraud_rules_rule_set_type_code",
         ),
-        CheckConstraint("sort_order >= 0", name="ck_fraud_rules_sort_order"),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
+    id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BIGINT_PRIMARY_KEY,
+            primary_key=True,
+            autoincrement=True,
+        ),
+    )
     rule_set_id: int = Field(
         foreign_key="fraud_rule_sets.id",
         ondelete="CASCADE",
         index=True,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
     type_code: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1, max_length=128)
@@ -98,21 +108,21 @@ class FraudRuleComponent(SQLModel, table=True):
             "component_key",
             name="uq_fraud_rule_components_rule_key",
         ),
-        CheckConstraint(
-            "weight > 0 AND weight <= 1",
-            name="ck_fraud_rule_components_weight",
-        ),
-        CheckConstraint(
-            "sort_order >= 0",
-            name="ck_fraud_rule_components_sort_order",
-        ),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
+    id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BIGINT_PRIMARY_KEY,
+            primary_key=True,
+            autoincrement=True,
+        ),
+    )
     rule_id: int = Field(
         foreign_key="fraud_rules.id",
         ondelete="CASCADE",
         index=True,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
     component_key: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=128)
@@ -143,7 +153,14 @@ class FraudTypeScoreResult(SQLModel, table=True):
         ),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
+    id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BIGINT_PRIMARY_KEY,
+            primary_key=True,
+            autoincrement=True,
+        ),
+    )
     transaction_id: str = Field(
         foreign_key="transactions.transaction_id",
         ondelete="CASCADE",
@@ -153,6 +170,13 @@ class FraudTypeScoreResult(SQLModel, table=True):
     rule_set_id: int = Field(
         foreign_key="fraud_rule_sets.id",
         ondelete="RESTRICT",
+        index=True,
+        sa_type=BIGINT_PRIMARY_KEY,
+    )
+    rule_filter_status: str | None = Field(default=None, max_length=32)
+    primary_fraud_type: str | None = Field(
+        default=None,
+        max_length=64,
         index=True,
     )
     type_scores: dict[str, float] = Field(

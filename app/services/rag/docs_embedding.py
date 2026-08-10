@@ -77,19 +77,29 @@ def save_pdf(pdf_path):
     # 디비 세션 확보 (engine 풀에서 커넥션을 빌려오고, 블록을 나가면 풀로 반환된다)
     with Session(engine) as session:
         # documents 테이블에 원본 문서 1건 먼저 넣고 DB 가 만든 id 를 받아온다
-        document = Document(title=title, source=pdf_path, content=full_text)
+        # document_key 는 재적재해도 같은 문서를 가리키는 업무 키라 파일명을 쓴다
+        document = Document(
+            document_key=title,
+            title=title,
+            source=pdf_path,
+            content=full_text,
+        )
         session.add(document)
         # flush 는 INSERT 만 보내고 커밋은 하지 않는다. id 를 얻으려고 호출한다
         session.flush()
 
         # db 에 삽입 할 행 뭉텅이 만들기 (document_chunks)
+        # (document_id, chunk_index) 가 UNIQUE 라 한 페이지에서 청크가 여러 개
+        # 나와도 겹치지 않도록 문서 전체에서 단조 증가하는 순번을 쓰고,
+        # 페이지 번호는 metadata 로 옮긴다
         document_chunks = []
-        for chunk, vector in zip(chunks, vectors):
+        for chunk_index, (chunk, vector) in enumerate(zip(chunks, vectors)):
             document_chunks.append(
                 DocumentChunk(
                     document_id=document.id,
-                    chunk_index=chunk["page"],
+                    chunk_index=chunk_index,
                     content=chunk["content"],
+                    meta={"page": chunk["page"]},
                     embedding=vector,
                 )
             )

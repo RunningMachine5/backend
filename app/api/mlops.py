@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime
-from enum import StrEnum
-from typing import Annotated, Any, Self
+from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -71,7 +69,6 @@ class DatasetVersionRequest(BaseModel):
     version: str = Field(min_length=1, max_length=64)
     gcs_uri: str = Field(min_length=1, max_length=2048)
     row_count: int = Field(ge=0)
-    split_datetime: datetime | None = None
 
     @field_validator("gcs_uri")
     @classmethod
@@ -91,13 +88,6 @@ class DatasetVersionRequest(BaseModel):
             raise ValueError("학습 데이터 URI는 gs://bucket/object 형식이어야 합니다.")
         return value
 
-    @field_validator("split_datetime")
-    @classmethod
-    def validate_split_datetime(cls, value: datetime | None) -> datetime | None:
-        if value is not None and value.tzinfo is not None:
-            raise ValueError("split_datetime에는 시간대를 포함할 수 없습니다.")
-        return value
-
 
 class LabeledDatasetBuildRequest(BaseModel):
     """기존 불변 CSV에 DB 확정 라벨을 반영할 새 데이터셋 계약."""
@@ -107,7 +97,6 @@ class LabeledDatasetBuildRequest(BaseModel):
     base_dataset_version_id: int = Field(gt=0)
     version: str = Field(min_length=1, max_length=64)
     gcs_uri: str = Field(min_length=1, max_length=2048)
-    split_datetime: datetime
 
     @field_validator("gcs_uri")
     @classmethod
@@ -122,64 +111,6 @@ class LabeledDatasetBuildRequest(BaseModel):
         ):
             raise ValueError("학습 데이터 URI는 gs://bucket/object 형식이어야 합니다.")
         return value
-
-    @field_validator("split_datetime")
-    @classmethod
-    def validate_split_datetime(cls, value: datetime) -> datetime:
-        if value.tzinfo is not None:
-            raise ValueError("split_datetime에는 시간대를 포함할 수 없습니다.")
-        return value
-
-
-class ComparedModelResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    model_version: str = Field(pattern=r"^[0-9]+$")
-    metrics: dict[str, float]
-
-
-class ModelComparisonResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    candidate: ComparedModelResult
-    production: ComparedModelResult | None = None
-    recommendation: str = Field(
-        pattern=r"^(RECOMMENDED|REVIEW_REQUIRED|NOT_RECOMMENDED)$"
-    )
-
-
-class TrainingResultRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    status: str = Field(pattern=r"^(SUCCEEDED|FAILED)$")
-    mlflow_run_id: str | None = Field(default=None, max_length=255)
-    model_version: str | None = Field(default=None, pattern=r"^[0-9]+$")
-    comparison_result: ModelComparisonResult | None = None
-    error_message: str | None = Field(default=None, max_length=2000)
-
-    @model_validator(mode="after")
-    def validate_result(self) -> Self:
-        if self.status == "SUCCEEDED" and (
-            self.mlflow_run_id is None
-            or self.model_version is None
-            or self.comparison_result is None
-        ):
-            raise ValueError("성공한 학습 결과에는 MLflow와 모델 비교 정보가 필요합니다.")
-        if self.status == "FAILED" and not self.error_message:
-            raise ValueError("실패한 학습 결과에는 error_message가 필요합니다.")
-        return self
-
-
-class TrainingDecision(StrEnum):
-    APPROVE = "APPROVE"
-    REJECT = "REJECT"
-
-
-class TrainingDecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    decision: TrainingDecision
-    reason: str | None = Field(default=None, max_length=2000)
 
 
 class ModelRevisionRequest(BaseModel):
@@ -214,7 +145,6 @@ def _dataset_payload(dataset: DatasetVersion) -> dict[str, Any]:
         "version": dataset.version,
         "gcs_uri": dataset.gcs_uri,
         "row_count": dataset.row_count,
-        "split_datetime": dataset.split_datetime,
         "created_at": dataset.created_at,
     }
 
@@ -224,17 +154,10 @@ def _training_run_payload(run: TrainingRun) -> dict[str, Any]:
         "id": run.id,
         "model_key": run.model_key,
         "dataset_version_id": run.dataset_version_id,
-        "cloud_run_operation_name": run.cloud_run_operation_name,
+        "cloud_run_execution_name": run.cloud_run_execution_name,
         "mlflow_run_id": run.mlflow_run_id,
-        "model_version": run.model_version,
-        "comparison_result": run.comparison_result,
-        "decision_reason": run.decision_reason,
-        "serving_revision": run.serving_revision,
-        "serving_operation_name": run.serving_operation_name,
         "status": run.status,
         "created_at": run.created_at,
-        "updated_at": run.updated_at,
-        "decided_at": run.decided_at,
     }
 
 
@@ -312,7 +235,6 @@ def build_labeled_dataset_version(
         version=payload.version,
         gcs_uri=payload.gcs_uri,
         row_count=result.output_row_count,
-        split_datetime=payload.split_datetime,
     )
     session.add(dataset)
     try:
@@ -358,39 +280,24 @@ def start_training_run(
     session.add(run)
     session.commit()
     session.refresh(run)
-    champion = session.exec(
-        select(TrainingRun)
-        .where(
-            TrainingRun.model_key == config.MLOPS_MODEL_NAME,
-            TrainingRun.status == "PRODUCTION",
-        )
-        .order_by(TrainingRun.updated_at.desc())
-        .limit(1)
-    ).first()
 
     try:
+        # dataset_versions.split_datetime과 training_runs.model_version이
+        # ERD에서 빠지면서 학습/평가 분리 시점과 champion 비교 대상을 더는
+        # 전달할 수 없다. Training Job이 자체 기본값을 쓰게 된다.
         operation = client.run_training(
             min_pr_auc=payload.min_pr_auc,
             min_recall=payload.min_recall,
             dataset_uri=dataset.gcs_uri,
-            split_datetime=(
-                dataset.split_datetime.isoformat(sep=" ")
-                if dataset.split_datetime is not None
-                else None
-            ),
             training_run_id=run.id,
-            champion_model_version=(champion.model_version if champion else None),
         )
     except CloudRunAdminError as exc:
         run.status = "FAILED"
-        run.decision_reason = str(exc)
-        run.updated_at = datetime.now()
         session.add(run)
         session.commit()
         raise _upstream_error(exc) from exc
-    run.cloud_run_operation_name = operation.get("name")
+    run.cloud_run_execution_name = operation.get("name")
     run.status = "RUNNING"
-    run.updated_at = datetime.now()
     session.add(run)
     session.commit()
     session.refresh(run)
@@ -412,71 +319,6 @@ def list_training_runs(session: SessionDep) -> list[dict[str, Any]]:
 @router.get("/training/runs/{run_id}")
 def get_training_run(run_id: int, session: SessionDep) -> dict[str, Any]:
     return _training_run_payload(_get_training_run_or_404(run_id, session))
-
-
-@router.post("/training/runs/{run_id}/result")
-def record_training_result(
-    run_id: int,
-    payload: TrainingResultRequest,
-    session: SessionDep,
-) -> dict[str, Any]:
-    """Training Job이 남긴 후보 모델과 champion 비교 결과를 기록한다."""
-
-    run = _get_training_run_or_404(run_id, session)
-    if run.status not in {"REQUESTED", "RUNNING"}:
-        raise HTTPException(status_code=409, detail="결과를 기록할 수 없는 학습 상태입니다.")
-    run.updated_at = datetime.now()
-    if payload.status == "FAILED":
-        run.status = "FAILED"
-        run.decision_reason = payload.error_message
-    else:
-        run.status = "CANDIDATE"
-        run.mlflow_run_id = payload.mlflow_run_id
-        run.model_version = payload.model_version
-        run.comparison_result = payload.comparison_result.model_dump()
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-    return _training_run_payload(run)
-
-
-@router.post("/training/runs/{run_id}/decision", status_code=status.HTTP_202_ACCEPTED)
-def decide_training_run(
-    run_id: int,
-    payload: TrainingDecisionRequest,
-    client: CloudRunAdminClientDep,
-    session: SessionDep,
-) -> dict[str, Any]:
-    """관리자 결정에 따라 후보를 거절하거나 0% Serving 리비전으로 올린다."""
-
-    run = _get_training_run_or_404(run_id, session)
-    if run.status != "CANDIDATE":
-        raise HTTPException(status_code=409, detail="검토 가능한 후보 모델이 아닙니다.")
-    run.decision_reason = payload.reason
-    run.decided_at = datetime.now()
-    run.updated_at = datetime.now()
-    if payload.decision == TrainingDecision.REJECT:
-        run.status = "REJECTED"
-        session.add(run)
-        session.commit()
-        session.refresh(run)
-        return {"training_run": _training_run_payload(run), "operation": None}
-
-    if run.model_version is None:
-        raise HTTPException(status_code=409, detail="후보 모델 버전이 비어 있습니다.")
-    try:
-        result = client.create_model_revision(run.model_version)
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
-    run.status = "STAGED"
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-    return {
-        "training_run": _training_run_payload(run),
-        "operation_id": _operation_id(result["operation"]),
-        **result,
-    }
 
 
 @router.get("/training/status")
@@ -561,11 +403,6 @@ def promote_serving_revision(
     run: TrainingRun | None = None
     if payload.training_run_id is not None:
         run = _get_training_run_or_404(payload.training_run_id, session)
-        if run.status != "STAGED" or run.model_version != payload.model_version:
-            raise HTTPException(
-                status_code=409,
-                detail="승격 가능한 학습 실행 또는 모델 버전이 아닙니다.",
-            )
     try:
         result = client.promote_model_revision(
             model_version=payload.model_version,
@@ -575,10 +412,9 @@ def promote_serving_revision(
     except (CloudRunAdminError, MLServingError) as exc:
         raise _upstream_error(exc) from exc
     if run is not None:
+        # serving_revision / serving_operation_name이 ERD에서 빠져 배포
+        # 진행 상태를 DB에 남기지 못한다. 상태만 갱신한다.
         run.status = "PROMOTING"
-        run.serving_revision = result.get("revision")
-        run.serving_operation_name = result["operation"].get("name")
-        run.updated_at = datetime.now()
         session.add(run)
         session.commit()
     operation = result["operation"]
@@ -586,41 +422,6 @@ def promote_serving_revision(
         "operation_id": _operation_id(operation),
         **result,
     }
-
-
-@router.post("/training/runs/{run_id}/deployment/complete")
-def complete_model_deployment(
-    run_id: int,
-    client: CloudRunAdminClientDep,
-    session: SessionDep,
-) -> dict[str, Any]:
-    """Cloud Run traffic operation 성공을 확인한 뒤 운영 모델을 확정한다."""
-
-    run = _get_training_run_or_404(run_id, session)
-    if run.status != "PROMOTING" or run.serving_operation_name is None:
-        raise HTTPException(status_code=409, detail="완료 확인 대상 배포가 아닙니다.")
-    operation_id = _operation_id({"name": run.serving_operation_name})
-    if operation_id is None:
-        raise HTTPException(status_code=409, detail="Serving operation ID가 올바르지 않습니다.")
-    try:
-        operation = client.get_operation(operation_id)
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
-    if not operation.get("done", False):
-        raise HTTPException(status_code=409, detail="트래픽 전환이 아직 진행 중입니다.")
-    if operation.get("error"):
-        run.status = "DEPLOYMENT_FAILED"
-        run.decision_reason = str(operation["error"])
-        run.updated_at = datetime.now()
-        session.add(run)
-        session.commit()
-        raise HTTPException(status_code=502, detail="Cloud Run 트래픽 전환에 실패했습니다.")
-    run.status = "PRODUCTION"
-    run.updated_at = datetime.now()
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-    return {"training_run": _training_run_payload(run), "operation": operation}
 
 
 __all__ = ["router"]
