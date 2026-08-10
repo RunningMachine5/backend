@@ -193,7 +193,6 @@ class CloudRunAdminClient:
     def run_training(
         self,
         *,
-        auto_promote: bool,
         min_pr_auc: float,
         min_recall: float,
         dataset_uri: str | None = None,
@@ -203,16 +202,8 @@ class CloudRunAdminClient:
     ) -> dict[str, Any]:
         """기존 Cloud Run Job을 환경변수 override와 함께 한 번 실행한다."""
 
-        if auto_promote:
-            raise CloudRunAdminError(
-                "자동 모델 승격은 비활성화되어 있으며 관리자 승인이 필요합니다."
-            )
         env = [
             {"name": "TRAINING_MODE", "value": "train"},
-            {
-                "name": "MLFLOW_AUTO_PROMOTE",
-                "value": str(auto_promote).lower(),
-            },
             {"name": "MODEL_MIN_PR_AUC", "value": str(min_pr_auc)},
             {"name": "MODEL_MIN_RECALL", "value": str(min_recall)},
             {"name": "MLFLOW_REGISTERED_MODEL_NAME", "value": self.model_name},

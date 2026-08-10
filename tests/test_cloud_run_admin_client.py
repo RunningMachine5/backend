@@ -75,7 +75,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client()
 
         result = client.run_training(
-            auto_promote=False,
             min_pr_auc=0.75,
             min_recall=0.8,
             dataset_uri="gs://bucket/transactions.csv",
@@ -99,22 +98,8 @@ class CloudRunAdminClientTest(unittest.TestCase):
             env_by_name["TRAINING_SPLIT_DATETIME"],
             "2026-04-01 00:00:00",
         )
-        self.assertEqual(env_by_name["MLFLOW_AUTO_PROMOTE"], "false")
         self.assertEqual(env_by_name["BACKEND_TRAINING_RUN_ID"], "12")
         self.assertEqual(env_by_name["CHAMPION_MODEL_VERSION"], "1")
-
-    @patch("app.services.mlops.cloud_run.httpx.request")
-    def test_run_training_rejects_automatic_promotion(self, request: Mock) -> None:
-        client = self.make_client()
-
-        with self.assertRaisesRegex(CloudRunAdminError, "관리자 승인"):
-            client.run_training(
-                auto_promote=True,
-                min_pr_auc=0.0,
-                min_recall=0.0,
-            )
-
-        request.assert_not_called()
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_run_training_omits_optional_dataset_overrides(self, request: Mock) -> None:
@@ -124,7 +109,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client()
 
         client.run_training(
-            auto_promote=False,
             min_pr_auc=0.0,
             min_recall=0.0,
         )
@@ -147,7 +131,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client()
 
         client.run_training(
-            auto_promote=False,
             min_pr_auc=0.0,
             min_recall=0.0,
             dataset_uri="gs://bucket/transactions.csv",
