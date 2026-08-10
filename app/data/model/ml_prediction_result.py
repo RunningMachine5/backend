@@ -2,13 +2,10 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Column, DateTime, Integer, JSON
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, DateTime
 from sqlmodel import Field, SQLModel
 
-
-BIGINT_PRIMARY_KEY = BigInteger().with_variant(Integer(), "sqlite")
-JSON_COLUMN = JSON().with_variant(JSONB(), "postgresql")
+from app.data.model.types import BIGINT_PRIMARY_KEY
 
 
 class MLPredictionResult(SQLModel, table=True):
@@ -32,10 +29,6 @@ class MLPredictionResult(SQLModel, table=True):
     )
     prediction_is_fraud: bool
     fraud_probability: float = Field(ge=0.0, le=1.0)
-    shap: dict[str, float] = Field(
-        default_factory=dict,
-        sa_column=Column(JSON_COLUMN, nullable=False),
-    )
     model_name: str = Field(max_length=128)
     model_version: str = Field(max_length=64)
     latency_ms: int = Field(ge=0)

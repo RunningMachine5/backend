@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any
 
 from pydantic import AliasChoices, ConfigDict, StrictBool, model_validator
@@ -25,14 +25,6 @@ class TransactionCreateDTO(SQLModel):
         min_length=1,
         max_length=64,
         validation_alias=AliasChoices("customer_id", "Customer_ID"),
-    )
-    customer_birth_date: date | None = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "customer_birth_date",
-            "birth_date",
-            "Customer_birth_date",
-        ),
     )
     customer_personal_identifier: str = Field(
         min_length=1,
@@ -119,11 +111,12 @@ class TransactionResponseDTO(SQLModel):
     transaction_amount: int
     channel: str
     location: str
-    raw_features: dict[str, Any]
+    # 평탄화된 컬럼에서 다시 조립한 ML 54개 Feature. 파생 피처 행이 없어
+    # 복원할 수 없으면 None이다.
+    raw_features: dict[str, Any] | None
     prediction_status: str
     ml_is_fraud: bool | None
     fraud_probability: float | None
-    shap: dict[str, float] | None
     model_name: str | None
     model_version: str | None
     latency_ms: int | None
