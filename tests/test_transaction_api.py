@@ -307,6 +307,82 @@ class TransactionApiTest(unittest.TestCase):
             "이미 존재하는 transaction_id입니다.",
         )
 
+    def test_create_transaction_allows_different_customers_with_same_name(
+        self,
+    ) -> None:
+        app.dependency_overrides[get_ml_serving_client] = (
+            lambda: SuccessfulNormalMLStub()
+        )
+        first_payload = {
+            **valid_transaction_row("TX_SAME_NAME_001"),
+            "Customer_ID": "C_SAME_NAME_001",
+            "Customer_personal_identifier": "김민수",
+            "Customer_identification_number": "identity-same-name-001",
+            "Account_account_number": "account-same-name-001",
+            "Recipient_Account_Number": "recipient-same-name-001",
+        }
+        second_payload = {
+            **valid_transaction_row("TX_SAME_NAME_002"),
+            "Customer_ID": "C_SAME_NAME_002",
+            "Customer_personal_identifier": "김민수",
+            "Customer_identification_number": "identity-same-name-002",
+            "Account_account_number": "account-same-name-002",
+            "Recipient_Account_Number": "recipient-same-name-002",
+        }
+
+        first = self.client.post("/transactions", json=first_payload)
+        second = self.client.post("/transactions", json=second_payload)
+
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(second.status_code, 201, second.text)
+        with Session(self.engine) as session:
+            customers = session.exec(select(Customer)).all()
+            self.assertEqual(len(customers), 2)
+            self.assertEqual(
+                {customer.customer_id for customer in customers},
+                {"C_SAME_NAME_001", "C_SAME_NAME_002"},
+            )
+            self.assertEqual(
+                {customer.personal_identifier for customer in customers},
+                {"김민수"},
+            )
+
+    def test_create_transaction_rejects_identification_number_reuse(
+        self,
+    ) -> None:
+        app.dependency_overrides[get_ml_serving_client] = (
+            lambda: SuccessfulNormalMLStub()
+        )
+        first_payload = {
+            **valid_transaction_row("TX_IDENTITY_001"),
+            "Customer_ID": "C_IDENTITY_001",
+            "Customer_personal_identifier": "고객일",
+            "Customer_identification_number": "shared-identity-number",
+            "Account_account_number": "account-identity-001",
+            "Recipient_Account_Number": "recipient-identity-001",
+        }
+        second_payload = {
+            **valid_transaction_row("TX_IDENTITY_002"),
+            "Customer_ID": "C_IDENTITY_002",
+            "Customer_personal_identifier": "고객이",
+            "Customer_identification_number": "shared-identity-number",
+            "Account_account_number": "account-identity-002",
+            "Recipient_Account_Number": "recipient-identity-002",
+        }
+
+        first = self.client.post("/transactions", json=first_payload)
+        conflict = self.client.post("/transactions", json=second_payload)
+
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(conflict.status_code, 409, conflict.text)
+        self.assertEqual(
+            conflict.json()["detail"],
+            "이미 다른 고객에 사용 중인 identification_number입니다.",
+        )
+        with Session(self.engine) as session:
+            self.assertEqual(len(session.exec(select(Customer)).all()), 1)
+            self.assertEqual(len(session.exec(select(Transaction)).all()), 1)
+
     def test_normal_prediction_does_not_create_rule_scores(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = (
             lambda: SuccessfulNormalMLStub()
