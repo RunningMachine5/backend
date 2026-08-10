@@ -2,13 +2,24 @@ param(
     [string]$BackendUrl = "http://127.0.0.1:8000",
     [string]$MlServingUrl = "http://127.0.0.1:8001",
     [string]$AdminToken = "local-dev-mlops-token",
-    [string]$CsvPath = "$PSScriptRoot\data\transactions_stub_1000.csv"
+    [string]$CsvPath = "$PSScriptRoot\data\transactions_v5_1000.csv",
+    [string]$ExpectedModelName = "fdshield-fraud-detector",
+    [string]$ExpectedModelVersion = "5",
+    [string]$SmokePayloadPath = (
+        "$PSScriptRoot\..\..\ml\examples\local-model-predict-request.json"
+    )
 )
 
 $ErrorActionPreference = "Stop"
 
 if (-not (Test-Path -LiteralPath $CsvPath)) {
     throw "transactions.csv를 찾을 수 없습니다: $CsvPath"
+}
+if (-not (Test-Path -LiteralPath $SmokePayloadPath -PathType Leaf)) {
+    throw (
+        "ML Serving preflight payload를 찾을 수 없습니다: " +
+        "$SmokePayloadPath"
+    )
 }
 $totalRows = 1000
 $normalTarget = 900
@@ -18,6 +29,72 @@ $backendHealth = Invoke-RestMethod -Uri "$BackendUrl/health" -TimeoutSec 10
 $mlHealth = Invoke-RestMethod -Uri "$MlServingUrl/health" -TimeoutSec 10
 if ($backendHealth.status -ne "ok" -or $mlHealth.status -ne "ok") {
     throw "Backend 또는 ML Serving health 확인에 실패했습니다."
+}
+
+try {
+    $smokePayloadJson = Get-Content `
+        -LiteralPath $SmokePayloadPath `
+        -Raw `
+        -Encoding UTF8
+    $smokePayload = $smokePayloadJson | ConvertFrom-Json
+} catch {
+    throw (
+        "ML Serving preflight payload JSON을 읽을 수 없습니다: " +
+        "$SmokePayloadPath - $($_.Exception.Message)"
+    )
+}
+if (
+    [string]::IsNullOrWhiteSpace([string]$smokePayload.transaction_id) -or
+    $null -eq $smokePayload.features
+) {
+    throw (
+        "ML Serving preflight payload에 transaction_id와 features가 필요합니다: " +
+        "$SmokePayloadPath"
+    )
+}
+
+try {
+    $smokeResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$MlServingUrl/predict" `
+        -ContentType "application/json" `
+        -Body $smokePayloadJson `
+        -TimeoutSec 60
+} catch {
+    $detail = $_.ErrorDetails.Message
+    if ([string]::IsNullOrWhiteSpace([string]$detail)) {
+        $detail = $_.Exception.Message
+    }
+    throw "ML Serving preflight /predict 실패: $detail"
+}
+
+if ([string]$smokeResponse.transaction_id -ne [string]$smokePayload.transaction_id) {
+    throw (
+        "ML Serving preflight transaction_id가 예상과 다릅니다: " +
+        "$($smokeResponse.transaction_id), " +
+        "expected=$($smokePayload.transaction_id)"
+    )
+}
+if (
+    $smokeResponse.model_name -ne $ExpectedModelName -or
+    [string]$smokeResponse.model_version -ne $ExpectedModelVersion
+) {
+    throw (
+        "ML Serving preflight 모델이 예상과 다릅니다: " +
+        "$($smokeResponse.model_name):$($smokeResponse.model_version), " +
+        "expected=$ExpectedModelName`:$ExpectedModelVersion"
+    )
+}
+$smokeShapCount = if ($null -eq $smokeResponse.shap) {
+    0
+} else {
+    @($smokeResponse.shap.PSObject.Properties).Count
+}
+if ($smokeShapCount -ne 91) {
+    throw (
+        "ML Serving preflight SHAP Feature 수가 예상과 다릅니다: " +
+        "$smokeShapCount, expected=91"
+    )
 }
 
 $adminHeaders = @{ "X-MLOps-Admin-Token" = $AdminToken }
@@ -152,6 +229,17 @@ $results = foreach ($row in $rows) {
         $createdNow = $true
     }
 
+    if (
+        $response.model_name -ne $ExpectedModelName -or
+        [string]$response.model_version -ne $ExpectedModelVersion
+    ) {
+        throw (
+            "거래 $($row.ID)의 모델이 예상과 다릅니다: " +
+            "$($response.model_name):$($response.model_version), " +
+            "expected=$ExpectedModelName`:$ExpectedModelVersion"
+        )
+    }
+
     $ruleTypes = if ($null -eq $response.rule_scores) {
         "-"
     } else {
@@ -162,7 +250,7 @@ $results = foreach ($row in $rows) {
     } else {
         @(
             $response.shap.PSObject.Properties |
-                Sort-Object { [double]$_.Value } -Descending |
+                Sort-Object { [math]::Abs([double]$_.Value) } -Descending |
                 Select-Object -First 3 |
                 ForEach-Object { "$($_.Name)=$($_.Value)" }
         ) -join "; "
@@ -182,7 +270,11 @@ $results = foreach ($row in $rows) {
 }
 Write-Progress -Activity "transactions.csv 거래 주입" -Completed
 
-Write-Output "Backend=$($backendHealth.status), ML=$($mlHealth.status), ActiveRuleSet=$($activeRuleSet.id)"
+Write-Output (
+    "Backend=$($backendHealth.status), ML=$($mlHealth.status), " +
+    "MLPreflight=$($smokeResponse.model_name):$($smokeResponse.model_version), " +
+    "SHAP=$smokeShapCount, ActiveRuleSet=$($activeRuleSet.id)"
+)
 $agreementCount = @($results | Where-Object { $_.CsvLabel -eq $_.MlFraud }).Count
 $summary = [pscustomobject]@{
     SelectedRows = $results.Count

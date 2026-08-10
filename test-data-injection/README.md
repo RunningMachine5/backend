@@ -1,6 +1,7 @@
 # Backend 로컬 테스트 데이터 주입 가이드
 
-이 문서는 GCP와 원격 MLflow를 사용하지 않고 로컬에서 다음 흐름을 확인하는 절차다.
+이 문서는 GCP와 원격 MLflow를 사용하지 않고 Git에 포함된 운영 v5 모델로 다음 흐름을
+확인하는 절차다.
 
 이 폴더 하나에 실행 스크립트와 1,000건 샘플 CSV가 함께 들어 있다.
 
@@ -9,13 +10,13 @@ backend/test-data-injection/
 ├─ README.md
 ├─ inject_transactions.ps1
 └─ data/
-   └─ transactions_stub_1000.csv
+   └─ transactions_v5_1000.csv
 ```
 
 ```text
 transactions.csv 일부 행
 → Backend POST /transactions
-→ 로컬 ML Serving Stub /predict
+→ Git 포함 fdshield-fraud-detector v5 /predict
 → ML 결과 저장
 → 사기 거래는 ACTIVE Rule Set으로 4개 유형 점수 계산
 → 확정 라벨과 함께 PostgreSQL 저장
@@ -65,17 +66,17 @@ if (-not (Test-Path -LiteralPath '.\ml\.env')) {
 }
 ```
 
-## 2. ML Serving Stub 재빌드·기동
+## 2. 고정 운영 v5 ML Serving 재빌드·기동
 
 ```powershell
 Push-Location '.\ml'
-$env:ML_PREDICTOR_MODE='stub'
-$env:ML_MODEL_NAME='fdshield-rule-based-stub'
-$env:ML_MODEL_VERSION='0'
-
 docker compose --env-file .env -f compose.serving.yml up -d --build --wait
 Pop-Location
 ```
+
+ML 저장소에는 약 1.3MB의 `fdshield-fraud-detector` v5 native XGBoost 모델이 포함돼 있다.
+기본 `ML_PREDICTOR_MODE=local`은 이 모델을 사용하므로 MLflow 주소·계정·비밀번호가
+필요하지 않다. 사용자 실행용 Stub 모드는 지원하지 않는다.
 
 확인:
 
@@ -83,7 +84,8 @@ Pop-Location
 Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health'
 ```
 
-정상이면 `status=ok`가 나온다.
+정상이면 `status=ok`가 나온다. Health는 프로세스 상태만 확인하며, 실제 모델
+추론과 버전은 4절의 주입 스크립트가 별도로 preflight 검증한다.
 
 ## 3. Backend·DB 재빌드 및 migration
 
@@ -128,7 +130,13 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health'
 .\backend\test-data-injection\inject_transactions.ps1
 ```
 
-스크립트는 함께 커밋된 `backend/test-data-injection/data/transactions_stub_1000.csv`를
+스크립트는 어떤 거래나 룰셋을 DB에 쓰기 전에 sibling ML 저장소의
+`ml/examples/local-model-predict-request.json`을 `POST /predict`로 직접 전송한다.
+응답의 모델이 `fdshield-fraud-detector:5`이고 실제 XGBoost contribution이
+91개인 경우에만 계속한다. smoke payload 파일이 없거나 응답 계약이 다르면
+DB를 변경하지 않고 즉시 실패한다.
+
+스크립트는 함께 커밋된 `backend/test-data-injection/data/transactions_v5_1000.csv`를
 사용한다. 이 파일은 생성형 원본 `transactions.csv`에서 다음 기준으로 미리 추출했다.
 
 | 구분 | 선택 건수 | CSV 기준 |
@@ -140,7 +148,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health'
 원본 데이터의 사기 비율은 약 1.5%이므로 단순히 앞에서 1,000건만 자르면 이상 거래가
 약 15건뿐이다. 화면·API·룰엔진 테스트에 충분한 이상 거래를 포함하도록 정상과 이상
 라벨을 900:100으로 층화 선택했다. 팀원은 별도의 91MB 원본 CSV를 내려받을 필요가 없다.
-`Is_Fraud`는 확정 라벨 저장에만 사용하며 Stub의 예측 확률 계산에는 전달하지 않는다.
+`Is_Fraud`는 확정 라벨 저장에만 사용하며 모델의 예측 확률 계산에는 전달하지 않는다.
 
 Git에 안전하게 공유할 수 있도록 거래·고객·계좌·수취계좌 식별자와 이름·식별번호,
 IP·MAC은 관계를 보존하는 `LOCAL_*` 값으로 비식별화했다. ML 추론 Feature 54개의 수치와
@@ -151,13 +159,15 @@ IP·MAC은 관계를 보존하는 `LOCAL_*` 값으로 비식별화했다. ML 추
 ```text
 CSV 행 타입 변환
 → POST /transactions
-→ ML Stub /predict
-→ 예측 결과와 91개 더미 SHAP 저장
+→ 고정 운영 v5 /predict
+→ 예측 결과와 91개 실제 XGBoost contribution 저장
 → 사기 판정이면 ACTIVE 룰셋 4개 유형 점수 저장
 ```
 
 처음 실행할 때 ACTIVE 룰셋이 없으면 코드에 포함된 최종 기본 룰 4개를 생성·검증·활성화한다.
 이미 같은 ID가 저장돼 있으면 중복 POST하지 않고 기존 결과를 조회하므로 재실행할 수 있다.
+이 경우에도 preflight `/predict`는 매번 실행하므로, 재사용하는 DB 결과뿐 아니라
+현재 8001번에 기동한 ML Serving이 정확한 v5인지도 검증한다.
 
 1,000개 거래를 표로 전부 출력하지 않고 다음 내용만 보여준다.
 
@@ -167,35 +177,27 @@ CSV 행 타입 변환
 - CSV 라벨과 ML 판정의 2×2 교차표
 - 사기확률이 높은 상위 10건과 주요 SHAP 신호
 
-현재 Stub과 로컬 DB에서 확인한 판정 분포는 다음과 같다.
+현재 고정 운영 v5와 로컬 PostgreSQL에서 새 `LOCAL_V5_TX_*` 거래로 확인한 판정 분포는
+다음과 같다.
 
 | CSV 라벨 | ML 정상 | ML 사기 | 합계 |
 |---|---:|---:|---:|
-| 정상 0 | 886 | 14 | 900 |
-| 이상 1 | 23 | 77 | 100 |
-| 합계 | 909 | 91 | 1,000 |
+| 정상 0 | 898 | 2 | 900 |
+| 이상 1 | 0 | 100 | 100 |
+| 합계 | 898 | 102 | 1,000 |
 
-ML이 사기로 판정한 91건에는 ACTIVE 룰셋의 4개 사기유형 점수가 저장됐다. CSV 라벨과
-ML 판정은 963건에서 일치했다. 이 숫자는 실제 모델 성능이 아니라 현재 규칙 기반 Stub의
-로컬 연동 결과다.
+ML이 사기로 판정한 102건에는 ACTIVE 룰셋의 4개 사기유형 점수가 저장됐다. CSV 라벨과
+ML 판정은 998건에서 일치했다. 두 번째 동일 실행에서는 `CreatedNow=0`,
+`AlreadyExisted=1000`으로 기존 결과를 재사용했다.
 
-Stub은 정답 라벨을 보지 않고 실제 54개 원본 Feature를 91개로 전처리한 뒤 다음 신호를
-결정적으로 조합한다.
+이 결과는 생성형 1,000건 로컬 표본에 대한 연동 확인값이다. 독립적인 운영 성능평가나
+일반화 성능으로 해석하지 않는다.
 
-- 거래금액과 잔액·일 한도·최근 최대금액·표준편차의 상대 비율
-- VPN, 루팅, 인증 변경, 악성 단말 행동, 접속 실패
-- 미사용 단말·계좌, 정지 수취계좌, 타인 계좌 여부
-- 거래 시각, 이전 거래와의 시간 차이·이동 거리
-- 수취계좌 거래 횟수와 과거 이력
-
-응답의 `shap`은 실제 ML 모델의 SHAP가 아니다. 스텁 확률을 만든 **log-odds 기여도**를
-실제 XGBoost 응답과 동일하게 91개 모델 Feature 형태로 채운 더미 설명값이다. 고정된
-규칙 가중치가 그대로 보이지 않도록 거래 Feature 값에 따라 재현 가능한 소수점 값으로
-분산한다. 직접 위험 계산에 사용된 Feature에는 큰 값을, 나머지 Feature에는 전체 합을
-바꾸지 않는 작은 양·음수 배경값을 넣어 실제 SHAP과 비슷한 밀도로 보이게 한다.
-스크립트 출력의 `TopSignals`에서 영향이 큰 상위 3개 신호를 볼 수 있다. 따라서
-UI·Backend 계약 확인에는 쓸 수 있지만, 모델 성능 평가나 실제 사유 해석에는 사용하지
-않는다.
+응답의 `shap`은 v5 XGBoost가 계산한 실제 per-transaction contribution이며 모델 Feature
+91개 키를 모두 반환한다. 스크립트의 `TopSignals`는 절대 기여도가 큰 상위 3개를
+보여준다. 응답에서는 XGBoost bias 항을 제외하므로 SHAP 합계만으로 예측확률을 다시
+계산하면 안 된다. 전체 Feature importance와 학습 시 생성한 SHAP summary plot은 MLflow
+학습 artifact에서 관리하며 이 로컬 거래 E2E 범위에는 포함하지 않는다.
 
 ## 5. CSV 타입 변환이 필요한 이유
 
@@ -240,5 +242,8 @@ Pop-Location
 - CSV POST가 422이고 `Input should be 0 or 1`: 문자열 BinaryFlag를 숫자로 변환하지 않은 요청이다.
 - 거래 POST가 409: 같은 CSV ID가 이미 저장돼 있다. 제공 스크립트는 기존 결과를 조회한다.
 - 사기인데 `rule_scores=null`: ACTIVE 룰셋이 없는지 확인한다.
-- Backend에서 ML 호출 실패: ML Stub이 8001번에서 healthy인지 확인한다.
-- 실제 MLflow 모델·Feature importance·SHAP summary는 이 Stub E2E 범위가 아니다.
+- Backend에서 ML 호출 실패: 고정 v5 ML Serving이 8001번에서 healthy인지 확인한다.
+- `ML Serving preflight payload를 찾을 수 없습니다`: Backend·ML 저장소가 같은 상위 폴더에 있고 ML 최신 코드인지 확인한다.
+- `ML Serving preflight /predict 실패`: health만이 아니라 v5 모델 로드와 54개 Feature 추론이 정상인지 ML Serving 로그를 확인한다.
+- `expected=fdshield-fraud-detector:5` 오류: ML 저장소 최신 코드로 다시 빌드한다.
+- 전체 Feature importance와 학습 SHAP summary는 MLflow 학습 artifact에서 확인한다.
