@@ -370,7 +370,6 @@ def start_training_run(
 
     try:
         operation = client.run_training(
-            auto_promote=False,
             min_pr_auc=payload.min_pr_auc,
             min_recall=payload.min_recall,
             dataset_uri=dataset.gcs_uri,
