@@ -119,3 +119,25 @@ MANUAL_REVIEW
 uv run python -m unittest tests.test_agent_guide_corpus -v
 ```
 
+## 문서 로더와 청크 생성기
+
+`load_guide_corpus()`는 공식·내부 디렉터리의 Markdown 문서를 정렬된 순서로
+읽고 Front Matter 계약, 출처 구분, 문서 ID 중복을 검증한다.
+`create_guide_chunks()`는 H1 아래의 소개와 각 H2 섹션을 의미 단위 청크로
+변환하며 H3 이하 제목은 상위 섹션의 문맥에 남긴다.
+
+```python
+from app.services.agent.guide_corpus import load_and_chunk_guide_corpus
+
+chunks = load_and_chunk_guide_corpus()
+```
+
+DB 저장, 임베딩 생성, pgvector 적재는 이 단계에 포함하지 않는다. 로더 출력은
+저장 방식과 무관한 불변 도메인 객체이므로 이후 별도 Mapper에서 DB 모델로
+변환한다.
+
+다음 명령으로 로더와 청크 생성기까지 함께 검증한다.
+
+```powershell
+uv run python -m unittest tests.test_agent_guide_loader tests.test_agent_guide_corpus -v
+```
