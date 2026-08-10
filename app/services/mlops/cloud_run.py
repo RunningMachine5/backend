@@ -26,11 +26,10 @@ from app.core.config import (
     MLOPS_MODEL_NAME,
 )
 from app.services.ml_serving.client import (
-    MLServingClient,
     MLPredictionResponse,
+    MLServingClient,
     _google_id_token_provider,
 )
-
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 TRAFFIC_REVISION = "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION"
@@ -316,6 +315,13 @@ class CloudRunAdminClient:
         container["env"] = preserved
 
     @staticmethod
+    def _remove_env(container: dict[str, Any], names: set[str]) -> None:
+        current = container.get("env", [])
+        if not isinstance(current, list):
+            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+        container["env"] = [item for item in current if item.get("name") not in names]
+
+    @staticmethod
     def _pinned_current_traffic(service: Mapping[str, Any]) -> list[dict[str, Any]]:
         by_revision: dict[str, int] = {}
         statuses = service.get("trafficStatuses", [])
@@ -351,6 +357,9 @@ class CloudRunAdminClient:
         service = self.get_serving_status()
         template = self._copy_template(service)
         container = self._target_container(template)
+        # 판정 임계값은 모델 artifact와 Registry 버전 태그에 저장된다. 이전
+        # 리비전의 수동 환경변수가 새 모델 판정을 덮어쓰지 않도록 제거한다.
+        self._remove_env(container, {"ML_FRAUD_THRESHOLD"})
         self._set_plain_env(
             container,
             {

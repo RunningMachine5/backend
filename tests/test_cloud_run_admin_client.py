@@ -3,10 +3,10 @@ from unittest.mock import Mock, patch
 
 from app.services.ml_serving.client import MLPredictionResponse
 from app.services.mlops.cloud_run import (
-    CloudRunAdminClient,
-    CloudRunAdminError,
     TRAFFIC_LATEST,
     TRAFFIC_REVISION,
+    CloudRunAdminClient,
+    CloudRunAdminError,
 )
 
 
@@ -34,6 +34,7 @@ def current_service() -> dict:
                     "buildInfo": {"sourceLocation": "gs://output-only"},
                     "env": [
                         {"name": "ML_MODEL_VERSION", "value": "1"},
+                        {"name": "ML_FRAUD_THRESHOLD", "value": "0.55"},
                         {
                             "name": "MLFLOW_TRACKING_PASSWORD",
                             "valueSource": {
@@ -187,6 +188,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         env_by_name = {item["name"]: item for item in container["env"]}
         self.assertIn("valueSource", env_by_name["MLFLOW_TRACKING_PASSWORD"])
         self.assertEqual(env_by_name["ML_MODEL_VERSION"]["value"], "17")
+        self.assertNotIn("ML_FRAUD_THRESHOLD", env_by_name)
         self.assertEqual(payload["traffic"][0]["revision"], "serving-00001-old")
         self.assertEqual(payload["traffic"][0]["percent"], 100)
         self.assertEqual(payload["traffic"][1]["type"], TRAFFIC_LATEST)
