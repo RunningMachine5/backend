@@ -103,7 +103,6 @@ class MLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["operation_id"], "train-op")
         self.admin.run_training.assert_called_once_with(
-            auto_promote=False,
             min_pr_auc=0.75,
             min_recall=0.8,
             dataset_uri="gs://bucket/generated/v1/transactions.csv",
@@ -137,7 +136,6 @@ class MLOpsApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 202)
         self.admin.run_training.assert_called_once_with(
-            auto_promote=False,
             min_pr_auc=0.0,
             min_recall=0.0,
             dataset_uri="gs://bucket/synthetic/v1/transactions.csv",
@@ -162,7 +160,6 @@ class MLOpsApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 202)
         self.admin.run_training.assert_called_once_with(
-            auto_promote=False,
             min_pr_auc=0.0,
             min_recall=0.0,
             dataset_uri="gs://bucket/generated/v1/transactions.csv",

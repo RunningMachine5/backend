@@ -3,10 +3,10 @@ from unittest.mock import Mock, patch
 
 from app.services.ml_serving.client import MLPredictionResponse
 from app.services.mlops.cloud_run import (
-    CloudRunAdminClient,
-    CloudRunAdminError,
     TRAFFIC_LATEST,
     TRAFFIC_REVISION,
+    CloudRunAdminClient,
+    CloudRunAdminError,
 )
 
 
@@ -34,6 +34,7 @@ def current_service() -> dict:
                     "buildInfo": {"sourceLocation": "gs://output-only"},
                     "env": [
                         {"name": "ML_MODEL_VERSION", "value": "1"},
+                        {"name": "ML_FRAUD_THRESHOLD", "value": "0.55"},
                         {
                             "name": "MLFLOW_TRACKING_PASSWORD",
                             "valueSource": {
@@ -74,7 +75,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client()
 
         result = client.run_training(
-            auto_promote=False,
             min_pr_auc=0.75,
             min_recall=0.8,
             dataset_uri="gs://bucket/transactions.csv",
@@ -98,22 +98,8 @@ class CloudRunAdminClientTest(unittest.TestCase):
             env_by_name["TRAINING_SPLIT_DATETIME"],
             "2026-04-01 00:00:00",
         )
-        self.assertEqual(env_by_name["MLFLOW_AUTO_PROMOTE"], "false")
         self.assertEqual(env_by_name["BACKEND_TRAINING_RUN_ID"], "12")
         self.assertEqual(env_by_name["CHAMPION_MODEL_VERSION"], "1")
-
-    @patch("app.services.mlops.cloud_run.httpx.request")
-    def test_run_training_rejects_automatic_promotion(self, request: Mock) -> None:
-        client = self.make_client()
-
-        with self.assertRaisesRegex(CloudRunAdminError, "관리자 승인"):
-            client.run_training(
-                auto_promote=True,
-                min_pr_auc=0.0,
-                min_recall=0.0,
-            )
-
-        request.assert_not_called()
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_run_training_omits_optional_dataset_overrides(self, request: Mock) -> None:
@@ -123,7 +109,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client()
 
         client.run_training(
-            auto_promote=False,
             min_pr_auc=0.0,
             min_recall=0.0,
         )
@@ -146,7 +131,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client()
 
         client.run_training(
-            auto_promote=False,
             min_pr_auc=0.0,
             min_recall=0.0,
             dataset_uri="gs://bucket/transactions.csv",
@@ -187,6 +171,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         env_by_name = {item["name"]: item for item in container["env"]}
         self.assertIn("valueSource", env_by_name["MLFLOW_TRACKING_PASSWORD"])
         self.assertEqual(env_by_name["ML_MODEL_VERSION"]["value"], "17")
+        self.assertNotIn("ML_FRAUD_THRESHOLD", env_by_name)
         self.assertEqual(payload["traffic"][0]["revision"], "serving-00001-old")
         self.assertEqual(payload["traffic"][0]["percent"], 100)
         self.assertEqual(payload["traffic"][1]["type"], TRAFFIC_LATEST)
@@ -194,7 +179,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         self.assertEqual(payload["traffic"][1]["tag"], "model-v17")
 
     @patch("app.services.mlops.cloud_run.httpx.request")
-    def test_promote_smoke_tests_exact_model_then_moves_all_traffic(
+    def test_promote_resolves_latest_tag_then_smoke_tests_and_moves_traffic(
         self,
         request: Mock,
     ) -> None:
@@ -202,8 +187,14 @@ class CloudRunAdminClientTest(unittest.TestCase):
         service.update(
             {
                 "etag": "etag-new",
-                "latestCreatedRevision": "serving-00002-new",
-                "latestReadyRevision": "serving-00002-new",
+                "latestCreatedRevision": (
+                    "projects/test/locations/region/services/serving/"
+                    "revisions/serving-00002-new"
+                ),
+                "latestReadyRevision": (
+                    "projects/test/locations/region/services/serving/"
+                    "revisions/serving-00002-new"
+                ),
                 "trafficStatuses": [
                     {
                         "type": TRAFFIC_REVISION,
@@ -212,7 +203,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
                     },
                     {
                         "type": TRAFFIC_LATEST,
-                        "revision": "serving-00002-new",
                         "percent": 0,
                         "tag": "model-v17",
                         "uri": "https://model-v17---serving.run.app",

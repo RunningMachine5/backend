@@ -26,11 +26,10 @@ from app.core.config import (
     MLOPS_MODEL_NAME,
 )
 from app.services.ml_serving.client import (
-    MLServingClient,
     MLPredictionResponse,
+    MLServingClient,
     _google_id_token_provider,
 )
-
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 TRAFFIC_REVISION = "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION"
@@ -194,7 +193,6 @@ class CloudRunAdminClient:
     def run_training(
         self,
         *,
-        auto_promote: bool,
         min_pr_auc: float,
         min_recall: float,
         dataset_uri: str | None = None,
@@ -204,16 +202,8 @@ class CloudRunAdminClient:
     ) -> dict[str, Any]:
         """기존 Cloud Run Job을 환경변수 override와 함께 한 번 실행한다."""
 
-        if auto_promote:
-            raise CloudRunAdminError(
-                "자동 모델 승격은 비활성화되어 있으며 관리자 승인이 필요합니다."
-            )
         env = [
             {"name": "TRAINING_MODE", "value": "train"},
-            {
-                "name": "MLFLOW_AUTO_PROMOTE",
-                "value": str(auto_promote).lower(),
-            },
             {"name": "MODEL_MIN_PR_AUC", "value": str(min_pr_auc)},
             {"name": "MODEL_MIN_RECALL", "value": str(min_recall)},
             {"name": "MLFLOW_REGISTERED_MODEL_NAME", "value": self.model_name},
@@ -316,6 +306,13 @@ class CloudRunAdminClient:
         container["env"] = preserved
 
     @staticmethod
+    def _remove_env(container: dict[str, Any], names: set[str]) -> None:
+        current = container.get("env", [])
+        if not isinstance(current, list):
+            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+        container["env"] = [item for item in current if item.get("name") not in names]
+
+    @staticmethod
     def _pinned_current_traffic(service: Mapping[str, Any]) -> list[dict[str, Any]]:
         by_revision: dict[str, int] = {}
         statuses = service.get("trafficStatuses", [])
@@ -351,6 +348,9 @@ class CloudRunAdminClient:
         service = self.get_serving_status()
         template = self._copy_template(service)
         container = self._target_container(template)
+        # 판정 임계값은 모델 artifact와 Registry 버전 태그에 저장된다. 이전
+        # 리비전의 수동 환경변수가 새 모델 판정을 덮어쓰지 않도록 제거한다.
+        self._remove_env(container, {"ML_FRAUD_THRESHOLD"})
         self._set_plain_env(
             container,
             {
@@ -405,6 +405,15 @@ class CloudRunAdminClient:
             "새 모델의 태그 URL이 아직 준비되지 않았습니다. operation을 먼저 확인하세요."
         )
 
+    @staticmethod
+    def _revision_name(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            return None
+        return normalized.rsplit("/", maxsplit=1)[-1]
+
     def promote_model_revision(
         self,
         *,
@@ -420,14 +429,22 @@ class CloudRunAdminClient:
             raise CloudRunAdminError("Serving Service가 아직 리비전을 준비 중입니다.")
 
         target = self._tagged_target(service, tag)
-        revision = target.get("revision")
+        latest_created_revision = self._revision_name(
+            service.get("latestCreatedRevision")
+        )
+        latest_ready_revision = self._revision_name(
+            service.get("latestReadyRevision")
+        )
+        revision = self._revision_name(target.get("revision"))
+        if revision is None and target.get("type") == TRAFFIC_LATEST:
+            revision = latest_created_revision
         tagged_url = target.get("uri")
         service_uri = service.get("uri")
         if not revision or not tagged_url or not service_uri:
             raise CloudRunAdminError("승격 대상 리비전 URL 정보가 비어 있습니다.")
-        if revision != service.get("latestCreatedRevision"):
+        if revision != latest_created_revision:
             raise CloudRunAdminError("승격 대상이 가장 최근에 생성된 리비전이 아닙니다.")
-        if revision != service.get("latestReadyRevision"):
+        if revision != latest_ready_revision:
             raise CloudRunAdminError("가장 최근 리비전이 아직 Ready 상태가 아닙니다.")
 
         smoke_client = self._smoke_client_factory(tagged_url, service_uri)

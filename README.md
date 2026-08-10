@@ -282,8 +282,8 @@ POST /mlops/training/runs/12/deployment/complete
 API에서 지원하지 않습니다.
 `split_datetime`은 원본 `Transaction_Datetime` 기준 시간 분할 경계이며
 `TRAINING_SPLIT_DATETIME`으로 전달됩니다. 학습 데이터 URI와 분할 기준은 실행 요청이
-아니라 데이터셋 버전에 고정됩니다. 자동 alias 변경은 금지하며 Backend는 항상
-`MLFLOW_AUTO_PROMOTE=false`로 Job을 실행합니다.
+아니라 데이터셋 버전에 고정됩니다. Training Job은 후보 모델과 비교 결과만 만들며,
+alias와 Serving 트래픽 변경은 Backend 관리자 승인 API에서만 수행합니다.
 
 `POST /mlops/datasets/build`는 `transaction_labels`의 확정 이진 라벨을 기준으로
 동작합니다. 기준 CSV에 같은 `ID`가 있으면 `Is_Fraud`를 확정값으로 교체하고, 없는

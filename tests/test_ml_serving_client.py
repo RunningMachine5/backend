@@ -15,8 +15,8 @@ class MLServingClientAuthTest(unittest.TestCase):
             "is_fraud": False,
             "fraud_probability": 0.1,
             "shap": {"Transaction_Amount": 0.05},
-            "model_name": "fdshield-rule-based-stub",
-            "model_version": "0",
+            "model_name": "fdshield-fraud-detector",
+            "model_version": "5",
         }
         return response
 
