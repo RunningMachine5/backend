@@ -15,15 +15,22 @@ from fastapi import Depends
 from google import auth as google_auth
 from google.auth.transport.requests import AuthorizedSession
 from pydantic import ValidationError
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
+from app.data.model.account import Account
+from app.data.model.customer import Customer
+from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.ml_prediction import (
     RAW_TRANSACTION_FEATURE_COLUMNS,
     MLTransactionFeatures,
 )
-from app.repositories.transaction import TransactionRepository
+from app.services.features.ml_feature_assembler import (
+    FeatureAssemblyError,
+    assemble_ml_features,
+)
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -150,6 +157,18 @@ class DatasetBuildResult:
     appended_label_count: int
 
 
+@dataclass(frozen=True)
+class ConfirmedTransaction:
+    """학습 CSV 한 행을 복원하는 데 필요한 최신 ERD의 조인 결과."""
+
+    transaction: Transaction
+    label: TransactionLabel
+    customer: Customer
+    source_account: Account
+    recipient_account: Account | None
+    derived: DerivedFeatures | None
+
+
 class LabeledDatasetBuilder:
     def __init__(self, storage: ObjectStorage) -> None:
         self._storage = storage
@@ -157,25 +176,65 @@ class LabeledDatasetBuilder:
     @staticmethod
     def _confirmed_transactions(
         session: Session,
-    ) -> dict[str, tuple[Transaction, TransactionLabel]]:
+    ) -> dict[str, ConfirmedTransaction]:
+        source_account = aliased(Account, name="source_account")
+        recipient_account = aliased(Account, name="recipient_account")
         rows = session.exec(
-            select(Transaction, TransactionLabel)
+            select(
+                Transaction,
+                TransactionLabel,
+                Customer,
+                source_account,
+                recipient_account,
+                DerivedFeatures,
+            )
             .join(
                 TransactionLabel,
                 TransactionLabel.transaction_id == Transaction.transaction_id,
             )
+            .join(Customer, Customer.customer_id == Transaction.customer_id)
+            .join(
+                source_account,
+                source_account.account_id == Transaction.source_account_id,
+            )
+            .outerjoin(
+                recipient_account,
+                recipient_account.account_id == Transaction.recipient_account_id,
+            )
+            .outerjoin(
+                DerivedFeatures,
+                DerivedFeatures.transaction_id == Transaction.transaction_id,
+            )
             .order_by(TransactionLabel.labeled_at, Transaction.transaction_id)
         ).all()
         return {
-            transaction.transaction_id: (transaction, label)
-            for transaction, label in rows
+            transaction.transaction_id: ConfirmedTransaction(
+                transaction=transaction,
+                label=label,
+                customer=customer,
+                source_account=source,
+                recipient_account=recipient,
+                derived=derived,
+            )
+            for transaction, label, customer, source, recipient, derived in rows
         }
 
     @staticmethod
     def _validate_header(fieldnames: list[str] | None) -> list[str]:
         if not fieldnames:
             raise DatasetBuildError("기존 학습 CSV에 헤더가 없습니다.")
-        required = {"ID", "Is_Fraud", *RAW_TRANSACTION_FEATURE_COLUMNS}
+        required = {
+            "ID",
+            "Customer_ID",
+            "Customer_personal_identifier",
+            "Customer_identification_number",
+            "Account_account_number",
+            "IP_Address",
+            "MAC_Address",
+            "Recipient_Account_Number",
+            "Is_Fraud",
+            *RAW_TRANSACTION_FEATURE_COLUMNS,
+        }
         missing = sorted(required - set(fieldnames))
         if missing:
             raise DatasetBuildError(f"기존 학습 CSV에 필수 컬럼이 없습니다: {missing}")
@@ -200,10 +259,10 @@ class LabeledDatasetBuilder:
     @staticmethod
     def _new_row(
         fieldnames: list[str],
-        transaction: Transaction,
+        confirmed: ConfirmedTransaction,
         assembled: MLTransactionFeatures,
-        label: TransactionLabel,
     ) -> dict[str, object]:
+        transaction = confirmed.transaction
         try:
             features = assembled.model_dump(mode="python", by_alias=True)
         except ValidationError as exc:
@@ -226,9 +285,29 @@ class LabeledDatasetBuilder:
             {
                 "ID": transaction.transaction_id,
                 "Customer_ID": transaction.customer_id,
-                "Account_account_number": transaction.source_account_id,
-                "Recipient_Account_Number": transaction.recipient_account_id or "",
-                "Is_Fraud": int(label.confirmed_is_fraud),
+                "Customer_personal_identifier": (
+                    confirmed.customer.personal_identifier
+                ),
+                "Customer_identification_number": (
+                    confirmed.customer.identification_number
+                ),
+                "Account_account_number": (confirmed.source_account.account_number),
+                "IP_Address": (
+                    str(transaction.ip_address)
+                    if transaction.ip_address is not None
+                    else ""
+                ),
+                "MAC_Address": (
+                    str(transaction.mac_address)
+                    if transaction.mac_address is not None
+                    else ""
+                ),
+                "Recipient_Account_Number": (
+                    confirmed.recipient_account.account_number
+                    if confirmed.recipient_account is not None
+                    else ""
+                ),
+                "Is_Fraud": int(confirmed.label.confirmed_is_fraud),
             }
         )
         return row
@@ -284,27 +363,34 @@ class LabeledDatasetBuilder:
 
                     labeled = confirmed.pop(transaction_id, None)
                     if labeled is not None:
-                        row["Is_Fraud"] = str(int(labeled[1].confirmed_is_fraud))
+                        row["Is_Fraud"] = str(int(labeled.label.confirmed_is_fraud))
                         replaced_label_count += 1
                     writer.writerow(row)
 
-                repository = TransactionRepository(session)
                 for transaction_id in sorted(confirmed):
-                    transaction, label = confirmed[transaction_id]
-                    # 평탄화 이후 54개 Feature는 네 테이블에 나뉘어 있으므로
-                    # 학습 CSV 행을 만들기 전에 계약 형태로 다시 조립한다.
-                    assembled = repository.load_ml_features(transaction)
-                    if assembled is None:
+                    labeled = confirmed[transaction_id]
+                    if labeled.derived is None:
                         raise DatasetBuildError(
                             "확정 라벨 거래의 파생 피처가 없어 학습 행을 만들 수 "
                             f"없습니다: {transaction_id}"
                         )
+                    try:
+                        assembled = assemble_ml_features(
+                            customer=labeled.customer,
+                            source_account=labeled.source_account,
+                            transaction=labeled.transaction,
+                            derived=labeled.derived,
+                        )
+                    except (FeatureAssemblyError, ValidationError) as exc:
+                        raise DatasetBuildError(
+                            "확정 라벨 거래의 원본 Feature가 학습 계약과 맞지 "
+                            f"않습니다: {transaction_id}"
+                        ) from exc
                     writer.writerow(
                         self._new_row(
                             fieldnames,
-                            transaction,
+                            labeled,
                             assembled,
-                            label,
                         )
                     )
 
@@ -333,6 +419,7 @@ LabeledDatasetBuilderDep = Annotated[
 
 
 __all__ = [
+    "ConfirmedTransaction",
     "DatasetBuildError",
     "DatasetBuildResult",
     "DatasetStorageError",

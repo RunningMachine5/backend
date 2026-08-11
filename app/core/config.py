@@ -46,6 +46,15 @@ MLOPS_MODEL_NAME = os.getenv(
 ).strip()
 MLOPS_MODEL_ALIAS = os.getenv("MLOPS_MODEL_ALIAS", "champion").strip()
 
+# Backend는 학습 실행 이력에 MLflow run ID만 저장합니다. 모델 버전과 학습
+# 지표는 MLflow가 원본이므로 승인/상세 조회 시 Registry REST API에서 확인합니다.
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "").strip().rstrip("/")
+MLFLOW_TRACKING_USERNAME = os.getenv("MLFLOW_TRACKING_USERNAME", "").strip()
+MLFLOW_TRACKING_PASSWORD = os.getenv("MLFLOW_TRACKING_PASSWORD", "")
+MLFLOW_TRACKING_TIMEOUT_SECONDS = float(
+    os.getenv("MLFLOW_TRACKING_TIMEOUT_SECONDS", "10")
+)
+
 # 비어 있으면 /mlops 관리 API를 503으로 비활성화합니다. 운영 값은 Secret Manager
 # 또는 VM의 보호된 .env 파일에서 주입하고 저장소에 커밋하지 않습니다.
 MLOPS_ADMIN_TOKEN = os.getenv("MLOPS_ADMIN_TOKEN", "")
