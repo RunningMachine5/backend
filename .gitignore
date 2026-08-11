@@ -36,3 +36,6 @@ dist/
 
 # PDF embedding targets
 docs/embed_target_pdfs/
+
+# 클로드 md 개인용
+CLAUDE.md
