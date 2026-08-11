@@ -1,5 +1,5 @@
 from app.domain.enums import AgentAction, RiskGrade
-from app.dto.agent import AgentResultDTO
+from app.dto.legacy_agent import AgentResultDTO
 from app.dto.fraud import FraudAssessmentDTO
 from app.services.notification.fake_email_sender import FakeEmailSender
 from app.services.rag.fake_llm import FakeLLM

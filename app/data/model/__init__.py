@@ -18,7 +18,7 @@ from app.data.model.customer_event import (  # noqa: F401
     CustomerEventType,
 )
 from app.data.model.derived_features import DerivedFeatures  # noqa: F401
-from app.data.model.document import Document, DocumentAudience  # noqa: F401
+from app.data.model.document import Document  # noqa: F401
 from app.data.model.document_chunk import DocumentChunk  # noqa: F401
 from app.data.model.fraud_rule import (  # noqa: F401
     FraudRule,
@@ -48,7 +48,6 @@ __all__ = [
     "DatasetVersion",
     "DerivedFeatures",
     "Document",
-    "DocumentAudience",
     "DocumentChunk",
     "FraudRule",
     "FraudRuleComponent",

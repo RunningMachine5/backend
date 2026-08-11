@@ -1,31 +1,17 @@
 from datetime import datetime
-from enum import Enum
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Text
+from sqlalchemy import Column, DateTime, Text
 from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, JSON_COLUMN
 
 
-class DocumentAudience(str, Enum):
-    """문서를 사용할 대상 채널."""
-
-    MONITORING = "MONITORING"
-    CUSTOMER = "CUSTOMER"
-    COMMON = "COMMON"
-
 
 class Document(SQLModel, table=True):
-    """RAG 원본 문서 정보 테이블"""
+    """RAG 원본 문서와 검색 메타데이터를 저장한다."""
 
     __tablename__ = "documents"
-    __table_args__ = (
-        CheckConstraint(
-            "audience IN ('MONITORING', 'CUSTOMER', 'COMMON')",
-            name="ck_documents_audience",
-        ),
-    )
 
     # 기본값이 None 인 이유: DB 가 생성한 값으로 들어가므로
     id: int | None = Field(
@@ -46,9 +32,21 @@ class Document(SQLModel, table=True):
     # 원본 출처
     source: str | None = Field(default=None, max_length=512)
     source_type: str | None = Field(default=None, max_length=64)
-    fraud_type: str | None = Field(default=None, max_length=64)
-    audience: str = Field(default=DocumentAudience.COMMON.value, max_length=16)
+    fraud_types: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(
+            JSON_COLUMN,
+            nullable=False,
+        ),
+    )
 
+    audiences: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(
+            JSON_COLUMN,
+            nullable=False,
+        ),
+    )
     # 원본 전체 텍스트
     content: str = Field(sa_column=Column(Text, nullable=False))
 
@@ -69,4 +67,4 @@ class Document(SQLModel, table=True):
     )
 
 
-__all__ = ["Document", "DocumentAudience"]
+__all__ = ["Document"]

@@ -1,4 +1,4 @@
-from app.dto.agent import RagQueryDTO
+from app.dto.legacy_agent import RagQueryDTO
 from app.dto.fraud import FraudAssessmentDTO
 
 

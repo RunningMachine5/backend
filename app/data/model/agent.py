@@ -16,14 +16,7 @@ from sqlalchemy import (
 from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, JSON_COLUMN
-
-
-class AgentExecutionStatus(str, Enum):
-    """Agent 조사 파이프라인의 실행 상태."""
-
-    PROCESSING = "PROCESSING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
+from app.domain.agent_status import AgentExecutionStatus
 
 
 class ChatSessionStatus(str, Enum):
@@ -74,12 +67,12 @@ class AgentCase(SQLModel, table=True):
             name="ck_agent_cases_execution_status",
         ),
         CheckConstraint(
-            "risk_grade IS NULL OR risk_grade IN "
+            "risk_grade IN "
             "('LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH')",
             name="ck_agent_cases_risk_grade",
         ),
         CheckConstraint(
-            "risk_score IS NULL OR risk_score BETWEEN 0 AND 100",
+            "risk_score BETWEEN 0 AND 100",
             name="ck_agent_cases_risk_score",
         ),
     )
@@ -103,11 +96,16 @@ class AgentCase(SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
     )
-    risk_score: int | None = Field(
-        default=None,
-        sa_column=Column(Integer, nullable=True),
+
+    risk_score: int = Field(
+        sa_column=Column(Integer, nullable=False),
     )
-    risk_grade: str | None = Field(default=None, max_length=16)
+
+    risk_grade: str = Field(
+        max_length=16,
+        nullable=False,
+    )
+
     investigation_result: dict[str, Any] | None = Field(
         default=None,
         sa_column=Column(JSON_COLUMN, nullable=True),
