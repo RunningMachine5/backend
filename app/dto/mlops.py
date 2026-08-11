@@ -139,7 +139,9 @@ class MLflowModelDetails(StrictMLOpsDTO):
     model_name: str
     model_version: str
     artifact_uri: str | None = None
-    explanation_manifest_path: str | None = None
+    model_comparison_artifact_path: Literal["metadata/model-comparison.json"] = (
+        "metadata/model-comparison.json"
+    )
     metrics: dict[str, float]
     params: dict[str, str]
     tags: dict[str, str]

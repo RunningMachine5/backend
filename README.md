@@ -336,11 +336,9 @@ Backend가 모델 상세 조회·승인·최종 alias 변경을 하려면 `MLFLO
 실제 계정과 비밀번호는 `.env.example`이나 Git에 넣지 않습니다. 실패 callback은
 `{"status":"FAILED","error_message":"..."}` 형태이며, 같은 결과 callback은 멱등하게
 처리됩니다.
-새 학습 실행의 `model-details` 응답에는 MLflow `artifact_uri`와
-`explanation_manifest_path`도 포함됩니다. manifest는 모델 artifact, 전체 91개 Feature
-importance JSON·CSV, 최대 1,000개 검증 표본의 SHAP mean-absolute summary JSON·SVG,
-후보·champion 비교 JSON 경로를 묶으며 Backend DB에 이 파일들을 복제하지 않습니다.
-
+`model-details` 응답은 MLflow `artifact_uri`와 후보·champion 성능 비교 파일의 상대 경로
+`model_comparison_artifact_path=metadata/model-comparison.json`을 제공합니다. 모델 지표·
+파라미터·태그와 비교 결과는 MLflow를 원본으로 사용하며 Backend DB에 복제하지 않습니다.
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회, Service 조회·수정 권한과
 Serving 리비전 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한이 필요합니다.
 데이터셋 빌드 기능을 사용할 때는 기준 객체 읽기와 새 객체 생성에 필요한

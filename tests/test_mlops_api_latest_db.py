@@ -552,6 +552,8 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             "run_id": "candidate-run",
             "model_name": "fdshield-fraud-detector",
             "model_version": "17",
+            "artifact_uri": "mlflow-artifacts:/1/candidate-run/artifacts",
+            "model_comparison_artifact_path": "metadata/model-comparison.json",
             "metrics": {"validation_pr_auc": 0.95},
             "params": {"decision_threshold": "0.61"},
             "tags": {"promotion_recommendation": "RECOMMENDED"},
@@ -565,6 +567,14 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["source"], "MLFLOW")
         self.assertEqual(response.json()["model_version"], "17")
+        self.assertEqual(
+            response.json()["artifact_uri"],
+            "mlflow-artifacts:/1/candidate-run/artifacts",
+        )
+        self.assertEqual(
+            response.json()["model_comparison_artifact_path"],
+            "metadata/model-comparison.json",
+        )
         self.mlflow.get_model_details.assert_called_once_with(
             "fdshield-fraud-detector", "candidate-run"
         )

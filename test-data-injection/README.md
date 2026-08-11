@@ -188,7 +188,7 @@ CSV 행 타입 변환
 예측 흐름을 눈으로 확인하기 위한 참고값이며 독립적인 운영 성능평가나 일반화 성능으로
 해석하지 않습니다.
 
-전체 Feature importance와 학습 시 생성한 SHAP summary plot은 MLflow 학습 artifact에서
+모델 버전·학습 및 검증 지표·파라미터·태그와 후보·champion 성능 비교는 MLflow에서
 관리하며 이 로컬 거래 E2E 범위에는 포함하지 않습니다.
 
 ## 5. CSV 타입 변환이 필요한 이유
@@ -238,4 +238,5 @@ Pop-Location
 - `ML Serving preflight payload를 찾을 수 없습니다`: Backend·ML 저장소가 같은 상위 폴더에 있고 ML 최신 코드인지 확인한다.
 - `ML Serving preflight /predict 실패`: health만이 아니라 v5 모델 로드와 54개 Feature 추론이 정상인지 ML Serving 로그를 확인한다.
 - `expected=fdshield-fraud-detector:5` 오류: ML 저장소 최신 코드로 다시 빌드한다.
-- 전체 Feature importance와 학습 SHAP summary는 MLflow 학습 artifact에서 확인한다.
+- 모델 기본정보와 후보·champion 성능 비교는
+  `/mlops/training/runs/{id}/model-details`에서 확인한다.

@@ -10,7 +10,7 @@ from fastapi import Depends, HTTPException, status
 
 from app.core import config
 
-MODEL_EXPLANATION_MANIFEST_TAG = "model_explanation_manifest_path"
+MODEL_COMPARISON_ARTIFACT_PATH = "metadata/model-comparison.json"
 
 
 class MLflowRegistryError(RuntimeError):
@@ -167,19 +167,13 @@ class MLflowRegistryClient:
             if isinstance(artifact_uri_value, str) and artifact_uri_value
             else None
         )
-        manifest_path_value = tags.get(MODEL_EXPLANATION_MANIFEST_TAG)
-        explanation_manifest_path = (
-            manifest_path_value
-            if isinstance(manifest_path_value, str) and manifest_path_value
-            else None
-        )
         return {
             "source": "MLFLOW",
             "run_id": run_id,
             "model_name": model_name,
             "model_version": self.resolve_model_version(model_name, run_id),
             "artifact_uri": artifact_uri,
-            "explanation_manifest_path": explanation_manifest_path,
+            "model_comparison_artifact_path": MODEL_COMPARISON_ARTIFACT_PATH,
             "metrics": self._key_value_map(data.get("metrics"), numeric=True),
             "params": self._key_value_map(data.get("params"), numeric=False),
             "tags": tags,
@@ -232,7 +226,7 @@ MLflowRegistryClientDep = Annotated[
 
 
 __all__ = [
-    "MODEL_EXPLANATION_MANIFEST_TAG",
+    "MODEL_COMPARISON_ARTIFACT_PATH",
     "MLflowRegistryClient",
     "MLflowRegistryClientDep",
     "MLflowRegistryError",

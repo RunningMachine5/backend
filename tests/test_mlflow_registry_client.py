@@ -88,12 +88,6 @@ class MLflowRegistryClientTest(unittest.TestCase):
                                     "key": "promotion_recommendation",
                                     "value": "RECOMMENDED",
                                 },
-                                {
-                                    "key": "model_explanation_manifest_path",
-                                    "value": (
-                                        "metadata/model-explanation-artifacts.json"
-                                    ),
-                                },
                             ],
                         },
                     }
@@ -125,8 +119,8 @@ class MLflowRegistryClientTest(unittest.TestCase):
             "mlflow-artifacts:/1/candidate-run/artifacts",
         )
         self.assertEqual(
-            details["explanation_manifest_path"],
-            "metadata/model-explanation-artifacts.json",
+            details["model_comparison_artifact_path"],
+            "metadata/model-comparison.json",
         )
 
     @patch("app.services.mlops.mlflow.httpx.request")
