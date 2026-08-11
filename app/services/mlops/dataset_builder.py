@@ -23,6 +23,7 @@ from app.dto.ml_prediction import (
     RAW_TRANSACTION_FEATURE_COLUMNS,
     MLTransactionFeatures,
 )
+from app.repositories.transaction import TransactionRepository
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -200,12 +201,11 @@ class LabeledDatasetBuilder:
     def _new_row(
         fieldnames: list[str],
         transaction: Transaction,
+        assembled: MLTransactionFeatures,
         label: TransactionLabel,
     ) -> dict[str, object]:
         try:
-            features = MLTransactionFeatures.model_validate(
-                transaction.raw_features
-            ).model_dump(mode="python", by_alias=True)
+            features = assembled.model_dump(mode="python", by_alias=True)
         except ValidationError as exc:
             raise DatasetBuildError(
                 "확정 라벨 거래의 원본 Feature가 학습 계약과 맞지 않습니다: "
@@ -288,9 +288,25 @@ class LabeledDatasetBuilder:
                         replaced_label_count += 1
                     writer.writerow(row)
 
+                repository = TransactionRepository(session)
                 for transaction_id in sorted(confirmed):
                     transaction, label = confirmed[transaction_id]
-                    writer.writerow(self._new_row(fieldnames, transaction, label))
+                    # 평탄화 이후 54개 Feature는 네 테이블에 나뉘어 있으므로
+                    # 학습 CSV 행을 만들기 전에 계약 형태로 다시 조립한다.
+                    assembled = repository.load_ml_features(transaction)
+                    if assembled is None:
+                        raise DatasetBuildError(
+                            "확정 라벨 거래의 파생 피처가 없어 학습 행을 만들 수 "
+                            f"없습니다: {transaction_id}"
+                        )
+                    writer.writerow(
+                        self._new_row(
+                            fieldnames,
+                            transaction,
+                            assembled,
+                            label,
+                        )
+                    )
 
             appended_label_count = len(confirmed)
             output_row_count = source_row_count + appended_label_count

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from time import perf_counter
+from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
@@ -31,6 +32,8 @@ class FraudDetectionResult:
     prediction_status: str
     prediction_result: MLPredictionResult | None
     score_result: FraudTypeScoreResult | None
+    # 평탄화된 컬럼을 다시 조회하지 않도록 요청에서 받은 54개 Feature를 넘긴다.
+    ml_features: dict[str, Any]
 
 
 class FraudDetectionPipeline:
@@ -78,7 +81,9 @@ class FraudDetectionPipeline:
                 raise DuplicateTransactionError(payload.transaction_id) from exc
             raise
         self.session.refresh(transaction)
-        raw_features = transaction.raw_features
+        # 저장 직후에는 요청 본문의 Feature가 DB 재조립 결과와 동일하므로
+        # 조회를 한 번 아끼기 위해 그대로 사용한다.
+        raw_features = payload.raw_features.model_dump(mode="json", by_alias=True)
 
         score_result: FraudTypeScoreResult | None = None
         prediction_result: MLPredictionResult | None = None
@@ -100,7 +105,6 @@ class FraudDetectionPipeline:
                 transaction_id=transaction.transaction_id,
                 prediction_is_fraud=prediction.is_fraud,
                 fraud_probability=prediction.fraud_probability,
-                shap=prediction.shap,
                 model_name=prediction.model_name,
                 model_version=prediction.model_version,
                 latency_ms=latency_ms,
@@ -124,6 +128,7 @@ class FraudDetectionPipeline:
             prediction_status=prediction_status,
             prediction_result=prediction_result,
             score_result=score_result,
+            ml_features=raw_features,
         )
 
 
