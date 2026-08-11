@@ -173,7 +173,10 @@ class FraudTypeScoreResult(SQLModel, table=True):
         index=True,
         sa_type=BIGINT_PRIMARY_KEY,
     )
-    rule_filter_status: str | None = Field(default=None, max_length=32)
+    rule_filter_status: str = Field(
+        max_length=32,
+        nullable=False,
+    )   
     primary_fraud_type: str | None = Field(
         default=None,
         max_length=64,
