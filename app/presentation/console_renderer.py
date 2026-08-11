@@ -1,4 +1,4 @@
-from app.dto.agent import AgentResultDTO
+from app.dto.legacy_agent import AgentResultDTO
 from app.dto.chatbot import ChatbotResponseDTO
 from app.dto.fraud import FraudAssessmentDTO
 

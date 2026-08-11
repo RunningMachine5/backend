@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
+from app.data.model.customer import Customer
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
@@ -22,6 +23,59 @@ from app.services.rules.scoring import score_transaction_fraud_types
 
 class DuplicateTransactionError(RuntimeError):
     """같은 transaction_id의 거래가 이미 저장된 경우."""
+
+
+_TRANSACTION_UNIQUE_CONSTRAINTS = {"transactions_pkey", "pk_transactions"}
+_MASTER_RACE_CONSTRAINTS = {
+    "customers_pkey",
+    "pk_customers",
+    "accounts_pkey",
+    "pk_accounts",
+    "uq_accounts_account_number",
+}
+
+
+def _integrity_error_details(exc: IntegrityError) -> tuple[str | None, str]:
+    """PostgreSQL constraint 이름과 SQLite 회귀 테스트 메시지를 정규화한다."""
+
+    constraint_name = getattr(
+        getattr(exc.orig, "diag", None),
+        "constraint_name",
+        None,
+    )
+    return constraint_name, str(exc.orig)
+
+
+def _is_transaction_unique_violation(
+    constraint_name: str | None,
+    error_message: str,
+) -> bool:
+    return (
+        constraint_name in _TRANSACTION_UNIQUE_CONSTRAINTS
+        or "transactions.transaction_id" in error_message
+    )
+
+
+def _is_customer_identification_violation(
+    constraint_name: str | None,
+    error_message: str,
+) -> bool:
+    return (
+        constraint_name == "uq_customers_identification_number"
+        or "customers.identification_number" in error_message
+    )
+
+
+def _is_retryable_master_race(
+    constraint_name: str | None,
+    error_message: str,
+) -> bool:
+    return (
+        constraint_name in _MASTER_RACE_CONSTRAINTS
+        or "customers.customer_id" in error_message
+        or "accounts.account_id" in error_message
+        or "accounts.account_number" in error_message
+    )
 
 
 @dataclass(frozen=True)
@@ -51,35 +105,57 @@ class FraudDetectionPipeline:
         if self.transaction_repository.get(payload.transaction_id) is not None:
             raise DuplicateTransactionError(payload.transaction_id)
 
-        try:
-            # add_received 내부의 조회가 pending INSERT를 autoflush할 수 있으므로
-            # 저장 구성부터 commit까지 같은 IntegrityError 경계로 묶는다.
-            transaction = self.transaction_repository.add_received(payload)
-            self.session.commit()
-        except CustomerIdentificationConflictError:
-            self.session.rollback()
-            raise
-        except IntegrityError as exc:
-            self.session.rollback()
-            constraint_name = getattr(
-                getattr(exc.orig, "diag", None),
-                "constraint_name",
-                None,
-            )
-            error_message = str(exc.orig)
-            if (
-                constraint_name == "uq_customers_identification_number"
-                or "customers.identification_number" in error_message
-            ):
-                raise CustomerIdentificationConflictError(
-                    payload.customer_identification_number
-                ) from exc
-            if (
-                constraint_name in {"transactions_pkey", "pk_transactions"}
-                or "transactions.transaction_id" in error_message
-            ):
-                raise DuplicateTransactionError(payload.transaction_id) from exc
-            raise
+        transaction: Transaction | None = None
+        for attempt in range(2):
+            try:
+                # add_received 내부의 조회가 pending INSERT를 autoflush할 수 있으므로
+                # 저장 구성부터 commit까지 같은 IntegrityError 경계로 묶는다.
+                transaction = self.transaction_repository.add_received(payload)
+                self.session.commit()
+                break
+            except CustomerIdentificationConflictError:
+                self.session.rollback()
+                raise
+            except IntegrityError as exc:
+                self.session.rollback()
+                constraint_name, error_message = _integrity_error_details(exc)
+
+                # 최초 조회 이후 같은 transaction_id가 먼저 commit된 경우에도
+                # 기존 409 계약을 지키며 master race로 오인해 재시도하지 않는다.
+                if self.transaction_repository.get(payload.transaction_id) is not None:
+                    raise DuplicateTransactionError(payload.transaction_id) from exc
+                if _is_transaction_unique_violation(
+                    constraint_name,
+                    error_message,
+                ):
+                    raise DuplicateTransactionError(payload.transaction_id) from exc
+
+                if _is_customer_identification_violation(
+                    constraint_name,
+                    error_message,
+                ):
+                    # 동일 신규 고객끼리 경합하면 PK보다 identification unique가
+                    # 먼저 보고될 수도 있다. 승자 행이 같은 식별번호라면 한 번
+                    # 정상 upsert로 재실행하고, 다른 고객의 번호면 기존 409다.
+                    customer = self.session.get(Customer, payload.customer_id)
+                    if (
+                        customer is None
+                        or customer.identification_number
+                        != payload.customer_identification_number
+                    ):
+                        raise CustomerIdentificationConflictError(
+                            payload.customer_identification_number
+                        ) from exc
+                elif not _is_retryable_master_race(
+                    constraint_name,
+                    error_message,
+                ):
+                    raise
+
+                if attempt == 1:
+                    raise
+
+        assert transaction is not None
         self.session.refresh(transaction)
         # 저장 직후에는 요청 본문의 Feature가 DB 재조립 결과와 동일하므로
         # 조회를 한 번 아끼기 위해 그대로 사용한다.

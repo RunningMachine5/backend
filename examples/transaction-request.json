@@ -1,7 +1,6 @@
 {
   "transaction_id": "TX_CONTRACT_001",
   "customer_id": "C000494",
-  "customer_birth_date": "1981-06-15",
   "customer_personal_identifier": "sample-personal-token",
   "customer_identification_number": "sample-identification-token",
   "source_account_number": "sample-source-account",

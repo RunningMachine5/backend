@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -151,6 +152,11 @@ class FraudTypeScoreResult(SQLModel, table=True):
             "transaction_id",
             name="uq_fraud_type_score_results_transaction_id",
         ),
+        CheckConstraint(
+            "rule_filter_status IN "
+            "('APPLIED', 'SKIPPED_NOT_FRAUD', 'FAILED')",
+            name="ck_fraud_type_score_results_filter_status",
+        ),
     )
 
     id: int | None = Field(
@@ -173,7 +179,10 @@ class FraudTypeScoreResult(SQLModel, table=True):
         index=True,
         sa_type=BIGINT_PRIMARY_KEY,
     )
-    rule_filter_status: str | None = Field(default=None, max_length=32)
+    rule_filter_status: str = Field(
+        max_length=32,
+        nullable=False,
+    )
     primary_fraud_type: str | None = Field(
         default=None,
         max_length=64,

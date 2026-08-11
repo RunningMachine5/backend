@@ -245,16 +245,6 @@ $results = foreach ($row in $rows) {
     } else {
         ($response.rule_scores.PSObject.Properties.Name | Sort-Object) -join ","
     }
-    $topSignals = if ($null -eq $response.shap) {
-        "-"
-    } else {
-        @(
-            $response.shap.PSObject.Properties |
-                Sort-Object { [math]::Abs([double]$_.Value) } -Descending |
-                Select-Object -First 3 |
-                ForEach-Object { "$($_.Name)=$($_.Value)" }
-        ) -join "; "
-    }
 
     [pscustomobject]@{
         TransactionId = $row.ID
@@ -263,7 +253,6 @@ $results = foreach ($row in $rows) {
         MlFraud = $response.ml_is_fraud
         Probability = $response.fraud_probability
         Model = "$($response.model_name):$($response.model_version)"
-        TopSignals = $topSignals
         RuleSetId = $response.rule_set_id
         RuleTypes = $ruleTypes
     }
@@ -307,5 +296,5 @@ Write-Output "Top 10 risk examples"
 $results |
     Sort-Object Probability -Descending |
     Select-Object -First 10 `
-        TransactionId,CsvLabel,MlFraud,Probability,TopSignals,RuleSetId |
+        TransactionId,CsvLabel,MlFraud,Probability,RuleSetId,RuleTypes |
     Format-Table -AutoSize

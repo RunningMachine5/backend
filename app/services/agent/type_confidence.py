@@ -5,15 +5,9 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from numbers import Real
 
-
-class ClassificationStatus(str, Enum):
-    """Rule 상위 유형 간 구분이 충분한지를 나타낸다."""
-
-    CONFIDENT = "CONFIDENT"
-    AMBIGUOUS = "AMBIGUOUS"
+from app.domain.agent_status import ClassificationStatus
 
 
 @dataclass(frozen=True, slots=True)
