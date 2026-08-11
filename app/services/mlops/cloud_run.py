@@ -64,6 +64,17 @@ REVISION_TEMPLATE_INPUT_FIELDS = (
 class CloudRunAdminError(RuntimeError):
     """Cloud Run Admin API 요청이나 배포 안전성 검증 실패."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        request_may_have_been_accepted: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.request_may_have_been_accepted = request_may_have_been_accepted
+
 
 class GoogleAccessTokenProvider:
     """ADC access token을 안전하게 갱신하고 요청 사이에서 재사용한다."""
@@ -179,15 +190,45 @@ class CloudRunAdminClient:
                 headers={"Authorization": f"Bearer {self._token_provider()}"},
                 timeout=self.timeout_seconds,
             )
-            response.raise_for_status()
-            body = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.RequestError as exc:
+            # timeout/연결 단절은 서버가 요청을 처리한 뒤 응답만 유실됐을 수도
+            # 있으므로 jobs.run 호출자를 위한 수락 가능성을 보존한다.
             raise CloudRunAdminError(
-                f"Cloud Run Admin API {method} 요청에 실패했습니다."
+                f"Cloud Run Admin API {method} 요청에 실패했습니다.",
+                request_may_have_been_accepted=True,
+            ) from exc
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            # 명시적인 4xx는 Cloud Run이 요청을 거절한 결과다. HTTP 408은
+            # 처리 경계를 확정할 수 없는 timeout이므로 보수적으로 남긴다.
+            request_may_have_been_accepted = (
+                status_code >= 500 or status_code == 408
+            )
+            raise CloudRunAdminError(
+                f"Cloud Run Admin API {method} 요청에 실패했습니다.",
+                status_code=status_code,
+                request_may_have_been_accepted=request_may_have_been_accepted,
+            ) from exc
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            # 성공 HTTP 응답까지 왔으므로 요청 자체는 이미 수락됐을 수 있다.
+            raise CloudRunAdminError(
+                f"Cloud Run Admin API {method} 응답을 해석하지 못했습니다.",
+                status_code=response.status_code,
+                request_may_have_been_accepted=True,
             ) from exc
 
         if not isinstance(body, dict):
-            raise CloudRunAdminError("Cloud Run Admin API 응답이 JSON 객체가 아닙니다.")
+            raise CloudRunAdminError(
+                "Cloud Run Admin API 응답이 JSON 객체가 아닙니다.",
+                status_code=response.status_code,
+                request_may_have_been_accepted=True,
+            )
         return body
 
     def run_training(
@@ -196,9 +237,7 @@ class CloudRunAdminClient:
         min_pr_auc: float,
         min_recall: float,
         dataset_uri: str | None = None,
-        split_datetime: str | None = None,
         training_run_id: int | None = None,
-        champion_model_version: str | None = None,
     ) -> dict[str, Any]:
         """기존 Cloud Run Job을 환경변수 override와 함께 한 번 실행한다."""
 
@@ -211,22 +250,9 @@ class CloudRunAdminClient:
         ]
         if dataset_uri:
             env.append({"name": "TRAINING_DATA_URI", "value": dataset_uri})
-        if split_datetime:
-            env.append(
-                {"name": "TRAINING_SPLIT_DATETIME", "value": split_datetime}
-            )
         if training_run_id is not None:
             env.append(
                 {"name": "BACKEND_TRAINING_RUN_ID", "value": str(training_run_id)}
-            )
-        if champion_model_version is not None:
-            if not champion_model_version.isdigit():
-                raise CloudRunAdminError("champion model version은 숫자여야 합니다.")
-            env.append(
-                {
-                    "name": "CHAMPION_MODEL_VERSION",
-                    "value": champion_model_version,
-                }
             )
 
         container_override: dict[str, Any] = {"env": env}
@@ -241,8 +267,73 @@ class CloudRunAdminClient:
             },
         )
 
+    @staticmethod
+    def training_execution_name(operation: Mapping[str, Any]) -> str | None:
+        """jobs.run LRO에서 실제 Execution resource name만 추출합니다.
+
+        LRO 자체 이름을 ``cloud_run_execution_name`` 컬럼에 넣지 않습니다.
+        Cloud Run 응답 시점에 target이 없으면 완료 전까지 ``None``을 유지합니다.
+        """
+
+        response = operation.get("response")
+        metadata = operation.get("metadata")
+        candidates = [
+            response.get("name") if isinstance(response, dict) else None,
+            metadata.get("target") if isinstance(metadata, dict) else None,
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and "/executions/" in candidate:
+                execution_name = candidate.rstrip("/").rsplit("/", 1)[-1]
+                if execution_name and all(
+                    character.isalnum() or character == "-"
+                    for character in execution_name
+                ):
+                    return execution_name
+        return None
+
     def get_training_status(self) -> dict[str, Any]:
         return self._request("GET", self._job_name)
+
+    def get_training_execution(self, execution_name: str) -> dict[str, Any]:
+        """이 Training Job에 속한 단일 Execution의 live 상태를 조회한다."""
+
+        if not execution_name or any(
+            character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+            for character in execution_name
+        ):
+            raise CloudRunAdminError("올바르지 않은 Cloud Run execution 이름입니다.")
+        return self._request(
+            "GET",
+            f"{self._job_name}/executions/{execution_name}",
+        )
+
+    @staticmethod
+    def training_execution_outcome(execution: Mapping[str, Any]) -> str:
+        """Cloud Run v2 terminalCondition을 내부 최소 상태로 정규화한다."""
+
+        terminal = execution.get("terminalCondition")
+        if isinstance(terminal, dict):
+            state = terminal.get("state")
+            if state == "CONDITION_SUCCEEDED":
+                return "SUCCEEDED"
+            if state == "CONDITION_FAILED":
+                return "FAILED"
+
+        failed_count = execution.get("failedCount", 0)
+        cancelled_count = execution.get("cancelledCount", 0)
+        if any(
+            isinstance(count, int) and count > 0
+            for count in (failed_count, cancelled_count)
+        ):
+            return "FAILED"
+        succeeded_count = execution.get("succeededCount", 0)
+        if (
+            isinstance(succeeded_count, int)
+            and succeeded_count > 0
+            and execution.get("completionTime")
+        ):
+            return "SUCCEEDED"
+        return "RUNNING"
 
     def get_operation(self, operation_id: str) -> dict[str, Any]:
         if not operation_id or any(
@@ -257,6 +348,79 @@ class CloudRunAdminClient:
 
     def get_serving_status(self) -> dict[str, Any]:
         return self._request("GET", self._service_name)
+
+    def get_model_deployment_status(self, model_version: str) -> dict[str, Any]:
+        """Cloud Run live 상태에서 특정 모델의 100% 전환 완료 여부를 판정한다.
+
+        확정 ERD에는 serving revision/operation 컬럼이 없으므로 DB의 과거
+        operation을 신뢰하지 않습니다. 최신 Ready 리비전, 그 리비전의 모델
+        환경변수, 현재 traffic을 한 번의 Service 조회 결과로 함께 검증합니다.
+        """
+
+        self._deployment_tag(model_version)
+        service = self.get_serving_status()
+        latest_created = self._revision_name(service.get("latestCreatedRevision"))
+        latest_ready = self._revision_name(service.get("latestReadyRevision"))
+
+        template = self._copy_template(service)
+        container = self._target_container(template)
+        env = container.get("env", [])
+        if not isinstance(env, list):
+            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+        env_by_name = {
+            item.get("name"): item.get("value")
+            for item in env
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        revision_model_version = env_by_name.get("ML_MODEL_VERSION")
+
+        traffic_to_ready = 0
+        total_traffic = 0
+        statuses = service.get("trafficStatuses", [])
+        if isinstance(statuses, list):
+            for target in statuses:
+                if not isinstance(target, dict):
+                    continue
+                percent = target.get("percent", 0)
+                if not isinstance(percent, int) or percent < 0:
+                    continue
+                total_traffic += percent
+                revision = self._revision_name(target.get("revision"))
+                if revision is None and target.get("type") == TRAFFIC_LATEST:
+                    revision = latest_created
+                if revision and revision == latest_ready:
+                    traffic_to_ready += percent
+
+        reconciling = bool(service.get("reconciling", False))
+        ready = (
+            not reconciling
+            and latest_created is not None
+            and latest_created == latest_ready
+            and revision_model_version == model_version
+            and traffic_to_ready == 100
+            and total_traffic == 100
+        )
+        reason: str | None = None
+        if reconciling:
+            reason = "Serving Service가 아직 조정 중입니다."
+        elif latest_created is None or latest_created != latest_ready:
+            reason = "최신 Serving 리비전이 아직 Ready 상태가 아닙니다."
+        elif revision_model_version != model_version:
+            reason = "최신 Ready 리비전의 모델 버전이 학습 실행과 다릅니다."
+        elif traffic_to_ready != 100 or total_traffic != 100:
+            reason = "승격 대상 리비전에 트래픽 100%가 반영되지 않았습니다."
+
+        return {
+            "ready": ready,
+            "reason": reason,
+            "modelVersion": model_version,
+            "revisionModelVersion": revision_model_version,
+            "revision": latest_ready,
+            "trafficPercent": traffic_to_ready,
+            "totalTrafficPercent": total_traffic,
+            "reconciling": reconciling,
+            "service": service.get("name"),
+        }
 
     @staticmethod
     def _deployment_tag(model_version: str) -> str:

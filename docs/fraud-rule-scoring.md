@@ -405,6 +405,7 @@ DELETE /rule-sets/{id}/rules/{rule_id}
 
 POST   /rule-sets/{id}/validate
 POST   /rule-sets/{id}/test
+POST   /rule-sets/{id}/replay
 POST   /rule-sets/{id}/activate
 ```
 
@@ -420,6 +421,7 @@ GET /rule-sets?rule_set_status=DRAFT로 수정 중인 DRAFT 확인
 → DELETE로 CARD_FRAUD 룰 제거
 → 유효성 검증
 → 실제 54개 샘플로 모든 유형 점수 확인
+→ 최신 ML 양성 거래를 최대 1,000건 리플레이해 ACTIVE 대비 영향 확인
 → 활성화
 → 기존 ACTIVE는 ARCHIVED
 → 새 버전이 ACTIVE
@@ -429,6 +431,25 @@ GET /rule-sets?rule_set_status=DRAFT로 수정 중인 DRAFT 확인
 동시에 여러 DRAFT를 만들 수 없다. 작업을 취소하려면
 `DELETE /rule-sets/{id}`로 DRAFT 전체를 폐기한 뒤 다시 생성한다. 이 API는 DRAFT에만
 허용되며 ACTIVE와 ARCHIVED는 삭제할 수 없다.
+
+`POST /rule-sets/{id}/replay`는 DRAFT에만 허용한다. 거래별 최신 ML 예측을
+먼저 확정한 뒤 그 결과가 양성인 거래를 `transaction_datetime DESC,
+transaction_id DESC` 순서로 기본·최대 1,000건 선택한다. 동일한 정규화 DB
+표본을 ACTIVE와 DRAFT에 각각 적용하고 결과는 응답으로만 반환한다.
+
+```text
+ML 최신 양성 거래
+→ Transaction + Customer + 출금 Account + DerivedFeatures 일괄 조회
+→ assemble_ml_features로 거래별 54개 Feature 복원
+→ 동일 Rule Context에 ACTIVE·DRAFT 적용
+→ 점수·근거·구성요소 유입/이탈 영향 요약
+```
+
+이 기능은 사기유형 확정 라벨과 비교하는 정확도 백테스트가 아니다. 거래·ML 예측·
+`fraud_type_score_results`를 변경하지 않으며, 조립 오류는 `error_count`로 분리하고
+`evaluated_count`만 요약 통계의 분모로 사용한다. `detail_limit`은 변경 거래와 오류
+상세를 각각 최대 100건으로 제한하며 `0`이면 요약만 반환한다. 실행 중 ACTIVE나
+DRAFT의 상태·갱신 시각이 바뀌면 혼합된 결과 대신 `409`로 다시 실행하도록 한다.
 
 ## 12. 구형 스켈레톤 코드
 

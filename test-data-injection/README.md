@@ -16,8 +16,9 @@ backend/test-data-injection/
 ```text
 transactions.csv 일부 행
 → Backend POST /transactions
+→ 고객·계좌·거래·파생 피처 네 테이블에 54개 입력 정규화 저장
 → Git 포함 fdshield-fraud-detector v5 /predict
-→ ML 결과 저장
+→ 사기 판정·확률·모델 이름·버전·지연시간 저장
 → 사기 거래는 ACTIVE Rule Set으로 4개 유형 점수 계산
 → 확정 라벨과 함께 PostgreSQL 저장
 ```
@@ -159,10 +160,14 @@ IP·MAC은 관계를 보존하는 `LOCAL_*` 값으로 비식별화했다. ML 추
 ```text
 CSV 행 타입 변환
 → POST /transactions
+→ 정규화 네 테이블에서 54개 Feature 재조립
 → 고정 운영 v5 /predict
-→ 예측 결과와 91개 실제 XGBoost contribution 저장
+→ 예측 메타데이터 저장
 → 사기 판정이면 ACTIVE 룰셋 4개 유형 점수 저장
 ```
+
+91개 XGBoost contribution은 실행 시작 전 ML Serving 직접 preflight에서 모델 계약을
+검증하는 데만 사용합니다. 최신 Backend 응답과 DB에는 거래별 SHAP을 저장하지 않습니다.
 
 처음 실행할 때 ACTIVE 룰셋이 없으면 코드에 포함된 최종 기본 룰 4개를 생성·검증·활성화한다.
 이미 같은 ID가 저장돼 있으면 중복 POST하지 않고 기존 결과를 조회하므로 재실행할 수 있다.
@@ -175,29 +180,16 @@ CSV 행 타입 변환
 - 새로 생성된 수와 이미 존재한 수
 - ML 사기 판정 수와 룰 점수 저장 수
 - CSV 라벨과 ML 판정의 2×2 교차표
-- 사기확률이 높은 상위 10건과 주요 SHAP 신호
+- 사기확률이 높은 상위 10건과 적용 룰 유형
 
-현재 고정 운영 v5와 로컬 PostgreSQL에서 새 `LOCAL_V5_TX_*` 거래로 확인한 판정 분포는
-다음과 같다.
+판정 분포와 신규·재사용 건수는 현재 코드와 비어 있는 로컬 DB로 다시 실행한 결과가
+스크립트 끝에 출력됩니다. 같은 거래가 이미 있으면 `CreatedNow=0`,
+`AlreadyExisted=1000`이 될 수 있습니다. `LabelAgreement`와 2×2 교차표는 CSV 라벨 전달과
+예측 흐름을 눈으로 확인하기 위한 참고값이며 독립적인 운영 성능평가나 일반화 성능으로
+해석하지 않습니다.
 
-| CSV 라벨 | ML 정상 | ML 사기 | 합계 |
-|---|---:|---:|---:|
-| 정상 0 | 898 | 2 | 900 |
-| 이상 1 | 0 | 100 | 100 |
-| 합계 | 898 | 102 | 1,000 |
-
-ML이 사기로 판정한 102건에는 ACTIVE 룰셋의 4개 사기유형 점수가 저장됐다. CSV 라벨과
-ML 판정은 998건에서 일치했다. 두 번째 동일 실행에서는 `CreatedNow=0`,
-`AlreadyExisted=1000`으로 기존 결과를 재사용했다.
-
-이 결과는 생성형 1,000건 로컬 표본에 대한 연동 확인값이다. 독립적인 운영 성능평가나
-일반화 성능으로 해석하지 않는다.
-
-응답의 `shap`은 v5 XGBoost가 계산한 실제 per-transaction contribution이며 모델 Feature
-91개 키를 모두 반환한다. 스크립트의 `TopSignals`는 절대 기여도가 큰 상위 3개를
-보여준다. 응답에서는 XGBoost bias 항을 제외하므로 SHAP 합계만으로 예측확률을 다시
-계산하면 안 된다. 전체 Feature importance와 학습 시 생성한 SHAP summary plot은 MLflow
-학습 artifact에서 관리하며 이 로컬 거래 E2E 범위에는 포함하지 않는다.
+모델 버전·학습 및 검증 지표·파라미터·태그와 후보·champion 성능 비교는 MLflow에서
+관리하며 이 로컬 거래 E2E 범위에는 포함하지 않습니다.
 
 ## 5. CSV 타입 변환이 필요한 이유
 
@@ -246,4 +238,5 @@ Pop-Location
 - `ML Serving preflight payload를 찾을 수 없습니다`: Backend·ML 저장소가 같은 상위 폴더에 있고 ML 최신 코드인지 확인한다.
 - `ML Serving preflight /predict 실패`: health만이 아니라 v5 모델 로드와 54개 Feature 추론이 정상인지 ML Serving 로그를 확인한다.
 - `expected=fdshield-fraud-detector:5` 오류: ML 저장소 최신 코드로 다시 빌드한다.
-- 전체 Feature importance와 학습 SHAP summary는 MLflow 학습 artifact에서 확인한다.
+- 모델 기본정보와 후보·champion 성능 비교는
+  `/mlops/training/runs/{id}/model-details`에서 확인한다.

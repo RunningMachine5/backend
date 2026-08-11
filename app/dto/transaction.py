@@ -1,14 +1,24 @@
+import re
 from dataclasses import dataclass
 from datetime import datetime
+from ipaddress import ip_address
 from typing import Any
 
-from pydantic import AliasChoices, ConfigDict, StrictBool, model_validator
+from pydantic import (
+    AliasChoices,
+    ConfigDict,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 from sqlmodel import Field, SQLModel
 
 from app.dto.ml_prediction import (
     RAW_TRANSACTION_FEATURE_COLUMNS,
     MLTransactionFeatures,
 )
+
+MAC_ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
 
 class TransactionCreateDTO(SQLModel):
@@ -74,6 +84,30 @@ class TransactionCreateDTO(SQLModel):
         validation_alias=AliasChoices("raw_features", "raw_data"),
     )
 
+    @field_validator("ip_address", mode="before")
+    @classmethod
+    def validate_ip_address(cls, value: object) -> str | None:
+        """PostgreSQL INET에 도달하기 전에 주소를 검증·정규화한다."""
+
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            return ip_address(str(value).strip()).compressed
+        except ValueError as exc:
+            raise ValueError("IP_Address는 올바른 IPv4 또는 IPv6여야 합니다.") from exc
+
+    @field_validator("mac_address", mode="before")
+    @classmethod
+    def validate_mac_address(cls, value: object) -> str | None:
+        """PostgreSQL MACADDR가 받는 6옥텟 주소를 표준 표기로 정규화한다."""
+
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        normalized = str(value).strip()
+        if MAC_ADDRESS_PATTERN.fullmatch(normalized) is None:
+            raise ValueError("MAC_Address는 6옥텟 MAC 주소여야 합니다.")
+        return normalized.replace("-", ":").lower()
+
     @model_validator(mode="before")
     @classmethod
     def split_flat_csv_row(cls, value: Any) -> Any:
@@ -86,15 +120,9 @@ class TransactionCreateDTO(SQLModel):
 
         feature_keys = set(RAW_TRANSACTION_FEATURE_COLUMNS)
         feature_keys.update(MLTransactionFeatures.model_fields)
-        raw_features = {
-            key: item
-            for key, item in value.items()
-            if key in feature_keys
-        }
+        raw_features = {key: item for key, item in value.items() if key in feature_keys}
         remaining = {
-            key: item
-            for key, item in value.items()
-            if key not in feature_keys
+            key: item for key, item in value.items() if key not in feature_keys
         }
         remaining["raw_features"] = raw_features
         return remaining
@@ -168,6 +196,7 @@ class TransactionFeaturesDTO:
 
 
 __all__ = [
+    "MAC_ADDRESS_PATTERN",
     "TransactionCreateDTO",
     "TransactionDTO",
     "TransactionFeaturesDTO",

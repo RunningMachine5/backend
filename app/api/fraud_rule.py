@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +24,9 @@ from app.dto.fraud_rule import (
     FraudRuleComponentCreate,
     FraudRuleComponentResponse,
     FraudRuleCreate,
+    FraudRuleReplayRequest,
+    FraudRuleReplayResponse,
+    FraudRuleReplayRuleSetResponse,
     FraudRuleResponse,
     FraudRuleSetDraftCreate,
     FraudRuleSetResponse,
@@ -45,7 +49,9 @@ from app.services.rules.engine import (
 )
 from app.services.rules.expression_evaluator import RuleExpressionError
 from app.services.rules.feature_builder import RuleFeatureError
+from app.services.rules import repository as rule_repository
 from app.services.rules.repository import rule_set_definition_from_database
+from app.services.rules.replay import replay_rule_sets
 
 router = APIRouter(
     tags=["fraud-rule-admin"],
@@ -694,11 +700,9 @@ def _expression_type_issues(
             )
 
 
-def _validation_issues(
-    session: Session,
-    rule_set: FraudRuleSet,
+def _definition_validation_issues(
+    definition: RuleSetDefinition,
 ) -> list[FraudRuleValidationIssue]:
-    definition = rule_set_definition_from_database(session, rule_set)
     issues: list[FraudRuleValidationIssue] = []
     try:
         RuleEngine().validate_rule_set(definition)
@@ -716,6 +720,15 @@ def _validation_issues(
                 )
             )
     return issues
+
+
+def _validation_issues(
+    session: Session,
+    rule_set: FraudRuleSet,
+) -> list[FraudRuleValidationIssue]:
+    return _definition_validation_issues(
+        rule_set_definition_from_database(session, rule_set)
+    )
 
 
 def _copy_definition_rules(
@@ -1046,6 +1059,120 @@ def test_rule_set(
             )
             for type_code, score in result.type_scores.items()
         ],
+    )
+
+
+@router.post(
+    "/rule-sets/{rule_set_id}/replay",
+    response_model=FraudRuleReplayResponse,
+)
+def replay_draft_rule_set(
+    rule_set_id: int,
+    session: SessionDep,
+    payload: FraudRuleReplayRequest | None = None,
+) -> FraudRuleReplayResponse:
+    """최신 ML 양성 거래에 ACTIVE와 DRAFT를 적용해 영향만 비교한다.
+
+    거래, ML 예측, 기존 운영 룰 점수는 생성·수정하지 않는다. 실행 시작 후
+    ACTIVE/DRAFT 상태나 갱신 시각이 달라지면 혼합 결과를 반환하지 않고 409로
+    중단한다.
+    """
+
+    draft_rule_set = _get_rule_set(session, rule_set_id)
+    _assert_draft(draft_rule_set)
+    draft_definition = rule_set_definition_from_database(session, draft_rule_set)
+    draft_issues = _definition_validation_issues(draft_definition)
+    if draft_issues:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "유효하지 않은 DRAFT 룰셋은 리플레이할 수 없습니다.",
+                "issues": [issue.model_dump() for issue in draft_issues],
+            },
+        )
+
+    active = rule_repository.get_active_rule_set(session)
+    if active is None:
+        raise _conflict("ACTIVE 룰셋이 없어 DRAFT와 비교할 수 없습니다.")
+    active_rule_set, active_definition = active
+    if active_rule_set.id == draft_rule_set.id:
+        raise _conflict("DRAFT가 이미 ACTIVE로 변경되어 다시 조회해야 합니다.")
+    active_issues = _definition_validation_issues(active_definition)
+    if active_issues:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "현재 ACTIVE 룰셋이 유효하지 않아 비교할 수 없습니다.",
+                "issues": [issue.model_dump() for issue in active_issues],
+            },
+        )
+
+    snapshots = {
+        draft_rule_set.id: (
+            draft_rule_set.status,
+            draft_rule_set.updated_at,
+        ),
+        active_rule_set.id: (
+            active_rule_set.status,
+            active_rule_set.updated_at,
+        ),
+    }
+    request = payload or FraudRuleReplayRequest()
+    result = replay_rule_sets(
+        session=session,
+        active_definition=active_definition,
+        draft_definition=draft_definition,
+        sample_size=request.sample_size,
+        detail_limit=request.detail_limit,
+    )
+
+    # 긴 리플레이 중 관리자가 룰셋을 수정·활성화했으면 시작 시점 정의와 현재
+    # 상태가 섞인 결과가 된다. 쓰기 잠금을 잡지 않고 최신 상태만 다시 확인한다.
+    session.expire_all()
+    for snapshot_id, (snapshot_status, snapshot_updated_at) in snapshots.items():
+        current = session.get(FraudRuleSet, snapshot_id)
+        if (
+            current is None
+            or current.status != snapshot_status
+            or current.updated_at != snapshot_updated_at
+        ):
+            raise _conflict(
+                "리플레이 도중 룰셋이 변경되었습니다. 최신 상태로 다시 실행하세요."
+            )
+
+    return FraudRuleReplayResponse(
+        active_rule_set=FraudRuleReplayRuleSetResponse(
+            rule_set_id=active_rule_set.id,
+            version=active_rule_set.version,
+            updated_at=active_rule_set.updated_at,
+        ),
+        draft_rule_set=FraudRuleReplayRuleSetResponse(
+            rule_set_id=draft_rule_set.id,
+            version=draft_rule_set.version,
+            updated_at=draft_rule_set.updated_at,
+        ),
+        requested_count=result.requested_count,
+        selected_count=result.selected_count,
+        evaluated_count=result.evaluated_count,
+        error_count=result.error_count,
+        summary_denominator=result.evaluated_count,
+        detail_limit=request.detail_limit,
+        has_more=result.has_more,
+        changed_transaction_count=result.changed_transaction_count,
+        changed_transaction_rate=result.changed_transaction_rate,
+        score_changed_transaction_count=result.score_changed_transaction_count,
+        evidence_changed_transaction_count=result.evidence_changed_transaction_count,
+        active_no_match_count=result.active_no_match_count,
+        draft_no_match_count=result.draft_no_match_count,
+        no_match_count_delta=result.no_match_count_delta,
+        type_summaries=[asdict(item) for item in result.type_summaries],
+        component_impacts=[asdict(item) for item in result.component_impacts],
+        changed_transaction_details=[
+            asdict(item) for item in result.changed_transaction_details
+        ],
+        error_details=[asdict(item) for item in result.error_details],
+        changed_details_truncated=result.changed_details_truncated,
+        error_details_truncated=result.error_details_truncated,
     )
 
 

@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import secrets
 from typing import Annotated, Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from app.core import config
 from app.core.db import SessionDep
 from app.data.model.mlops import DatasetVersion, TrainingRun
-from app.dto.ml_prediction import MLTransactionFeatures
+from app.dto.mlops import (
+    DatasetVersionRequest,
+    DeploymentCompleteRequest,
+    LabeledDatasetBuildRequest,
+    MLflowModelDetails,
+    ModelPromotionRequest,
+    TrainingDecision,
+    TrainingDecisionRequest,
+    TrainingResultRequest,
+    TrainingResultStatus,
+    TrainingRunRequest,
+)
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
     CloudRunAdminClientDep,
@@ -24,6 +33,10 @@ from app.services.mlops.dataset_builder import (
     DatasetBuildError,
     DatasetStorageError,
     LabeledDatasetBuilderDep,
+)
+from app.services.mlops.mlflow import (
+    MLflowRegistryClientDep,
+    MLflowRegistryError,
 )
 
 
@@ -55,76 +68,6 @@ router = APIRouter(
 )
 
 
-class TrainingRunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    dataset_version_id: int = Field(gt=0)
-    min_pr_auc: float = Field(default=0.0, ge=0.0, le=1.0)
-    min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-class DatasetVersionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    version: str = Field(min_length=1, max_length=64)
-    gcs_uri: str = Field(min_length=1, max_length=2048)
-    row_count: int = Field(ge=0)
-
-    @field_validator("gcs_uri")
-    @classmethod
-    def validate_gcs_uri(cls, value: str | None) -> str | None:
-        """Cloud Run Job이 읽을 수 있는 명시적인 GCS 객체만 허용한다."""
-
-        if value is None:
-            return None
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme != "gs"
-            or not parsed.netloc
-            or parsed.path in {"", "/"}
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("학습 데이터 URI는 gs://bucket/object 형식이어야 합니다.")
-        return value
-
-
-class LabeledDatasetBuildRequest(BaseModel):
-    """기존 불변 CSV에 DB 확정 라벨을 반영할 새 데이터셋 계약."""
-
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    base_dataset_version_id: int = Field(gt=0)
-    version: str = Field(min_length=1, max_length=64)
-    gcs_uri: str = Field(min_length=1, max_length=2048)
-
-    @field_validator("gcs_uri")
-    @classmethod
-    def validate_gcs_uri(cls, value: str) -> str:
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme != "gs"
-            or not parsed.netloc
-            or parsed.path in {"", "/"}
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("학습 데이터 URI는 gs://bucket/object 형식이어야 합니다.")
-        return value
-
-
-class ModelRevisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    model_version: str = Field(pattern=r"^[0-9]+$")
-
-
-class ModelPromotionRequest(ModelRevisionRequest):
-    training_run_id: int | None = Field(default=None, gt=0)
-    transaction_id: str = Field(min_length=1, max_length=64)
-    features: MLTransactionFeatures
-
-
 def _operation_id(payload: dict[str, Any]) -> str | None:
     name = payload.get("name")
     if not isinstance(name, str) or "/operations/" not in name:
@@ -150,6 +93,11 @@ def _dataset_payload(dataset: DatasetVersion) -> dict[str, Any]:
 
 
 def _training_run_payload(run: TrainingRun) -> dict[str, Any]:
+    details_endpoint = (
+        f"/mlops/training/runs/{run.id}/model-details"
+        if run.id is not None and run.mlflow_run_id is not None
+        else None
+    )
     return {
         "id": run.id,
         "model_key": run.model_key,
@@ -158,6 +106,11 @@ def _training_run_payload(run: TrainingRun) -> dict[str, Any]:
         "mlflow_run_id": run.mlflow_run_id,
         "status": run.status,
         "created_at": run.created_at,
+        "model_details": {
+            "source": "MLFLOW",
+            "run_id": run.mlflow_run_id,
+            "details_endpoint": details_endpoint,
+        },
     }
 
 
@@ -166,6 +119,38 @@ def _get_training_run_or_404(run_id: int, session: SessionDep) -> TrainingRun:
     if run is None:
         raise HTTPException(status_code=404, detail="학습 실행 이력을 찾을 수 없습니다.")
     return run
+
+
+def _get_training_run_for_update_or_404(
+    run_id: int,
+    session: SessionDep,
+) -> TrainingRun:
+    """상태전이 직전에 최신 행을 다시 읽고 PostgreSQL row lock을 잡는다."""
+
+    run = session.exec(
+        select(TrainingRun)
+        .where(TrainingRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="학습 실행 이력을 찾을 수 없습니다.")
+    return run
+
+
+def _resolve_run_model_version(
+    run: TrainingRun,
+    mlflow: MLflowRegistryClientDep,
+) -> str:
+    if run.mlflow_run_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="학습 실행에 MLflow run ID가 기록되지 않았습니다.",
+        )
+    try:
+        return mlflow.resolve_model_version(run.model_key, run.mlflow_run_id)
+    except MLflowRegistryError as exc:
+        raise _upstream_error(exc) from exc
 
 
 @router.post("/datasets", status_code=status.HTTP_201_CREATED)
@@ -282,9 +267,8 @@ def start_training_run(
     session.refresh(run)
 
     try:
-        # dataset_versions.split_datetime과 training_runs.model_version이
-        # ERD에서 빠지면서 학습/평가 분리 시점과 champion 비교 대상을 더는
-        # 전달할 수 없다. Training Job이 자체 기본값을 쓰게 된다.
+        # 데이터셋 분리 정책과 champion 버전은 Training Job/MLflow가 원본이다.
+        # Backend는 고정된 데이터 URI와 실행 ID만 override한다.
         operation = client.run_training(
             min_pr_auc=payload.min_pr_auc,
             min_recall=payload.min_recall,
@@ -292,17 +276,33 @@ def start_training_run(
             training_run_id=run.id,
         )
     except CloudRunAdminError as exc:
-        run.status = "FAILED"
-        session.add(run)
-        session.commit()
+        # jobs.run 응답이 늦거나 끊긴 사이 Job callback이 먼저 종결했을 수
+        # 있다. timeout/5xx/응답 파싱 실패는 요청 수락 여부가 불명하므로
+        # REQUESTED를 유지해 뒤늦은 callback과 reconcile을 허용한다. 명시적인
+        # 4xx 같은 확정 거절만 FAILED로 종결한다.
+        locked_run = _get_training_run_for_update_or_404(run.id, session)
+        if (
+            locked_run.status == "REQUESTED"
+            and not exc.request_may_have_been_accepted
+        ):
+            locked_run.status = "FAILED"
+            session.add(locked_run)
+            session.commit()
         raise _upstream_error(exc) from exc
-    run.cloud_run_execution_name = operation.get("name")
-    run.status = "RUNNING"
-    session.add(run)
+
+    # 매우 빠른 Job은 jobs.run HTTP 응답보다 callback이 먼저 도착할 수 있다.
+    # row lock으로 callback과 직렬화하고 REQUESTED 상태만 RUNNING으로 옮긴다.
+    locked_run = _get_training_run_for_update_or_404(run.id, session)
+    execution_name = client.training_execution_name(operation)
+    if locked_run.cloud_run_execution_name is None and execution_name is not None:
+        locked_run.cloud_run_execution_name = execution_name
+    if locked_run.status == "REQUESTED":
+        locked_run.status = "RUNNING"
+    session.add(locked_run)
     session.commit()
-    session.refresh(run)
+    session.refresh(locked_run)
     return {
-        "training_run": _training_run_payload(run),
+        "training_run": _training_run_payload(locked_run),
         "operation_id": _operation_id(operation),
         "operation": operation,
     }
@@ -319,6 +319,208 @@ def list_training_runs(session: SessionDep) -> list[dict[str, Any]]:
 @router.get("/training/runs/{run_id}")
 def get_training_run(run_id: int, session: SessionDep) -> dict[str, Any]:
     return _training_run_payload(_get_training_run_or_404(run_id, session))
+
+
+@router.get(
+    "/training/runs/{run_id}/model-details",
+    response_model=MLflowModelDetails,
+)
+def get_training_run_model_details(
+    run_id: int,
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """지표·모델 버전을 DB 복제본이 아닌 MLflow 원본에서 조회한다."""
+
+    run = _get_training_run_or_404(run_id, session)
+    if run.mlflow_run_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="학습 실행에 MLflow run ID가 기록되지 않았습니다.",
+        )
+    try:
+        return mlflow.get_model_details(run.model_key, run.mlflow_run_id)
+    except MLflowRegistryError as exc:
+        raise _upstream_error(exc) from exc
+
+
+@router.post("/training/runs/{run_id}/result")
+def record_training_result(
+    run_id: int,
+    payload: TrainingResultRequest,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Training Job 결과를 최소 TrainingRun 스키마에 멱등 기록한다."""
+
+    run = _get_training_run_for_update_or_404(run_id, session)
+    execution_changed = False
+    if payload.cloud_run_execution_name is not None:
+        if (
+            run.cloud_run_execution_name is not None
+            and run.cloud_run_execution_name != payload.cloud_run_execution_name
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="이미 기록된 Cloud Run execution과 다른 학습 결과입니다.",
+            )
+        if run.cloud_run_execution_name is None:
+            run.cloud_run_execution_name = payload.cloud_run_execution_name
+            execution_changed = True
+
+    if payload.status == TrainingResultStatus.SUCCEEDED:
+        assert payload.mlflow_run_id is not None
+        if run.status == "FAILED":
+            raise HTTPException(
+                status_code=409,
+                detail="실패로 종결된 학습 실행에는 성공 결과를 기록할 수 없습니다.",
+            )
+        if run.status not in {"REQUESTED", "RUNNING"} and (
+            run.mlflow_run_id != payload.mlflow_run_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="이미 기록된 MLflow run ID와 다른 학습 결과입니다.",
+            )
+        if run.status in {"REQUESTED", "RUNNING"} and (
+            run.mlflow_run_id is not None
+            and run.mlflow_run_id != payload.mlflow_run_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="이미 기록된 MLflow run ID와 다른 학습 결과입니다.",
+            )
+        if run.status in {"REQUESTED", "RUNNING"}:
+            run.mlflow_run_id = payload.mlflow_run_id
+            run.status = "CANDIDATE"
+            execution_changed = True
+        if execution_changed:
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+        # 같은 성공 callback은 CANDIDATE 이후의 승인/배포 상태를 되돌리지 않는다.
+        return _training_run_payload(run)
+
+    if run.status in {"REQUESTED", "RUNNING"}:
+        run.status = "FAILED"
+        execution_changed = True
+    elif run.status != "FAILED":
+        raise HTTPException(
+            status_code=409,
+            detail="이미 성공 결과가 기록된 학습 실행을 실패로 변경할 수 없습니다.",
+        )
+    if execution_changed:
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+    return _training_run_payload(run)
+
+
+@router.post(
+    "/training/runs/{run_id}/decision",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def decide_training_run(
+    run_id: int,
+    payload: TrainingDecisionRequest,
+    client: CloudRunAdminClientDep,
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """학습 실행을 거절하거나 MLflow가 확인한 후보를 0%로 staging한다."""
+
+    run = _get_training_run_for_update_or_404(run_id, session)
+    initial_decision = run.status == "CANDIDATE" and not payload.restage
+    explicit_restage = (
+        run.status == "STAGED"
+        and payload.decision == TrainingDecision.APPROVE
+        and payload.restage
+    )
+    if not initial_decision and not explicit_restage:
+        raise HTTPException(status_code=409, detail="검토 가능한 후보 모델이 아닙니다.")
+    model_version = _resolve_run_model_version(run, mlflow)
+    decision_tags = {"backend_decision": payload.decision.value}
+    if payload.reason:
+        decision_tags["backend_decision_reason"] = payload.reason
+    try:
+        mlflow.set_model_version_tags(
+            run.model_key,
+            model_version,
+            decision_tags,
+        )
+    except MLflowRegistryError as exc:
+        raise _upstream_error(exc) from exc
+    if payload.decision == TrainingDecision.REJECT:
+        run.status = "REJECTED"
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        return {"training_run": _training_run_payload(run), "operation": None}
+
+    try:
+        result = client.create_model_revision(model_version)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+    run.status = "STAGED"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return {
+        "training_run": _training_run_payload(run),
+        "model_version": model_version,
+        "operation_id": _operation_id(result["operation"]),
+        **result,
+    }
+
+
+@router.post("/training/runs/{run_id}/reconcile")
+def reconcile_training_run(
+    run_id: int,
+    client: CloudRunAdminClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """callback 유실 시 Cloud Run Execution의 종결 실패를 DB 상태에 반영한다.
+
+    성공 Execution만으로는 MLflow run ID를 알 수 없으므로 CANDIDATE를
+    추측하지 않는다. 성공했지만 callback이 없는 경우에는 운영자가 callback
+    설정을 확인할 수 있도록 409로 명확히 알린다.
+    """
+
+    run = _get_training_run_for_update_or_404(run_id, session)
+    if run.status not in {"REQUESTED", "RUNNING"}:
+        return {
+            "training_run": _training_run_payload(run),
+            "execution_outcome": "UNCHANGED",
+            "execution": None,
+        }
+    if run.cloud_run_execution_name is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cloud Run execution 이름이 없어 상태를 대조할 수 없습니다.",
+        )
+    try:
+        execution = client.get_training_execution(run.cloud_run_execution_name)
+        outcome = client.training_execution_outcome(execution)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+
+    if outcome == "FAILED":
+        run.status = "FAILED"
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+    elif outcome == "SUCCEEDED" and run.mlflow_run_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "학습 Execution은 성공했지만 결과 callback이 기록되지 않았습니다. "
+                "callback 설정과 MLflow run을 확인해야 합니다."
+            ),
+        )
+    return {
+        "training_run": _training_run_payload(run),
+        "execution_outcome": outcome,
+        "execution": execution,
+    }
 
 
 @router.get("/training/status")
@@ -349,27 +551,6 @@ def get_operation(
         raise _upstream_error(exc) from exc
 
 
-@router.post(
-    "/serving/revisions",
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def create_serving_revision(
-    payload: ModelRevisionRequest,
-    client: CloudRunAdminClientDep,
-) -> dict[str, Any]:
-    """현재 트래픽을 보존하고 새 모델의 태그 리비전 생성을 요청한다."""
-
-    try:
-        result = client.create_model_revision(payload.model_version)
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
-    operation = result["operation"]
-    return {
-        "operation_id": _operation_id(operation),
-        **result,
-    }
-
-
 @router.get("/serving/status")
 def get_serving_status(
     client: CloudRunAdminClientDep,
@@ -396,31 +577,94 @@ def get_serving_status(
 def promote_serving_revision(
     payload: ModelPromotionRequest,
     client: CloudRunAdminClientDep,
+    mlflow: MLflowRegistryClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
     """태그 리비전을 실제 예측으로 검증하고 100% 트래픽 승격을 요청한다."""
 
-    run: TrainingRun | None = None
-    if payload.training_run_id is not None:
-        run = _get_training_run_or_404(payload.training_run_id, session)
+    run = _get_training_run_or_404(payload.training_run_id, session)
+    if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED"}:
+        raise HTTPException(status_code=409, detail="승격 가능한 학습 실행이 아닙니다.")
+    model_version = _resolve_run_model_version(run, mlflow)
     try:
         result = client.promote_model_revision(
-            model_version=payload.model_version,
+            model_version=model_version,
             transaction_id=payload.transaction_id,
             features=payload.features.model_dump(mode="json", by_alias=True),
         )
     except (CloudRunAdminError, MLServingError) as exc:
         raise _upstream_error(exc) from exc
-    if run is not None:
-        # serving_revision / serving_operation_name이 ERD에서 빠져 배포
-        # 진행 상태를 DB에 남기지 못한다. 상태만 갱신한다.
-        run.status = "PROMOTING"
-        session.add(run)
-        session.commit()
+    run.status = "PROMOTING"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
     operation = result["operation"]
     return {
+        "training_run": _training_run_payload(run),
+        "model_version": model_version,
         "operation_id": _operation_id(operation),
         **result,
+    }
+
+
+@router.post("/training/runs/{run_id}/deployment/complete")
+def complete_model_deployment(
+    run_id: int,
+    payload: DeploymentCompleteRequest,
+    client: CloudRunAdminClientDep,
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Cloud Run live traffic를 확인하고 champion alias와 상태를 종결한다."""
+
+    run = _get_training_run_or_404(run_id, session)
+    if run.status not in {"PROMOTING", "PRODUCTION"}:
+        raise HTTPException(status_code=409, detail="완료 확인 대상 배포가 아닙니다.")
+    model_version = _resolve_run_model_version(run, mlflow)
+    operation: dict[str, Any] | None = None
+    if payload.operation_id is not None:
+        try:
+            operation = client.get_operation(payload.operation_id)
+        except CloudRunAdminError as exc:
+            raise _upstream_error(exc) from exc
+        if not operation.get("done", False):
+            raise HTTPException(
+                status_code=409,
+                detail="트래픽 전환이 아직 진행 중입니다.",
+            )
+        if operation.get("error"):
+            if run.status != "PRODUCTION":
+                run.status = "DEPLOYMENT_FAILED"
+                session.add(run)
+                session.commit()
+                session.refresh(run)
+            raise HTTPException(
+                status_code=502,
+                detail="Cloud Run 트래픽 전환에 실패했습니다.",
+            )
+    try:
+        deployment = client.get_model_deployment_status(model_version)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+    if not deployment["ready"]:
+        raise HTTPException(
+            status_code=409,
+            detail=deployment["reason"] or "Cloud Run 배포가 아직 완료되지 않았습니다.",
+        )
+    if run.status != "PRODUCTION":
+        try:
+            mlflow.set_model_alias(run.model_key, config.MLOPS_MODEL_ALIAS, model_version)
+        except MLflowRegistryError as exc:
+            raise _upstream_error(exc) from exc
+        run.status = "PRODUCTION"
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+    return {
+        "training_run": _training_run_payload(run),
+        "model_version": model_version,
+        "operation": operation,
+        "deployment": deployment,
     }
 
 
