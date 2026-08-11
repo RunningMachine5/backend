@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from hashlib import sha256
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.data.model.account import Account
@@ -31,7 +32,93 @@ def _account_id(account_number: str) -> str:
 
 
 class CustomerIdentificationConflictError(RuntimeError):
-    """같은 식별번호가 서로 다른 고객 ID에 사용된 경우."""
+    """거래 원장 참조값 충돌의 API 호환 기준 예외.
+
+    기존 Pipeline이 이 예외를 409로 변환하므로 고객·계좌 원장의 다른 충돌도
+    하위 예외로 표현한다. 호출자는 하위 타입과 ``conflicting_fields``로 실제
+    원인을 구분할 수 있다.
+    """
+
+
+class CustomerProfileConflictError(CustomerIdentificationConflictError):
+    """같은 고객 ID의 공통 속성이 기존 원장과 다른 경우."""
+
+    def __init__(self, customer_id: str, conflicting_fields: list[str]) -> None:
+        self.customer_id = customer_id
+        self.conflicting_fields = tuple(conflicting_fields)
+        super().__init__(
+            f"고객 공통값이 기존 원장과 다릅니다: {customer_id} "
+            f"({', '.join(conflicting_fields)})"
+        )
+
+
+class AccountProfileConflictError(CustomerIdentificationConflictError):
+    """같은 계좌의 불변 속성이 기존 원장과 다른 경우."""
+
+    def __init__(self, account_id: str, conflicting_fields: list[str]) -> None:
+        self.account_id = account_id
+        self.conflicting_fields = tuple(conflicting_fields)
+        super().__init__(
+            f"계좌 공통값이 기존 원장과 다릅니다: {account_id} "
+            f"({', '.join(conflicting_fields)})"
+        )
+
+
+class AccountOwnershipConflictError(CustomerIdentificationConflictError):
+    """이미 다른 고객이 소유한 계좌를 출금 계좌로 사용한 경우."""
+
+    def __init__(
+        self,
+        account_id: str,
+        *,
+        stored_customer_id: str,
+        requested_customer_id: str,
+    ) -> None:
+        self.account_id = account_id
+        self.stored_customer_id = stored_customer_id
+        self.requested_customer_id = requested_customer_id
+        super().__init__(
+            "계좌 소유 고객이 기존 원장과 다릅니다: "
+            f"{account_id} ({stored_customer_id} != {requested_customer_id})"
+        )
+
+
+_CUSTOMER_PROFILE_FIELDS = (
+    "personal_identifier",
+    "birthyear",
+    "gender",
+    "registration_datetime",
+    "credit_rating",
+    "loan_type",
+)
+_ACCOUNT_PROFILE_FIELDS = (
+    "account_type",
+    "creation_datetime",
+    "amount_daily_limit",
+    "indicator_openbanking",
+    "indicator_release_limit_excess",
+)
+
+
+def _comparable_value(value: object) -> object:
+    """DB가 돌려준 timezone-aware 값과 CSV의 naive UTC 값을 동일하게 비교한다."""
+
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
+def _different_fields(
+    stored: object,
+    expected: dict[str, object],
+    field_names: tuple[str, ...],
+) -> list[str]:
+    return [
+        field_name
+        for field_name in field_names
+        if _comparable_value(getattr(stored, field_name))
+        != _comparable_value(expected[field_name])
+    ]
 
 
 class TransactionRepository:
@@ -71,8 +158,15 @@ class TransactionRepository:
         features = payload.raw_features
 
         customer = self._upsert_customer(payload, features)
+        # 새 고객을 기존 수취 계좌의 소유자로 연결하는 UPDATE가 먼저 flush되면
+        # accounts.customer_id FK가 실패한다. 계좌 조회가 일으키는 autoflush보다
+        # 고객 INSERT를 앞세운다.
+        self.session.flush()
         source_account_id = self._upsert_source_account(payload, features)
         recipient_account_id = self._upsert_recipient_account(payload)
+        # Transaction은 출금·수취 계좌 FK를 모두 참조한다. ORM relationship이
+        # 없는 mapper들의 순서에 기대지 않고 계좌 INSERT/UPDATE를 먼저 확정한다.
+        self.session.flush()
 
         transaction = Transaction(
             transaction_id=payload.transaction_id,
@@ -84,6 +178,13 @@ class TransactionRepository:
             **build_transaction_fields(features),
         )
         self.session.add(transaction)
+
+        # DerivedFeatures는 Transaction FK를 가지지만 두 모델 사이에 ORM
+        # relationship이 없어 Unit of Work가 mapper INSERT 순서를 보장하지
+        # 않는다. 실제 PostgreSQL에서는 derived_features가 먼저 INSERT되어
+        # 즉시 FK 위반이 날 수 있으므로 부모 거래를 같은 트랜잭션 안에서 먼저
+        # flush한다. 이후 오류가 발생해도 Pipeline rollback이 전체를 되돌린다.
+        self.session.flush()
         self.session.add(
             DerivedFeatures(
                 transaction_id=payload.transaction_id,
@@ -130,6 +231,21 @@ class TransactionRepository:
             raise CustomerIdentificationConflictError(
                 payload.customer_identification_number
             )
+
+        expected_customer_fields = {
+            "personal_identifier": payload.customer_personal_identifier,
+            **build_customer_fields(features),
+        }
+        conflicting_fields = _different_fields(
+            customer,
+            expected_customer_fields,
+            _CUSTOMER_PROFILE_FIELDS,
+        )
+        if conflicting_fields:
+            raise CustomerProfileConflictError(
+                customer.customer_id,
+                conflicting_fields,
+            )
         return customer
 
     def _upsert_source_account(
@@ -137,7 +253,12 @@ class TransactionRepository:
         payload: TransactionCreateDTO,
         features: MLTransactionFeatures,
     ) -> str:
-        """출금 계좌를 만들거나 가변 상태(잔액·잔여한도)를 최신으로 갱신한다."""
+        """출금 계좌를 만들거나 가변 상태(잔액·잔여한도)를 최신으로 갱신한다.
+
+        고객·계좌 공통값은 거래별 스냅샷 컬럼이 없으므로 조용히 덮어쓰지
+        않는다. 수취 계좌로 먼저 관측돼 소유자가 비어 있는 경우에만 현재
+        고객에게 연결하고, 비어 있던 공통값을 처음 채운다.
+        """
 
         source_account_id = _account_id(payload.source_account_number)
         account_fields = build_account_fields(features)
@@ -150,9 +271,43 @@ class TransactionRepository:
                 **account_fields,
             )
         else:
-            for field_name, value in account_fields.items():
-                setattr(source_account, field_name, value)
-            source_account.updated_at = datetime.now()
+            if source_account.account_number != payload.source_account_number:
+                raise AccountProfileConflictError(
+                    source_account_id,
+                    ["account_number"],
+                )
+            if source_account.customer_id is None:
+                source_account.customer_id = payload.customer_id
+            elif source_account.customer_id != payload.customer_id:
+                raise AccountOwnershipConflictError(
+                    source_account_id,
+                    stored_customer_id=source_account.customer_id,
+                    requested_customer_id=payload.customer_id,
+                )
+
+            conflicting_fields: list[str] = []
+            for field_name in _ACCOUNT_PROFILE_FIELDS:
+                stored_value = getattr(source_account, field_name)
+                incoming_value = account_fields[field_name]
+                if stored_value is None:
+                    setattr(source_account, field_name, incoming_value)
+                elif _comparable_value(stored_value) != _comparable_value(
+                    incoming_value
+                ):
+                    conflicting_fields.append(field_name)
+            if conflicting_fields:
+                raise AccountProfileConflictError(
+                    source_account_id,
+                    conflicting_fields,
+                )
+
+            # 현재 상태만 최신 거래값으로 갱신한다. 과거 거래 재조립은
+            # transactions의 잔액 스냅샷을 사용하므로 영향을 받지 않는다.
+            source_account.current_balance = account_fields["current_balance"]
+            source_account.remaining_daily_limit = account_fields[
+                "remaining_daily_limit"
+            ]
+            source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
         return source_account_id
 
@@ -166,14 +321,26 @@ class TransactionRepository:
             return None
 
         recipient_account_id = _account_id(payload.recipient_account_number)
-        if self.session.get(Account, recipient_account_id) is None:
+        suspend_status = bool(payload.raw_features.Recipient_account_suspend_status)
+        recipient_account = self.session.get(Account, recipient_account_id)
+        if recipient_account is None:
             self.session.add(
                 Account(
                     account_id=recipient_account_id,
                     customer_id=None,
                     account_number=payload.recipient_account_number,
+                    suspend_status=suspend_status,
                 )
             )
+        else:
+            if recipient_account.account_number != payload.recipient_account_number:
+                raise AccountProfileConflictError(
+                    recipient_account_id,
+                    ["account_number"],
+                )
+            recipient_account.suspend_status = suspend_status
+            recipient_account.updated_at = datetime.now(UTC)
+            self.session.add(recipient_account)
         return recipient_account_id
 
 
@@ -227,8 +394,84 @@ class PredictionResultRepository:
             .limit(1)
         ).first()
 
+    def latest_positive_feature_rows(
+        self,
+        *,
+        limit: int,
+    ) -> tuple[
+        list[
+            tuple[
+                Transaction,
+                Customer | None,
+                Account | None,
+                DerivedFeatures | None,
+            ]
+        ],
+        bool,
+    ]:
+        """최신 ML 결과가 양성인 최근 거래와 54개 조립 행을 한 번에 읽는다.
+
+        양성 예측부터 거르면 과거 양성·최신 음성인 거래가 섞이므로 거래별 최신
+        예측을 먼저 확정한다. 거래시각과 거래 ID를 함께 정렬해 같은 데이터에서는
+        항상 같은 표본을 고르고, ``limit + 1``건으로 다음 표본 존재 여부를 구한다.
+        고객·출금계좌·파생 피처는 outer join하여 손상된 거래도 조용히 누락하지 않고
+        리플레이 오류 상세로 보고할 수 있게 한다.
+        """
+
+        ranked_predictions = select(
+            MLPredictionResult.id.label("prediction_result_id"),
+            func.row_number()
+            .over(
+                partition_by=MLPredictionResult.transaction_id,
+                order_by=(
+                    MLPredictionResult.created_at.desc(),
+                    MLPredictionResult.id.desc(),
+                ),
+            )
+            .label("prediction_rank"),
+        ).subquery()
+
+        statement = (
+            select(Transaction, Customer, Account, DerivedFeatures)
+            .select_from(Transaction)
+            .join(
+                MLPredictionResult,
+                MLPredictionResult.transaction_id == Transaction.transaction_id,
+            )
+            .join(
+                ranked_predictions,
+                ranked_predictions.c.prediction_result_id == MLPredictionResult.id,
+            )
+            .outerjoin(Customer, Customer.customer_id == Transaction.customer_id)
+            .outerjoin(Account, Account.account_id == Transaction.source_account_id)
+            .outerjoin(
+                DerivedFeatures,
+                DerivedFeatures.transaction_id == Transaction.transaction_id,
+            )
+            .where(
+                ranked_predictions.c.prediction_rank == 1,
+                MLPredictionResult.prediction_is_fraud.is_(True),
+            )
+            .order_by(
+                Transaction.transaction_datetime.desc(),
+                Transaction.transaction_id.desc(),
+            )
+            .limit(limit + 1)
+        )
+        rows = [
+            (transaction, customer, source_account, derived)
+            for transaction, customer, source_account, derived in self.session.exec(
+                statement
+            ).all()
+        ]
+        return rows[:limit], len(rows) > limit
+
 
 __all__ = [
+    "AccountOwnershipConflictError",
+    "AccountProfileConflictError",
+    "CustomerIdentificationConflictError",
+    "CustomerProfileConflictError",
     "PredictionResultRepository",
     "TransactionLabelRepository",
     "TransactionRepository",

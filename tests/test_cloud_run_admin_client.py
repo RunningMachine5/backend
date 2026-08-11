@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import httpx
+
 from app.services.ml_serving.client import MLPredictionResponse
 from app.services.mlops.cloud_run import (
     TRAFFIC_LATEST,
@@ -78,9 +80,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
             min_pr_auc=0.75,
             min_recall=0.8,
             dataset_uri="gs://bucket/transactions.csv",
-            split_datetime="2026-04-01 00:00:00",
             training_run_id=12,
-            champion_model_version="1",
         )
 
         self.assertTrue(result["name"].endswith("/train-op"))
@@ -94,12 +94,9 @@ class CloudRunAdminClientTest(unittest.TestCase):
             env_by_name["TRAINING_DATA_URI"],
             "gs://bucket/transactions.csv",
         )
-        self.assertEqual(
-            env_by_name["TRAINING_SPLIT_DATETIME"],
-            "2026-04-01 00:00:00",
-        )
         self.assertEqual(env_by_name["BACKEND_TRAINING_RUN_ID"], "12")
-        self.assertEqual(env_by_name["CHAMPION_MODEL_VERSION"], "1")
+        self.assertNotIn("TRAINING_SPLIT_DATETIME", env_by_name)
+        self.assertNotIn("CHAMPION_MODEL_VERSION", env_by_name)
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_run_training_omits_optional_dataset_overrides(self, request: Mock) -> None:
@@ -144,6 +141,73 @@ class CloudRunAdminClientTest(unittest.TestCase):
             env_by_name["TRAINING_DATA_URI"],
             "gs://bucket/transactions.csv",
         )
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_timeout_preserves_unknown_acceptance(
+        self,
+        request: Mock,
+    ) -> None:
+        request.side_effect = httpx.ReadTimeout(
+            "response timeout",
+            request=httpx.Request("POST", "https://run.googleapis.com/v2/job:run"),
+        )
+
+        with self.assertRaises(CloudRunAdminError) as raised:
+            self.make_client().run_training(min_pr_auc=0.0, min_recall=0.0)
+
+        self.assertIsNone(raised.exception.status_code)
+        self.assertTrue(raised.exception.request_may_have_been_accepted)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_5xx_preserves_unknown_acceptance(
+        self,
+        request: Mock,
+    ) -> None:
+        request.return_value = httpx.Response(
+            503,
+            request=httpx.Request("POST", "https://run.googleapis.com/v2/job:run"),
+            json={"error": {"code": 503}},
+        )
+
+        with self.assertRaises(CloudRunAdminError) as raised:
+            self.make_client().run_training(min_pr_auc=0.0, min_recall=0.0)
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertTrue(raised.exception.request_may_have_been_accepted)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_definitive_4xx_is_not_marked_as_accepted(
+        self,
+        request: Mock,
+    ) -> None:
+        request.return_value = httpx.Response(
+            400,
+            request=httpx.Request("POST", "https://run.googleapis.com/v2/job:run"),
+            json={"error": {"code": 400}},
+        )
+
+        with self.assertRaises(CloudRunAdminError) as raised:
+            self.make_client().run_training(min_pr_auc=0.0, min_recall=0.0)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertFalse(raised.exception.request_may_have_been_accepted)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_run_training_malformed_success_preserves_unknown_acceptance(
+        self,
+        request: Mock,
+    ) -> None:
+        request.return_value = httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://run.googleapis.com/v2/job:run"),
+            content=b"not-json",
+        )
+
+        with self.assertRaises(CloudRunAdminError) as raised:
+            self.make_client().run_training(min_pr_auc=0.0, min_recall=0.0)
+
+        self.assertEqual(raised.exception.status_code, 200)
+        self.assertTrue(raised.exception.request_may_have_been_accepted)
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_create_revision_pins_current_traffic_and_preserves_secret_env(
@@ -284,10 +348,145 @@ class CloudRunAdminClientTest(unittest.TestCase):
         smoke_factory.assert_not_called()
         self.assertEqual(request.call_count, 1)
 
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_deployment_status_requires_ready_revision_version_and_full_traffic(
+        self,
+        request: Mock,
+    ) -> None:
+        service = current_service()
+        service.update(
+            {
+                "latestCreatedRevision": "serving-00017-new",
+                "latestReadyRevision": "serving-00017-new",
+                "template": {
+                    **service["template"],
+                    "containers": [
+                        {
+                            **service["template"]["containers"][0],
+                            "env": [
+                                {"name": "ML_MODEL_VERSION", "value": "17"},
+                            ],
+                        }
+                    ],
+                },
+                "trafficStatuses": [
+                    {
+                        "type": TRAFFIC_REVISION,
+                        "revision": "serving-00017-new",
+                        "percent": 100,
+                    }
+                ],
+            }
+        )
+        request.return_value = api_response(service)
+        client = self.make_client()
+
+        result = client.get_model_deployment_status("17")
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["revision"], "serving-00017-new")
+        self.assertEqual(result["trafficPercent"], 100)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_deployment_status_rejects_wrong_revision_model_env(
+        self,
+        request: Mock,
+    ) -> None:
+        service = current_service()
+        service.update(
+            {
+                "latestCreatedRevision": "serving-00017-new",
+                "latestReadyRevision": "serving-00017-new",
+                "trafficStatuses": [
+                    {
+                        "type": TRAFFIC_REVISION,
+                        "revision": "serving-00017-new",
+                        "percent": 100,
+                    }
+                ],
+            }
+        )
+        request.return_value = api_response(service)
+        client = self.make_client()
+
+        result = client.get_model_deployment_status("17")
+
+        self.assertFalse(result["ready"])
+        self.assertIn("모델 버전", result["reason"])
+
     def test_operation_id_rejects_resource_path_injection(self) -> None:
         client = self.make_client()
         with self.assertRaisesRegex(CloudRunAdminError, "operation ID"):
             client.get_operation("../../services/serving")
+
+    def test_training_execution_name_never_uses_lro_operation_name(self) -> None:
+        operation = {
+            "name": "projects/test/locations/region/operations/train-op",
+            "metadata": {
+                "target": (
+                    "projects/test/locations/region/jobs/training/"
+                    "executions/training-abc"
+                )
+            },
+        }
+        self.assertEqual(
+            CloudRunAdminClient.training_execution_name(operation),
+            "training-abc",
+        )
+        self.assertIsNone(
+            CloudRunAdminClient.training_execution_name(
+                {"name": "projects/test/locations/region/operations/train-op"}
+            )
+        )
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_training_execution_live_status_and_outcome(
+        self,
+        request: Mock,
+    ) -> None:
+        execution = {
+            "name": (
+                "projects/test/locations/region/jobs/training/"
+                "executions/training-abc"
+            ),
+            "terminalCondition": {"state": "CONDITION_FAILED"},
+            "failedCount": 1,
+        }
+        request.return_value = api_response(execution)
+
+        result = self.make_client().get_training_execution("training-abc")
+
+        self.assertEqual(result, execution)
+        self.assertTrue(
+            request.call_args.args[1].endswith(
+                "/jobs/training/executions/training-abc"
+            )
+        )
+        self.assertEqual(
+            CloudRunAdminClient.training_execution_outcome(result),
+            "FAILED",
+        )
+        self.assertEqual(
+            CloudRunAdminClient.training_execution_outcome(
+                {"terminalCondition": {"state": "CONDITION_SUCCEEDED"}}
+            ),
+            "SUCCEEDED",
+        )
+        self.assertEqual(
+            CloudRunAdminClient.training_execution_outcome(
+                {"succeededCount": 1, "completionTime": "2026-08-11T00:00:00Z"}
+            ),
+            "SUCCEEDED",
+        )
+        self.assertEqual(
+            CloudRunAdminClient.training_execution_outcome(
+                {"terminalCondition": {"state": "CONDITION_RECONCILING"}}
+            ),
+            "RUNNING",
+        )
+
+        with self.assertRaisesRegex(CloudRunAdminError, "execution 이름"):
+            self.make_client().get_training_execution("../other-job")
 
 
 if __name__ == "__main__":

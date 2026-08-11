@@ -65,8 +65,10 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 한 건씩 요청합니다.
 `raw_data`는 새 전처리가 요구하는 원본 Feature 54개를 모두 포함해야 합니다.
-Backend는 타입과 필수 컬럼을 검증해 원본 JSON을 저장하고, One-hot Encoding 없이
-ML `/predict` 요청의 `features`로 그대로 전달합니다.
+Backend는 타입과 필수 컬럼을 검증한 뒤 54개 값을 `customers`, `accounts`,
+`transactions`, `derived_features` 네 정규화 테이블에 나눠 저장합니다. ML 호출과 거래
+조회 시에는 네 테이블을 다시 조인해 동일한 54개 `features`를 조립합니다. 별도의
+`transactions.raw_features` JSON 스냅샷 컬럼은 사용하지 않습니다.
 
 ```bash
 curl -X POST http://localhost:8000/transactions \
@@ -82,9 +84,12 @@ curl -X POST http://localhost:8000/transactions \
 위도 33~39·경도 124~132 범위를 벗어나면 거래 저장 전에 `422`로 거부합니다.
 
 거래 식별정보는 `transaction_id`, `customer_id`, 고객 식별 토큰, 출금·수취 계좌번호를
-함께 전달합니다. `customer_birth_date`가 있으면 실제 생년월일을 저장하고, 없으면
-`Customer_Birthyear`의 1월 1일로 보충합니다. CSV 컬럼명(`ID`, `Customer_ID` 등)으로
-평평하게 전달하는 형식과 위 예제처럼 `raw_data`를 분리한 형식을 모두 허용합니다.
+함께 전달합니다. 최신 계약은 생년월일이 아니라 54개 Feature의 `Customer_Birthyear`를
+고객 출생연도로 저장합니다. CSV 컬럼명(`ID`, `Customer_ID` 등)으로 평평하게 전달하는
+형식과 위 예제처럼 `raw_data`를 분리한 형식을 모두 허용합니다. 같은 이름인
+`customer_personal_identifier`는 허용하지만 고객별 `customer_identification_number`는
+고유해야 합니다. 이미 저장된 고객·출금계좌의 공통값이나 계좌 소유자가 요청과 다르면
+과거 54개 Feature가 바뀌지 않도록 `409`로 거부합니다.
 
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
 꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.
@@ -99,6 +104,13 @@ Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 �
 저장하고 응답합니다. 화면에서 필요한 상위 N개 선택과 정렬은 이 값을 사용하는
 클라이언트가 담당합니다. 정상 거래이거나 점수를 계산하지 못한 경우에는
 `rule_scores`가 `null`입니다.
+
+룰 수정 전 영향 확인은 DRAFT 룰셋에 대해
+`POST /rule-sets/{draft_rule_set_id}/replay`를 호출합니다. 현재 ACTIVE 룰셋과 DRAFT를
+최신 ML 결과가 사기인 과거 거래에 각각 적용해 점수·매칭 근거 변화만 비교합니다.
+`sample_size`는 기본·최대 1,000건, `detail_limit`은 기본·최대 100건이며 DB에는 새
+예측이나 룰 점수를 쓰지 않습니다. 확정 사기유형 정답을 비교하는 정확도 평가가 아니라
+룰 변경 영향 재현입니다.
 
 ```json
 {
@@ -236,17 +248,22 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
    데이터셋 버전을 함께 만듭니다.
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
    `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
-3. Training Job은 후보와 현재 champion을 같은 검증 행에서 평가하고 결과를
-   `POST /mlops/training/runs/{id}/result`로 되돌려 보냅니다.
-4. 관리자는 `GET /mlops/training/runs/{id}`에서 PR-AUC·Recall·FPR과 추천 상태를
-   확인한 뒤 `POST /mlops/training/runs/{id}/decision`으로 승인 또는 거절합니다.
-5. 승인하면 Backend가 정확한 후보 버전으로 트래픽 0% 리비전을 생성합니다.
+3. Training Job은 후보와 현재 champion을 평가하고 성공 시 `status`, `mlflow_run_id`,
+   실제 Cloud Run execution 이름만 `POST /mlops/training/runs/{id}/result`로 보냅니다.
+4. Backend의 `training_runs`에는 실행 연결 정보와 상태만 저장합니다. 관리자는
+   `GET /mlops/training/runs/{id}/model-details`에서 MLflow 원본의 모델 버전·지표·파라미터·
+   태그를 확인한 뒤 `POST /mlops/training/runs/{id}/decision`으로 승인 또는 거절합니다.
+5. 승인하면 Backend가 `mlflow_run_id`에 대응하는 등록 모델 버전을 MLflow에서 확인하고
+   그 버전으로 트래픽 0% 리비전을 생성해 상태를 `STAGED`로 바꿉니다.
 6. Ready 상태를 확인한 뒤 `POST /mlops/serving/promotions`로 실제 예측 스모크를
-   실행하고, 성공한 경우에만 새 리비전으로 트래픽 100% 이동을 요청합니다.
-7. `POST /mlops/training/runs/{id}/deployment/complete`로 비동기 traffic operation의
-   성공을 확인한 뒤 학습 이력을 `PRODUCTION`으로 확정합니다.
+   실행하고, 성공한 경우에만 새 리비전으로 트래픽 100% 이동을 요청합니다. 요청자가
+   모델 버전을 직접 지정하지 않습니다.
+7. `POST /mlops/training/runs/{id}/deployment/complete`로 선택적인 비동기 operation과
+   실제 Ready 리비전·100% 트래픽을 확인합니다. 성공하면 MLflow `champion` alias를
+   바꾸고 학습 이력을 `PRODUCTION`으로 확정합니다.
 
-핵심 요청 형태는 다음과 같습니다. 승격의 `features`에는
+핵심 요청 형태는 다음과 같습니다. 아래 `features`의 말줄임은 설명용 축약이며 실제
+요청에는
 [`examples/transaction-request.json`](examples/transaction-request.json)의 `raw_data`
 54개 필드를 넣습니다.
 
@@ -254,43 +271,56 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 POST /mlops/datasets
 {"version": "generated-v2",
  "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv",
- "row_count": 210000,
- "split_datetime": "2026-04-01 00:00:00"}
+ "row_count": 210000}
 
 POST /mlops/datasets/build
 {"base_dataset_version_id": 1,
  "version": "generated-v2",
- "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv",
- "split_datetime": "2026-07-01 00:00:00"}
+ "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv"}
 
 POST /mlops/training/runs
 {"dataset_version_id": 2, "min_pr_auc": 0.75, "min_recall": 0.8}
+
+POST /mlops/training/runs/12/result
+{"status": "SUCCEEDED", "mlflow_run_id": "a1b2c3...",
+ "cloud_run_execution_name": "fdshield-binary-training-abcde"}
+
+GET /mlops/training/runs/12/model-details
 
 POST /mlops/training/runs/12/decision
 {"decision": "APPROVE", "reason": "동일 검증셋에서 Recall 상승, FPR 감소"}
 
 POST /mlops/serving/promotions
-{"training_run_id": 12, "model_version": "17",
- "transaction_id": "TX-SMOKE", "features": {}}
+{"training_run_id": 12, "transaction_id": "TX-SMOKE",
+ "features": {...54개 전체 필드...}}
 
 POST /mlops/training/runs/12/deployment/complete
+{"operation_id": "<serving promotion 응답의 operation_id>"}
 ```
+
+`deployment/complete`의 `operation_id`는 선택 사항입니다. 유실됐거나 페이지를 다시
+연 경우 `{}`로 호출하면 실제 Ready 리비전과 100% 트래픽 상태를 기준으로 복구 확인합니다.
+학습 결과 callback이 유실됐다면 `POST /mlops/training/runs/{id}/reconcile`로 저장된
+Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution 실패는 `FAILED`로
+정리하지만, 성공한 실행의 `mlflow_run_id`는 추측하지 않으므로 callback 설정을 고쳐야
+합니다. 0% 리비전 생성이 비동기로 실패한 `STAGED` 실행은 원인을 해결한 뒤
+`{"decision":"APPROVE","restage":true}`로 명시적으로 다시 staging합니다.
 
 운영 재학습 데이터는 생성형 원본 `transactions.csv` 하나로 고정합니다. 데이터셋
 버전의 `gcs_uri`를 `TRAINING_DATA_URI`로 전달하고 ML이 내부에서 54→91 전처리를
 수행합니다. 과거 전처리 `train.csv`와 보조 `transactions.csv` 조합은 Backend 관리
 API에서 지원하지 않습니다.
-`split_datetime`은 원본 `Transaction_Datetime` 기준 시간 분할 경계이며
-`TRAINING_SPLIT_DATETIME`으로 전달됩니다. 학습 데이터 URI와 분할 기준은 실행 요청이
-아니라 데이터셋 버전에 고정됩니다. Training Job은 후보 모델과 비교 결과만 만들며,
-alias와 Serving 트래픽 변경은 Backend 관리자 승인 API에서만 수행합니다.
+학습·검증 분리 정책과 모델별 임계값은 Training Job이 결정하고 MLflow에 기록합니다.
+최신 Backend의 데이터셋 요청과 DB에는 `split_datetime`이 없습니다. 모델 버전, 후보·
+champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않고 MLflow를 원본으로
+조회합니다. alias와 Serving 트래픽 변경은 Backend 관리자 승인 API에서만 수행합니다.
 
 `POST /mlops/datasets/build`는 `transaction_labels`의 확정 이진 라벨을 기준으로
 동작합니다. 기준 CSV에 같은 `ID`가 있으면 `Is_Fraud`를 확정값으로 교체하고, 없는
-거래는 `transactions.raw_features`의 54개 원본 Feature로 새 행을 추가합니다. 기준
-객체는 수정하지 않으며 GCS generation precondition으로 목적 객체 덮어쓰기도
-금지합니다. 새 라벨 거래가 실제 학습 구간에 들어가도록 `split_datetime`은 요청자가
-명시해야 합니다. 병합 결과의 행 수와 교체·추가 라벨 수는 API 응답에 포함됩니다.
+거래는 `customers`, 출금·수취 `accounts`, `transactions`, `derived_features`를 한 번에
+조인해 54개 Feature와 실제 식별 컬럼을 재조립한 새 행으로 추가합니다. 기준 객체는
+수정하지 않으며 GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다.
+병합 결과의 행 수와 교체·추가 라벨 수는 API 응답에 포함됩니다.
 
 Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
 Secret Manager로 주입합니다.
@@ -299,6 +329,16 @@ Secret Manager로 주입합니다.
 TRAINING_RESULT_CALLBACK_URL=https://api.fdshield.cloud/mlops/training/runs/{training_run_id}/result
 TRAINING_RESULT_CALLBACK_TOKEN=<MLOPS_ADMIN_TOKEN과 동일한 보호 값>
 ```
+
+Backend가 모델 상세 조회·승인·최종 alias 변경을 하려면 `MLFLOW_TRACKING_URI`,
+`MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD`와 `MLOPS_MODEL_ALIAS`를 설정합니다.
+실제 계정과 비밀번호는 `.env.example`이나 Git에 넣지 않습니다. 실패 callback은
+`{"status":"FAILED","error_message":"..."}` 형태이며, 같은 결과 callback은 멱등하게
+처리됩니다.
+새 학습 실행의 `model-details` 응답에는 MLflow `artifact_uri`와
+`explanation_manifest_path`도 포함됩니다. manifest는 모델 artifact, 전체 91개 Feature
+importance JSON·CSV, 최대 1,000개 검증 표본의 SHAP mean-absolute summary JSON·SVG,
+후보·champion 비교 JSON 경로를 묶으며 Backend DB에 이 파일들을 복제하지 않습니다.
 
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회, Service 조회·수정 권한과
 Serving 리비전 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한이 필요합니다.
@@ -314,9 +354,10 @@ Cloud Run Service는 요청이 없으면 자동 scale-to-zero 되므로 별도�
 
 ```text
 POST /transactions
-  -> 고객·출금계좌·수취계좌·거래 원본 저장
+  -> 54개 입력을 고객·계좌·거래·파생 피처 네 테이블에 정규화 저장
+  -> 네 테이블에서 동일한 54개 ML Feature 재조립
   -> ML Serving /predict 호출
-  -> 모델 예측·확률·SHAP·모델 버전 저장
+  -> 사기 판정·확률·모델 이름·버전·지연시간 저장
   -> 사기 예측이면 활성 룰셋으로 최종 4개 유형 점수 계산·저장
   -> 거래와 최신 ML·룰 결과 응답
 
@@ -346,7 +387,9 @@ Agent / 고객 질문 스켈레톤
 │   │       ├── customer.py
 │   │       ├── account.py
 │   │       ├── transaction.py
+│   │       ├── derived_features.py
 │   │       ├── ml_prediction_result.py
+│   │       ├── mlops.py
 │   │       └── fraud_rule.py
 │   ├── repositories
 │   │   └── transaction.py
