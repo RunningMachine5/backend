@@ -40,26 +40,14 @@ class CustomerIdentificationConflictError(RuntimeError):
     """
 
 
-class CustomerProfileConflictError(CustomerIdentificationConflictError):
-    """같은 고객 ID의 공통 속성이 기존 원장과 다른 경우."""
-
-    def __init__(self, customer_id: str, conflicting_fields: list[str]) -> None:
-        self.customer_id = customer_id
-        self.conflicting_fields = tuple(conflicting_fields)
-        super().__init__(
-            f"고객 공통값이 기존 원장과 다릅니다: {customer_id} "
-            f"({', '.join(conflicting_fields)})"
-        )
-
-
-class AccountProfileConflictError(CustomerIdentificationConflictError):
-    """같은 계좌의 불변 속성이 기존 원장과 다른 경우."""
+class AccountIdentifierConflictError(CustomerIdentificationConflictError):
+    """하나의 내부 계좌 ID가 서로 다른 원본 계좌번호를 가리키는 경우."""
 
     def __init__(self, account_id: str, conflicting_fields: list[str]) -> None:
         self.account_id = account_id
         self.conflicting_fields = tuple(conflicting_fields)
         super().__init__(
-            f"계좌 공통값이 기존 원장과 다릅니다: {account_id} "
+            f"계좌 식별값이 기존 원장과 다릅니다: {account_id} "
             f"({', '.join(conflicting_fields)})"
         )
 
@@ -81,44 +69,6 @@ class AccountOwnershipConflictError(CustomerIdentificationConflictError):
             "계좌 소유 고객이 기존 원장과 다릅니다: "
             f"{account_id} ({stored_customer_id} != {requested_customer_id})"
         )
-
-
-_CUSTOMER_PROFILE_FIELDS = (
-    "personal_identifier",
-    "birthyear",
-    "gender",
-    "registration_datetime",
-    "credit_rating",
-    "loan_type",
-)
-_ACCOUNT_PROFILE_FIELDS = (
-    "account_type",
-    "creation_datetime",
-    "amount_daily_limit",
-    "indicator_openbanking",
-    "indicator_release_limit_excess",
-)
-
-
-def _comparable_value(value: object) -> object:
-    """DB가 돌려준 timezone-aware 값과 CSV의 naive UTC 값을 동일하게 비교한다."""
-
-    if isinstance(value, datetime) and value.tzinfo is not None:
-        return value.astimezone(UTC).replace(tzinfo=None)
-    return value
-
-
-def _different_fields(
-    stored: object,
-    expected: dict[str, object],
-    field_names: tuple[str, ...],
-) -> list[str]:
-    return [
-        field_name
-        for field_name in field_names
-        if _comparable_value(getattr(stored, field_name))
-        != _comparable_value(expected[field_name])
-    ]
 
 
 class TransactionRepository:
@@ -232,20 +182,14 @@ class TransactionRepository:
                 payload.customer_identification_number
             )
 
-        expected_customer_fields = {
+        latest_customer_fields = {
             "personal_identifier": payload.customer_personal_identifier,
             **build_customer_fields(features),
         }
-        conflicting_fields = _different_fields(
-            customer,
-            expected_customer_fields,
-            _CUSTOMER_PROFILE_FIELDS,
-        )
-        if conflicting_fields:
-            raise CustomerProfileConflictError(
-                customer.customer_id,
-                conflicting_fields,
-            )
+        for field_name, value in latest_customer_fields.items():
+            setattr(customer, field_name, value)
+        customer.updated_at = datetime.now(UTC)
+        self.session.add(customer)
         return customer
 
     def _upsert_source_account(
@@ -253,11 +197,10 @@ class TransactionRepository:
         payload: TransactionCreateDTO,
         features: MLTransactionFeatures,
     ) -> str:
-        """출금 계좌를 만들거나 가변 상태(잔액·잔여한도)를 최신으로 갱신한다.
+        """출금 계좌를 만들거나 마지막으로 처리된 요청값으로 갱신한다.
 
-        고객·계좌 공통값은 거래별 스냅샷 컬럼이 없으므로 조용히 덮어쓰지
-        않는다. 수취 계좌로 먼저 관측돼 소유자가 비어 있는 경우에만 현재
-        고객에게 연결하고, 비어 있던 공통값을 처음 채운다.
+        생성 데이터는 같은 계좌의 공통 Feature가 항상 일관되지는 않으므로
+        계좌번호와 소유 고객만 충돌을 막고 나머지 값은 최신 입력을 반영한다.
         """
 
         source_account_id = _account_id(payload.source_account_number)
@@ -272,7 +215,7 @@ class TransactionRepository:
             )
         else:
             if source_account.account_number != payload.source_account_number:
-                raise AccountProfileConflictError(
+                raise AccountIdentifierConflictError(
                     source_account_id,
                     ["account_number"],
                 )
@@ -285,28 +228,8 @@ class TransactionRepository:
                     requested_customer_id=payload.customer_id,
                 )
 
-            conflicting_fields: list[str] = []
-            for field_name in _ACCOUNT_PROFILE_FIELDS:
-                stored_value = getattr(source_account, field_name)
-                incoming_value = account_fields[field_name]
-                if stored_value is None:
-                    setattr(source_account, field_name, incoming_value)
-                elif _comparable_value(stored_value) != _comparable_value(
-                    incoming_value
-                ):
-                    conflicting_fields.append(field_name)
-            if conflicting_fields:
-                raise AccountProfileConflictError(
-                    source_account_id,
-                    conflicting_fields,
-                )
-
-            # 현재 상태만 최신 거래값으로 갱신한다. 과거 거래 재조립은
-            # transactions의 잔액 스냅샷을 사용하므로 영향을 받지 않는다.
-            source_account.current_balance = account_fields["current_balance"]
-            source_account.remaining_daily_limit = account_fields[
-                "remaining_daily_limit"
-            ]
+            for field_name, value in account_fields.items():
+                setattr(source_account, field_name, value)
             source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
         return source_account_id
@@ -334,7 +257,7 @@ class TransactionRepository:
             )
         else:
             if recipient_account.account_number != payload.recipient_account_number:
-                raise AccountProfileConflictError(
+                raise AccountIdentifierConflictError(
                     recipient_account_id,
                     ["account_number"],
                 )
@@ -469,9 +392,8 @@ class PredictionResultRepository:
 
 __all__ = [
     "AccountOwnershipConflictError",
-    "AccountProfileConflictError",
+    "AccountIdentifierConflictError",
     "CustomerIdentificationConflictError",
-    "CustomerProfileConflictError",
     "PredictionResultRepository",
     "TransactionLabelRepository",
     "TransactionRepository",

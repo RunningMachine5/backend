@@ -417,38 +417,39 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                 {shared_name},
             )
 
-    def test_master_profile_mismatches_return_409(self) -> None:
+    def test_master_profile_mismatches_update_latest_values(self) -> None:
         first = self.client.post(
             "/transactions",
             json=valid_transaction_row("TX-API-MASTER-1"),
         )
         self.assertEqual(first.status_code, 201, first.text)
 
-        customer_mismatch = self.client.post(
+        customer_update = self.client.post(
             "/transactions",
             json={
                 **valid_transaction_row("TX-API-MASTER-2"),
                 "Customer_credit_rating": 5,
             },
         )
-        self.assertEqual(customer_mismatch.status_code, 409)
-        self.assertEqual(
-            customer_mismatch.json()["detail"],
-            "기존 고객 공통값과 일치하지 않습니다: credit_rating",
-        )
+        self.assertEqual(customer_update.status_code, 201, customer_update.text)
 
-        account_mismatch = self.client.post(
+        account_update = self.client.post(
             "/transactions",
             json={
                 **valid_transaction_row("TX-API-MASTER-3"),
+                "Customer_credit_rating": 5,
                 "Account_amount_daily_limit": 20_000_000,
             },
         )
-        self.assertEqual(account_mismatch.status_code, 409)
-        self.assertEqual(
-            account_mismatch.json()["detail"],
-            "기존 출금 계좌 공통값과 일치하지 않습니다: amount_daily_limit",
-        )
+        self.assertEqual(account_update.status_code, 201, account_update.text)
+
+        with Session(self.engine) as session:
+            customer = session.get(Customer, "C000494")
+            account = session.get(Account, "TLBxRCjZdK")
+            self.assertIsNotNone(customer)
+            self.assertIsNotNone(account)
+            self.assertEqual(customer.credit_rating, 5)
+            self.assertEqual(account.amount_daily_limit, 20_000_000)
 
     def test_recipient_claim_and_other_owner_conflict(self) -> None:
         target_account = "recipient-becomes-source"

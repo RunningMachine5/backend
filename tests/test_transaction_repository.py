@@ -12,8 +12,6 @@ from app.data.model.transaction_label import TransactionLabel
 from app.dto.transaction import TransactionCreateDTO
 from app.repositories.transaction import (
     AccountOwnershipConflictError,
-    AccountProfileConflictError,
-    CustomerProfileConflictError,
     TransactionRepository,
 )
 from tests.ml_feature_fixture import valid_transaction_row
@@ -135,28 +133,26 @@ class TransactionRepositoryTest(unittest.TestCase):
         self.assertIsNotNone(self.session.get(Transaction, "TX-FK-ORDER"))
         self.assertIsNotNone(self.session.get(DerivedFeatures, "TX-FK-ORDER"))
 
-    def test_rejects_customer_and_account_master_value_drift(self) -> None:
+    def test_updates_customer_and_account_values_from_latest_payload(self) -> None:
         self._save(_payload("TX-MASTER-1"))
 
-        with self.assertRaises(CustomerProfileConflictError) as customer_error:
-            self.repository.add_received(
-                _payload("TX-MASTER-2", Customer_credit_rating=5)
-            )
-        self.assertEqual(
-            customer_error.exception.conflicting_fields,
-            ("credit_rating",),
+        latest = _payload(
+            "TX-MASTER-2",
+            Customer_credit_rating=5,
+            Customer_loan_type="d",
+            Account_amount_daily_limit=20_000_000,
+            Account_indicator_Openbanking=0,
         )
-        self.session.rollback()
+        self._save(latest)
 
-        with self.assertRaises(AccountProfileConflictError) as account_error:
-            self.repository.add_received(
-                _payload("TX-MASTER-3", Account_amount_daily_limit=20_000_000)
-            )
-        self.assertEqual(
-            account_error.exception.conflicting_fields,
-            ("amount_daily_limit",),
-        )
-        self.session.rollback()
+        customer = self.session.get(Customer, latest.customer_id)
+        account = self.session.get(Account, latest.source_account_number)
+        self.assertIsNotNone(customer)
+        self.assertIsNotNone(account)
+        self.assertEqual(customer.credit_rating, 5)
+        self.assertEqual(customer.loan_type, "d")
+        self.assertEqual(account.amount_daily_limit, 20_000_000)
+        self.assertFalse(account.indicator_openbanking)
 
     def test_recipient_account_can_later_be_claimed_by_its_owner(self) -> None:
         target_account = "recipient-becomes-source"

@@ -20,9 +20,8 @@ from app.pipelines.fraud_detection_pipeline import (
     FraudDetectionPipeline,
 )
 from app.repositories.transaction import (
+    AccountIdentifierConflictError,
     AccountOwnershipConflictError,
-    AccountProfileConflictError,
-    CustomerProfileConflictError,
     PredictionResultRepository,
     TransactionLabelRepository,
     TransactionRepository,
@@ -119,21 +118,10 @@ def create_transaction(
             status_code=status.HTTP_409_CONFLICT,
             detail="이미 존재하는 transaction_id입니다.",
         ) from exc
-    except CustomerProfileConflictError as exc:
+    except AccountIdentifierConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "기존 고객 공통값과 일치하지 않습니다: "
-                f"{', '.join(exc.conflicting_fields)}"
-            ),
-        ) from exc
-    except AccountProfileConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "기존 출금 계좌 공통값과 일치하지 않습니다: "
-                f"{', '.join(exc.conflicting_fields)}"
-            ),
+            detail="계좌 식별값이 기존 원장과 일치하지 않습니다.",
         ) from exc
     except AccountOwnershipConflictError as exc:
         raise HTTPException(

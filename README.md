@@ -88,8 +88,9 @@ curl -X POST http://localhost:8000/transactions \
 고객 출생연도로 저장합니다. CSV 컬럼명(`ID`, `Customer_ID` 등)으로 평평하게 전달하는
 형식과 위 예제처럼 `raw_data`를 분리한 형식을 모두 허용합니다. 같은 이름인
 `customer_personal_identifier`는 허용하지만 고객별 `customer_identification_number`는
-고유해야 합니다. 이미 저장된 고객·출금계좌의 공통값이나 계좌 소유자가 요청과 다르면
-과거 54개 Feature가 바뀌지 않도록 `409`로 거부합니다.
+고유해야 합니다. 생성 데이터의 공통 Feature는 항상 일관되지 않을 수 있으므로 같은
+고객·출금계좌가 다시 들어오면 마지막으로 처리된 요청값으로 갱신합니다. 단, 이미 다른
+고객이 소유한 출금 계좌를 요청하거나 식별번호가 충돌하면 `409`로 거부합니다.
 
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
 꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.
