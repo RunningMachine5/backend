@@ -16,14 +16,7 @@ from sqlalchemy import (
 from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, JSON_COLUMN
-
-
-class AgentExecutionStatus(str, Enum):
-    """Agent 조사 파이프라인의 실행 상태."""
-
-    PROCESSING = "PROCESSING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
+from app.domain.agent_status import AgentExecutionStatus
 
 
 class ChatSessionStatus(str, Enum):

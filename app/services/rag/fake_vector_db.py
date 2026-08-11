@@ -1,5 +1,5 @@
 from app.data.fake_data import MONITORING_GUIDE_TEXT
-from app.dto.agent import RagQueryDTO, RetrievedContextDTO
+from app.dto.legacy_agent import RagQueryDTO, RetrievedContextDTO
 
 
 class FakeVectorDB:
