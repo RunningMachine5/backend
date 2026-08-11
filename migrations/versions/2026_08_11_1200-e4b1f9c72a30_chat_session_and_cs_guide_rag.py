@@ -11,7 +11,7 @@
   updated_at 없음. 대신 출처 표기용 page 컬럼을 둔다)
 
 Revision ID: e4b1f9c72a30
-Revises: b7e1c4a9d305
+Revises: e8c4a1d7f290
 Create Date: 2026-08-11 10:00:00.000000
 """
 
@@ -24,7 +24,10 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "e4b1f9c72a30"
-down_revision: Union[str, Sequence[str], None] = "b7e1c4a9d305"
+# 문서 복사 단계가 e8c4a1d7f290이 바꿔 놓은 documents 컬럼(audiences/
+# fraud_types)을 읽으므로 그 뒤에 와야 한다. 분기로 두면 실행 순서가
+# 보장되지 않아 새 DB에서 깨진다.
+down_revision: Union[str, Sequence[str], None] = "e8c4a1d7f290"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -176,18 +179,25 @@ def _copy_documents_into_cs_guide() -> None:
     """documents/document_chunks에 이미 적재된 고객대응가이드를 옮긴다.
 
     임베딩 벡터를 그대로 복사하므로 재임베딩(OpenAI 재호출)이 필요 없다.
-    모니터링 전용 문서는 고객 챗봇 코퍼스에 섞이면 안 되므로 audience가
-    CUSTOMER/COMMON인 문서만 가져온다. id를 그대로 유지해 청크의 FK 매핑을
-    맞추고, 이어지는 INSERT가 충돌하지 않도록 시퀀스를 다시 세팅한다.
+    모니터링 전용 문서는 고객 챗봇 코퍼스에 섞이면 안 되므로 대상 채널에
+    CUSTOMER/COMMON이 포함된 문서만 가져온다. id를 그대로 유지해 청크의 FK
+    매핑을 맞추고, 이어지는 INSERT가 충돌하지 않도록 시퀀스를 다시 세팅한다.
+
+    documents.audiences/fraud_types는 e8c4a1d7f290이 단일 문자열에서 JSONB
+    배열로 바꿔 놓은 컬럼이다. cs_guide 쪽은 고객 채널 전용이라 채널 목록이
+    없고 유형도 단일 값이므로 배열의 첫 원소만 옮긴다.
     """
 
     op.execute(
         """
         INSERT INTO cs_guide_documents
             (id, title, source, source_type, fraud_type, content, created_at)
-        SELECT id, title, source, source_type, fraud_type, content, created_at
+        SELECT id, title, source, source_type,
+               NULLIF(fraud_types ->> 0, ''),
+               content, created_at
         FROM documents
-        WHERE audience IN ('CUSTOMER', 'COMMON')
+        WHERE audiences @> '"CUSTOMER"'::jsonb
+           OR audiences @> '"COMMON"'::jsonb
         """
     )
     op.execute(
