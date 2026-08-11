@@ -246,6 +246,7 @@ class FraudRuleReplayApiTest(unittest.TestCase):
                 FraudTypeScoreResult(
                     transaction_id="TX-LATEST-POSITIVE",
                     rule_set_id=int(active["id"]),
+                    rule_filter_status="APPLIED",
                     type_scores={"SENTINEL": 0.123},
                     matched_components={"SENTINEL": ["unchanged"]},
                 )

@@ -329,7 +329,8 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             self.assertEqual(score.rule_set_id, rule_set_id)
             self.assertEqual(set(score.type_scores), set(body["rule_scores"]))
             self.assertEqual(set(score.matched_components), set(body["rule_scores"]))
-            self.assertIsNone(score.rule_filter_status)
+            # 룰이 실제로 돌았으므로 APPLIED. 이 컬럼은 더 이상 nullable이 아니다.
+            self.assertEqual(score.rule_filter_status, "APPLIED")
             self.assertIsNone(score.primary_fraud_type)
 
     def test_normal_prediction_skips_rule_scores_even_with_active_rules(self) -> None:

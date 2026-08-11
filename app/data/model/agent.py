@@ -5,9 +5,12 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
+    Float,
+    ForeignKey,
     Index,
     Integer,
     Text,
@@ -216,6 +219,27 @@ class AgentChatSession(SQLModel, table=True):
         max_length=64,
     )
     status: str = Field(default=ChatSessionStatus.WAITING.value, max_length=16)
+    # 세션 목록에서 마지막 메시지를 보여줄 때 메시지 테이블을 정렬하지 않으려고
+    # 최신 메시지를 캐시한다. agent_chat_messages와 서로 참조하는 순환 FK라
+    # use_alter=True로 테이블 생성 후 ALTER로 제약을 건다.
+    last_message_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BIGINT_PRIMARY_KEY,
+            ForeignKey(
+                "agent_chat_messages.message_id",
+                ondelete="SET NULL",
+                use_alter=True,
+                name="fk_agent_chat_sessions_last_message_id",
+            ),
+            nullable=True,
+        ),
+    )
+    # 노인 전용 UI(큰 글씨·단순 흐름)로 상담을 진행할지 여부.
+    is_older: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
@@ -260,11 +284,10 @@ class AgentChatMessage(SQLModel, table=True):
 
 
 class FraudTypeScoreAfterChat(SQLModel, table=True):
-    """챗봇 대화로 산출한 사기유형별 추가 점수.
+    """챗봇 대화로 확정한 대표 사기유형과 그 우세 점수.
 
-    주의: 이 추가 점수를 fraud_type_score_results의 기본 점수와 어떻게
-    합산하는지는 ERD에 정의되어 있지 않다. 합산 결과 컬럼도 없으므로 최종
-    점수는 읽는 쪽에서 매번 계산해야 한다.
+    유형별 점수를 전부 들고 있지 않고, 대화 뒤 가장 우세한 유형 하나와 그
+    유형이 얼마나 더 우세한지를 나타내는 점수만 남긴다.
     """
 
     __tablename__ = "fraud_type_score_after_chat"
@@ -275,11 +298,12 @@ class FraudTypeScoreAfterChat(SQLModel, table=True):
         ondelete="CASCADE",
         max_length=64,
     )
-    additional_type_scores: dict[str, float] = Field(
-        default_factory=dict,
-        sa_column=Column(JSON_COLUMN, nullable=False),
-    )
     primary_fraud_type: str | None = Field(default=None, max_length=64)
+    # 대표 유형이 나머지 유형보다 얼마나 더 우세한지의 점수.
+    primary_fraud_type_score: float | None = Field(
+        default=None,
+        sa_column=Column(Float, nullable=True),
+    )
     scored_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
