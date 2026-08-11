@@ -1,0 +1,328 @@
+// FDShield 백엔드 DB 스키마 (app/data/model/* 기준, dbdiagram.io 호환)
+// 생성 방식: 코드에서 수동 추출. 모델이 바뀌면 이 파일도 함께 갱신해야 한다.
+
+Table customers {
+  customer_id varchar(64) [pk]
+  birthyear smallint [not null]
+  gender varchar(16) [not null, note: "CHECK IN ('male','female')"]
+  personal_identifier varchar(255) [not null]
+  identification_number varchar(255) [not null, unique]
+  registration_datetime timestamptz [not null]
+  credit_rating smallint [not null, note: "CHECK BETWEEN 1 AND 9"]
+  loan_type varchar(8) [not null, note: "CHECK IN ('a','b','c','d','e')"]
+  email varchar(255) [not null]
+  phone_number varchar(32) [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table accounts {
+  account_id varchar(64) [pk]
+  customer_id varchar(64) [ref: > customers.customer_id, note: "ON DELETE SET NULL"]
+  account_number varchar(255) [not null, unique]
+  account_type varchar(32) [note: "CHECK IN ('a','b','c','d') OR NULL"]
+  creation_datetime timestamptz
+  amount_daily_limit bigint
+  indicator_openbanking boolean
+  indicator_release_limit_excess boolean
+  current_balance bigint
+  remaining_daily_limit bigint
+  suspend_status boolean [not null, default: false]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table customer_events {
+  event_id bigint [pk, increment]
+  customer_id varchar(64) [not null, ref: > customers.customer_id, note: "ON DELETE CASCADE"]
+  account_id varchar(64) [ref: > accounts.account_id, note: "ON DELETE SET NULL"]
+  event_type varchar(32) [not null, note: "AUTH_1/AUTH_2/AUTH_3/PRIVACY/ATM_LIMIT_INQUIRY/ATM_LIMIT_INCREASE/SUSPENSION_RELEASE"]
+  occurred_at timestamptz [not null]
+  created_at timestamptz [not null]
+
+  indexes {
+    (customer_id, occurred_at)
+    (event_type, occurred_at)
+    (customer_id, event_type, occurred_at) [unique, name: "uq_customer_events_natural_key"]
+  }
+}
+
+Table transactions {
+  transaction_id varchar(64) [pk]
+  customer_id varchar(64) [not null, ref: > customers.customer_id, note: "ON DELETE RESTRICT"]
+  source_account_id varchar(64) [not null, ref: > accounts.account_id, note: "ON DELETE RESTRICT"]
+  recipient_account_id varchar(64) [ref: > accounts.account_id, note: "ON DELETE SET NULL"]
+  transaction_datetime timestamptz [not null]
+  transaction_amount bigint [not null]
+  channel varchar(32) [not null, note: "CHECK IN ('mobile','internet','ATM','Others')"]
+  type_general_automatic varchar(16) [not null, note: "CHECK IN ('general','automatic')"]
+  access_medium varchar(8) [not null, note: "CHECK IN ('a'..'h')"]
+  error_code varchar(8) [not null, note: "CHECK IN ('a'..'f')"]
+  num_connection_failure smallint [not null, note: "CHECK >= 0"]
+  another_person_account boolean [not null]
+  initial_balance bigint [not null]
+  balance bigint [not null]
+  remaining_amount_daily_limit_exceeded bigint [not null]
+  operating_system varchar(32) [not null]
+  ip_address inet
+  mac_address macaddr
+  location text [not null]
+  location_lat float [note: "CHECK BETWEEN -90 AND 90"]
+  location_lon float [note: "CHECK BETWEEN -180 AND 180"]
+  rooting_jailbreak_indicator boolean [not null]
+  mobile_roaming_indicator boolean [not null]
+  vpn_indicator boolean [not null]
+  flag_terminal_malicious_behavior_1 boolean [not null]
+  flag_terminal_malicious_behavior_2 boolean [not null]
+  flag_terminal_malicious_behavior_3 boolean [not null]
+  flag_terminal_malicious_behavior_5 boolean [not null]
+  flag_terminal_malicious_behavior_6 boolean [not null]
+  created_at timestamptz [not null]
+
+  indexes {
+    (customer_id, transaction_datetime)
+    transaction_datetime
+  }
+}
+
+Table derived_features {
+  transaction_id varchar(64) [pk, ref: - transactions.transaction_id, note: "ON DELETE CASCADE"]
+  distance float [not null]
+  time_difference interval [not null]
+  one_month_max_amount bigint [not null]
+  one_month_std_dev float [not null]
+  dawn_one_month_max_amount bigint [not null]
+  dawn_one_month_std_dev float [not null]
+  unused_terminal_status boolean [not null]
+  unused_account_status boolean [not null]
+  flag_deposit_more_than_tenmillion boolean [not null]
+  number_of_transaction_with_the_account integer [not null]
+  transaction_history_with_the_account integer [not null]
+  last_atm_transaction_datetime timestamptz
+  last_bank_branch_transaction_datetime timestamptz
+  flag_change_of_authentication_1 boolean [not null]
+  flag_change_of_authentication_2 boolean [not null]
+  flag_change_of_authentication_3 boolean [not null]
+  flag_change_of_authentication_4 boolean [not null]
+  inquiry_atm_limit boolean [not null]
+  increase_atm_limit boolean [not null]
+  release_suspension boolean [not null]
+  transaction_resumed_date timestamptz
+  recipient_account_suspend_status boolean [not null]
+  first_time_ios_by_vulnerable_user boolean [not null]
+  computed_at timestamptz [not null]
+}
+
+Table transaction_labels {
+  transaction_id varchar(64) [pk, ref: - transactions.transaction_id, note: "ON DELETE CASCADE"]
+  confirmed_is_fraud boolean [not null]
+  labeled_at timestamptz [not null]
+}
+
+Table ml_prediction_results {
+  id bigint [pk, increment]
+  transaction_id varchar(64) [not null, ref: > transactions.transaction_id, note: "ON DELETE CASCADE"]
+  prediction_is_fraud boolean [not null]
+  fraud_probability float [not null, note: "0.0 <= x <= 1.0"]
+  model_name varchar(128) [not null]
+  model_version varchar(64) [not null]
+  latency_ms integer [not null, note: ">= 0"]
+  created_at timestamptz [not null]
+}
+
+Table fraud_rule_sets {
+  id bigint [pk, increment]
+  version integer [not null, unique, note: "> 0"]
+  status varchar(16) [not null, default: "DRAFT", note: "DRAFT/ACTIVE/ARCHIVED"]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  activated_at timestamptz
+}
+
+Table fraud_rules {
+  id bigint [pk, increment]
+  rule_set_id bigint [not null, ref: > fraud_rule_sets.id, note: "ON DELETE CASCADE"]
+  type_code varchar(64) [not null]
+  display_name varchar(128) [not null]
+  description varchar(1000)
+  enabled boolean [not null, default: true]
+  sort_order integer [not null, default: 0]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+
+  indexes {
+    (rule_set_id, type_code) [unique, name: "uq_fraud_rules_rule_set_type_code"]
+  }
+}
+
+Table fraud_rule_components {
+  id bigint [pk, increment]
+  rule_id bigint [not null, ref: > fraud_rules.id, note: "ON DELETE CASCADE"]
+  component_key varchar(64) [not null]
+  name varchar(128) [not null]
+  condition_expression jsonb [not null]
+  weight float [not null]
+  sort_order integer [not null, default: 0]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+
+  indexes {
+    (rule_id, component_key) [unique, name: "uq_fraud_rule_components_rule_key"]
+  }
+}
+
+Table fraud_type_score_results {
+  id bigint [pk, increment]
+  transaction_id varchar(64) [not null, unique, ref: > transactions.transaction_id, note: "ON DELETE CASCADE"]
+  rule_set_id bigint [not null, ref: > fraud_rule_sets.id, note: "ON DELETE RESTRICT"]
+  rule_filter_status varchar(32) [not null, note: "CHECK IN ('APPLIED','SKIPPED_NOT_FRAUD','FAILED')"]
+  primary_fraud_type varchar(64)
+  type_scores jsonb [not null, note: "type_code -> score, 전체 유형"]
+  matched_components jsonb [not null]
+  created_at timestamptz [not null]
+}
+
+Table dataset_versions {
+  id bigint [pk, increment]
+  version varchar(64) [not null, unique]
+  gcs_uri varchar(2048) [not null]
+  row_count bigint [not null, note: ">= 0"]
+  created_at timestamptz [not null]
+}
+
+Table training_runs {
+  id bigint [pk, increment]
+  model_key varchar(128) [not null]
+  dataset_version_id bigint [not null, ref: > dataset_versions.id, note: "ON DELETE RESTRICT"]
+  cloud_run_execution_name varchar(512)
+  mlflow_run_id varchar(255)
+  status varchar(32) [not null]
+  created_at timestamptz [not null]
+}
+
+Table documents {
+  id bigint [pk, increment]
+  document_key varchar(255) [not null, unique]
+  title varchar(255) [not null]
+  source varchar(512)
+  source_type varchar(64)
+  fraud_types jsonb [not null, note: "string[]"]
+  audiences jsonb [not null, note: "string[]"]
+  content text [not null]
+  metadata jsonb [not null, note: "python 속성명은 meta (metadata는 SQLAlchemy 예약어)"]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table document_chunks {
+  id bigint [pk, increment]
+  document_id bigint [not null, ref: > documents.id, note: "ON DELETE CASCADE"]
+  chunk_index integer [not null, note: "0부터 시작, 문서 내 단조 증가"]
+  content text [not null]
+  metadata jsonb [not null]
+  embedding "vector(1536)" [not null]
+  created_at timestamptz [not null]
+
+  indexes {
+    (document_id, chunk_index) [unique, name: "uq_document_chunks_document_id_chunk_index"]
+    embedding [name: "ix_document_chunks_embedding_hnsw", note: "hnsw, vector_cosine_ops"]
+  }
+}
+
+Table cs_guide_documents {
+  id bigint [pk, increment]
+  title varchar(255) [not null]
+  source varchar(512)
+  source_type varchar(64)
+  fraud_type varchar(64)
+  content text [not null]
+  created_at timestamptz [not null]
+}
+
+Table cs_guide_document_chunks {
+  id bigint [pk, increment]
+  cs_guide_document_id bigint [not null, ref: > cs_guide_documents.id, note: "ON DELETE CASCADE"]
+  chunk_index integer [not null]
+  page integer [note: "1부터 시작, 페이지 개념 없으면 NULL"]
+  content text [not null]
+  embedding "vector(1536)" [not null]
+  created_at timestamptz [not null]
+
+  indexes {
+    (cs_guide_document_id, chunk_index) [unique, name: "uq_cs_guide_document_chunks_document_id_chunk_index"]
+    embedding [name: "ix_cs_guide_document_chunks_embedding_hnsw", note: "hnsw, vector_cosine_ops"]
+  }
+}
+
+Table agent_cases {
+  case_id varchar(64) [pk]
+  transaction_id varchar(64) [not null, unique, ref: > transactions.transaction_id, note: "ON DELETE CASCADE"]
+  fraud_type_score_result_id bigint [not null, unique, ref: > fraud_type_score_results.id, note: "ON DELETE CASCADE"]
+  execution_status varchar(16) [not null, default: "PROCESSING", note: "CHECK IN ('PROCESSING','COMPLETED','FAILED')"]
+  failure_reason text
+  risk_score integer [not null, note: "CHECK BETWEEN 0 AND 100"]
+  risk_grade varchar(16) [not null, note: "CHECK IN ('LOW','MEDIUM','HIGH','VERY_HIGH')"]
+  investigation_result jsonb
+  best_similar_case_id varchar(64) [ref: > agent_cases.case_id, note: "self FK, ON DELETE SET NULL"]
+  similar_case_results jsonb
+  response_result jsonb
+  generation_metadata jsonb
+  created_at timestamptz [not null]
+  completed_at timestamptz
+
+  indexes {
+    (execution_status, created_at)
+    risk_grade
+  }
+}
+
+Table agent_reviews {
+  case_id varchar(64) [pk, ref: - agent_cases.case_id, note: "ON DELETE CASCADE"]
+  reviewer_id varchar(64) [not null, note: "사용자 테이블 미도입으로 FK 없음"]
+  decision varchar(32) [not null]
+  confirmed_fraud_type varchar(64)
+  performed_actions jsonb
+  checklist_results jsonb
+  resolution_summary text
+  reviewed_at timestamptz [not null]
+}
+
+Table agent_dashboard_insights {
+  insight_id varchar(64) [pk]
+  title varchar(255) [not null]
+  summary text
+  chart_spec jsonb
+  created_at timestamptz [not null]
+}
+
+Table agent_chat_sessions {
+  chat_session_id varchar(64) [pk]
+  transaction_id varchar(64) [not null, unique, ref: > transactions.transaction_id, note: "ON DELETE CASCADE"]
+  status varchar(16) [not null, default: "WAITING", note: "CHECK IN ('WAITING','IN_PROGRESS','HANDED_OFF','DONE','CLOSED')"]
+  last_message_id bigint [ref: > agent_chat_messages.message_id, note: "순환 FK, use_alter, ON DELETE SET NULL"]
+  is_older boolean [not null, default: false]
+  created_at timestamptz [not null]
+
+  indexes {
+    status
+  }
+}
+
+Table agent_chat_messages {
+  message_id bigint [pk, increment]
+  chat_session_id varchar(64) [not null, ref: > agent_chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
+  sender_type varchar(16) [not null, note: "CHECK IN ('AI','HUMAN','SYSTEM')"]
+  message_text text [not null]
+  sent_at timestamptz [not null]
+
+  indexes {
+    (chat_session_id, sent_at)
+  }
+}
+
+Table fraud_type_score_after_chat {
+  transaction_id varchar(64) [pk, ref: - transactions.transaction_id, note: "ON DELETE CASCADE"]
+  primary_fraud_type varchar(64)
+  primary_fraud_type_score float
+  scored_at timestamptz [not null]
+}
