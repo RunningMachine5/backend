@@ -12,6 +12,10 @@ from app.data.model.agent import (  # noqa: F401
     ChatSessionStatus,
     FraudTypeScoreAfterChat,
 )
+from app.data.model.cs_guide_document import CsGuideDocument  # noqa: F401
+from app.data.model.cs_guide_document_chunk import (  # noqa: F401
+    CsGuideDocumentChunk,
+)
 from app.data.model.customer import Customer  # noqa: F401
 from app.data.model.customer_event import (  # noqa: F401
     CustomerEvent,
@@ -42,6 +46,8 @@ __all__ = [
     "AgentReview",
     "ChatSenderType",
     "ChatSessionStatus",
+    "CsGuideDocument",
+    "CsGuideDocumentChunk",
     "Customer",
     "CustomerEvent",
     "CustomerEventType",
