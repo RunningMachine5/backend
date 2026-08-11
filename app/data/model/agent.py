@@ -105,7 +105,7 @@ class AgentCase(SQLModel, table=True):
     )
 
     risk_score: int = Field(
-    sa_column=Column(Integer, nullable=False),
+        sa_column=Column(Integer, nullable=False),
     )
 
     risk_grade: str = Field(

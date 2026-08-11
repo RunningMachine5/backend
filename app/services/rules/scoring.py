@@ -48,6 +48,7 @@ def score_transaction_fraud_types(
     return FraudTypeScoreResult(
         transaction_id=transaction_id,
         rule_set_id=persisted_rule_set.id,
+        rule_filter_status="APPLIED",
         type_scores=scored.type_scores,
         matched_components=scored.matched_components,
     )
