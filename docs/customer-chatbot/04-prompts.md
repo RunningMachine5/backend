@@ -1,147 +1,85 @@
-# 고객 대응 챗봇 설계
+# 고객 대응 챗봇 설계 — 프롬프트와 질문 템플릿
 
-이상거래로 판정된 거래의 고객에게 챗봇으로 접촉해, 거래 원장만으로는 알 수 없는
-**고객 행동(customer_action)** 과 **사기 정황(fraud_circumstance)** 을 수집하고,
-그 결과로 대응 가이드를 제공하고 사기유형을 추가 판정하는 시스템의 설계 문서다.
+문서 색인은 [`01-overview.md`](01-overview.md)를 참고한다.
 
-> 이 문서는 설계 원안이다. 현재 구현 상태와의 차이 및 보완 사항은 별도로 반영한다.
+> 챗봇이 출력하는 모든 고객 안내 문구, 챗봇 질문, LLM 프롬프트, 구조화 출력 형식을 모아둔
+> 문서다. 각 템플릿이 **언제 어떤 분기에서 쓰이는지**는 [`03-scenario.md`](03-scenario.md)에 있다.
+>
+> 모든 JSON 응답은 프롬프트에 의존하지 않고 템플릿 등으로 강제한다
+> ([02-db-schema.md 5. 제약조건](02-db-schema.md#5-제약조건),
+> [7.4](02-db-schema.md#74-customer_action--fraud_circumstance-enum-코드-상수화)).
 
-## 1. 챗봇의 역할
+## A. 고객 안내 메시지 템플릿
 
-- 모니터링 담당자의 고객 안내 업무를 대신한다
-  - 피해 신속 대응
-  - 고객 대응 가이드 제공
-- 사용자에게 거래 보류 및 계좌 정지 상황을 빠르게 알린다
-- 채팅을 통해 거래 원장에서는 알 수 없는 정보를 알아낸다
-  - 고객이 어떤 행동을 했는지 (`customer_action`)
-  - 어떤 사기 정황이 있었는지 (`fraud_circumstance`)
+### A.1 최초 알림 메시지
 
-## 2. 사용 기술
-
-Python 3.13, FastAPI, RAG, LangChain, LangGraph, PostgreSQL, pgvector, SQLAlchemy,
-SQLModel, langchain-openai, Agent tool
-
-필요시 사용: BM25
-
-## 3. 공통 스키마 정의
-
-### 3.1 사기 유형
-
-```python
-FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
-    VOICE_PHISHING: "보이스피싱",
-    MESSENGER_PHISHING: "메신저피싱",
-    ACCOUNT_TAKEOVER: "계정탈취",
-    FRAUD_USED_ACCOUNT: "사기이용계좌",
-}
-```
-
-### 3.2 관련 테이블
-
-| 구분 | 테이블 |
-| --- | --- |
-| 거래 원장 | `transactions` |
-| 챗봇 | `agent_chat_sessions`, `agent_chat_messages` |
-| 채팅 후 사기유형 추가 점수 | `fraud_type_score_after_chat` |
-| 유저 대응가이드 임베딩 | `cs_guide_documents`, `cs_guide_document_chunks` |
-
-### 3.3 챗봇 상태 정의
-
-`agent_chat_sessions.status` (`ChatSessionStatus`)는 다음 5개 값을 가진다.
-
-| 값 | 의미 |
-| --- | --- |
-| `URL_SENT` | 챗봇URL전송 |
-| `IN_PROGRESS` | 챗봇 상담 진행중 |
-| `HANDOFF_REQUESTED` | 상담사 연결 요청 |
-| `DONE` | 챗봇 상담 완료 |
-| `FAILED` | 챗봇 상담 실패 |
-
-별도의 "생성됨" 상태는 두지 않는다. 세션 생성 시 기본값은 `URL_SENT`다.
-
-## 4. 작동 시나리오
-
-### 4.1 채팅 생성·접속 단계
-
-#### 채팅 세션 생성
-
-FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 세션 생성 함수를 호출한다.
-거래 하나당 채팅 세션은 하나이며, 하나의 거래는 한 번만 판단된다.
-
-- `CreateChatRequest`: 거래 id와 상위 2개 사기유형
-  (이 사기유형은 다음 단계에서 챗봇이 어떤 질문을 할지 결정하는 데 사용된다)
-- `CreateChatResponse`: 생성된 채팅 세션 id
-
-조건: `transactions`와 연관된 `customers` 테이블의 `birthyear` 컬럼에서 60세 이상인가?
-
-- 참: `agent_chat_sessions.is_older = true`
-- 거짓: `agent_chat_sessions.is_older = false`
-
-`agent_chat_sessions.status = URL_SENT` (기본값, 챗봇URL전송)
-
-#### 이상거래 고객에게 이메일 전송
-
-실제 메일 API는 연동하지 않아도 된다(다른 동료가 구현).
-유저 이메일 정보는 `transactions`의 연관 테이블에 저장되어 있다.
-
-생성된 채팅 세션 id 접근 URL을 전송한다.
-
-이메일 발송 시점에도 `agent_chat_sessions.status = URL_SENT`를 유지한다.
-
-이메일로 코드를 접속한 뒤 본인인증을 진행한다(출생연도 4자리 인증을 넣는 간이 방식).
-
-- 성공: 챗봇 접속
-- 실패: 본인인증 재시도
-
-### 4.2 정보 수집 단계 (챗봇 로직)
-
-조건: 챗봇 URL 접속 시 `agent_chat_sessions.is_older` 확인
-
-- 참: 고령자 전용 UI로 이동 (추후 구현)
-- 거짓: 기본 챗봇 UI로 이동
-
-#### 최초 알림 메시지
+사용처: [03-scenario.md 4.2 최초 알림 메시지](03-scenario.md#최초-알림-메시지)
 
 > 고객님의
 > [거래시각] [거래금액] [입금/출금]
 > 거래에서 전자금융사고 예방을 위한 확인 필요 사항이 발생하여 현재 일시적으로 처리 보류 중입니다.
 > 금융사기가 의심되거나 관련된 자세한 상담을 받고 싶으시면 '상담' 이라고 대답해주세요.
 
-거래시각, 거래금액, 입금/출금은 DB에서 조회한다.
-(실제로 보류를 구현하지는 않는다.)
+`[거래시각]`, `[거래금액]`, `[입금/출금]`은 DB에서 조회해 치환한다.
 
-#### 챗봇 희망 여부 질문
+### A.2 퀵리플라이 버튼 문구
 
-최초 알림 메시지 이후 유저에게 퀵리플라이 버튼을 노출하고 텍스트 입력창도 항상 열어둔다.
+사용처: [03-scenario.md 4.2 챗봇 희망 여부 질문](03-scenario.md#챗봇-희망-여부-질문)
 
-| 버튼 | 동작 | 상태 전이 |
+이 단계에서는 텍스트 입력창을 비활성화하고 아래 3버튼만 노출한다.
+
+| 버튼 문구 | 선택 시 출력 메시지 |
+| --- | --- |
+| 챗봇 상담 받을게요 | (바로 공통질문 1로 진행) |
+| 괜찮아요 | 거래 정지 해제 링크와 구체적 절차 안내 후 상담 종료 |
+| 즉시 상담사 연결 | "잠시만 기다려주세요 곧 상담사가 응답할 예정입니다" |
+
+### A.3 재질문·판정별 안내 문구
+
+사용처: [03-scenario.md 질문이 완전한가](03-scenario.md#질문이-완전한가) 조건 2
+
+| 판정 | 출력 문구 | 이후 동작 |
 | --- | --- | --- |
-| 챗봇 상담 받을게요 | 공통질문 1 응답 | `URL_SENT` → `IN_PROGRESS` |
-| 괜찮아요 | 거래 정지 해제 링크와 구체적 절차를 알려주고 상담 종료 | `URL_SENT` → `DONE` |
-| 즉시 상담사 연결 | "잠시만 기다려주세요 곧 상담사가 응답할 예정입니다" 출력 | `URL_SENT` → `HANDOFF_REQUESTED` |
+| `SUFFICIENT` | (문구 없음) | 다음 질문 |
+| `TOO_VAGUE` | "좀 더 구체적으로 다시 말해주실 수 있을까요?" | 재질문 |
+| `NON_ANSWER` | "이해하지 못했어요, 질문과 관련된 내용으로 다시 말해주실 수 있을까요?" | 재질문 |
+| `REFUSAL` | "알겠습니다 다음 질문을 할게요" | 다음질문 |
 
-#### 공통질문 1
+### A.4 상담사 연결 안내 문구
+
+사용처: [03-scenario.md 4.3-a 검색 결과 0건 시 상담사 연결로 분기](03-scenario.md#43-a-customer_actions-rag-검색-과정)
+
+> 죄송합니다, 정확한 안내를 위해 상담사를 연결해드릴게요. 잠시만 기다려주세요.
+
+## B. 챗봇 질문 템플릿
+
+공통질문 1~4는 순서대로 진행하며, 각 질문 후 [질문이 완전한가](03-scenario.md#질문이-완전한가)
+검사를 거친다.
+
+### B.1 공통질문 1
+
+`question_key`: `COMMON_1` → 고객응답 1
 
 > 이 거래를 알고 계셨는지, 본인이 직접 실행하거나 승인한 거래인지 말씀해 주세요.
 
-→ [질문이 완전한지 검사](#질문이-완전한가) → 고객응답 1 저장
+### B.2 공통질문 2
 
-#### 공통질문 2
+`question_key`: `COMMON_2` → 고객응답 2
 
 > 이 거래가 발생하기 전후에 연락한 사람이 있었나요? 있었다면 어떤 경로로 연락했고,
 > 상대방은 자신을 누구라고 설명했으며, 원래 알고 있던 번호나 계정이었는지 말씀해 주세요.
 
-→ [질문이 완전한지 검사](#질문이-완전한가) → 고객응답 2 저장
+### B.3 공통질문 3
 
-#### 공통질문 3
+`question_key`: `COMMON_3` → 고객응답 3
 
 > 상대방은 왜 이 거래나 행동이 필요하다고 설명했고, 정확히 무엇을 해달라고 요청했나요?
 > 돈을 보내거나 찾아 달라는 요청뿐 아니라 앱 설치, 정보 전달, 계좌·대출 개설,
 > 입금된 돈의 재송금 같은 요청도 포함해 말씀해 주세요.
 
-→ [질문이 완전한지 검사](#질문이-완전한가) → 고객응답 3 저장
+### B.4 공통질문 4
 
-#### 공통질문 4
+`question_key`: `COMMON_4` → 고객응답 4
 
 > 요청받은 것과 별개로, 실제로 하신 일을 모두 말씀해 주세요.
 > ① 링크를 열거나 금융정보·인증번호·신분증·카드정보를 입력 또는 전달한 일
@@ -149,12 +87,13 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 > ③ 통장·카드·OTP나 계정 접근정보를 건네거나, 계좌·대출·오픈뱅킹을 개설·연결한 일
 > 해당 사항이 없다면 "해당 없음"이라고 말씀해 주세요.
 
-→ [질문이 완전한지 검사](#질문이-완전한가) → 고객응답 4 저장
+### B.5 유형 판별 질문
 
-#### 유형 판별 질문
+`question_key`: `TYPE_DISCRIMINATION` → 고객응답 5
 
-`agent_chat_sessions.top_fraud_types`에 저장된 상위 2개 사기유형 중 확실한 것을
-판단하기 위한 질문이다. 상위 2개 사기유형 조합에 따라 질문이 달라진다.
+`agent_chat_sessions.top_fraud_types`에 저장된 상위 2개 사기유형 조합에 따라 질문이 달라진다.
+표의 **첫 번째 행**(보이스피싱 vs 메신저피싱)은 상위 2개를 점수로 정할 수 없을 때의
+폴백 조합이기도 하다([03-scenario.md 상위 2개 사기유형 선정](03-scenario.md#상위-2개-사기유형-선정)).
 
 | 판별할 상위 2개 후보 유형 | 유형 판별 질문 |
 | --- | --- |
@@ -165,39 +104,11 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 | 메신저피싱 vs 사기이용계좌 | "메신저로 연락한 가족·지인의 요청을 믿고 고객님의 돈을 보낸 것인가요, 아니면 타인에게서 고객님 계좌로 돈을 받은 뒤 메신저 지시에 따라 다시 송금·출금·전달한 것인가요?" |
 | 계정탈취 vs 사기이용계좌 | "계좌나 인증정보가 속아서 탈취되어 고객님 모르게 거래가 발생한 것인가요, 아니면 다른 사람이 계좌를 사용하도록 빌려주거나 고객님이 입금된 돈을 직접 재송금·출금·전달한 것인가요?" |
 
-→ 고객응답 5 저장
+## C. LLM 프롬프트
 
-고객응답 1+2+3+4+5 ⇒ **고객 응답 리스트**로 병합
+### C.1 고객응답 평가 LLM 프롬프트
 
----
-
-#### 질문이 완전한가
-
-고객응답 1~5에 대한 질문을 평가하고 다음 질문으로 넘어갈지 결정하는 로직(에이전트).
-고객 응답에 따라 **다음질문** 또는 **재질문**으로 분기된다.
-
-**조건 1: 현재 질문에 대한 재시도 횟수**
-
-질문당 추가 재질문 최대 1회를 넘어가면 그냥 다음질문으로 pass.
-
-**조건 2: 텍스트 길이가 10자 이상인가?** (단 1번 질문에서는 해당 필터를 걸지 않는다)
-
-- 10자 미만: "좀 더 길게 입력해주시면 알맞은 응답을 해드릴 수 있어요!" 메시지 출력과 함께 재질문
-- 10자 초과: pass
-
-**전처리**: PyKoSpacing으로 오탈자 교정 및 띄어쓰기
-
-**조건 3: 고객응답 평가 LLM**
-
-| 판정 | 동작 |
-| --- | --- |
-| `SUFFICIENT` | 다음 질문 |
-| `TOO_VAGUE` | "좀 더 구체적으로 다시 말해주실 수 있을까요?" 메시지 출력과 함께 재질문 |
-| `NON_ANSWER` | "이해하지 못했어요, 질문과 관련된 내용으로 다시 말해주실 수 있을까요?" 메시지 출력과 함께 재질문 |
-| `REFUSAL` | "알겠습니다 다음 질문을 할게요" 메시지 출력과 함께 다음질문 |
-
-<details>
-<summary>고객응답 평가 LLM 프롬프트</summary>
+사용처: [03-scenario.md 질문이 완전한가](03-scenario.md#질문이-완전한가) 조건 2
 
 ```text
 QUALITY_CHECK_PROMPT = """
@@ -226,29 +137,10 @@ QUALITY_CHECK_PROMPT = """
 """
 ```
 
-</details>
+### C.2 고객 행동 추출 LLM 프롬프트
 
----
-
-#### 4.2-a 고객 행동 추출
-
-추출 대상: 고객 응답 리스트
-
-추출 결과 형식:
-
-```json
-{
-  "customer_actions": [
-    {
-      "type": "customer_action enum",
-      "evidence": "사용자 답변의 정확한 원문"
-    }
-  ]
-}
-```
-
-<details>
-<summary>고객 행동 추출 LLM 프롬프트</summary>
+사용처: [03-scenario.md 4.2-a 고객 행동 추출](03-scenario.md#42-a-고객-행동-추출)
+`customer_action` 19종의 enum 정의를 포함한다.
 
 ```text
 당신은 금융 이상거래 상담에서 고객이 실제로 수행한 행동을 추출하는 분류기입니다.
@@ -333,27 +225,10 @@ crypto_purchased_or_transferred
 {{user_answers}}
 ```
 
-</details>
+### C.3 사기 정황 추출 LLM 프롬프트
 
-#### 4.2-b 사기 정황 추출
-
-추출 대상: 고객 응답 리스트
-
-추출 결과 형식:
-
-```json
-{
-  "fraud_circumstances": [
-    {
-      "type": "criminal_involvement_claim_by_phone",
-      "evidence": "검찰이라고 전화가 와서 제 계좌가 범죄에 연루됐다고 했어요"
-    }
-  ]
-}
-```
-
-<details>
-<summary>사기 정황 추출 LLM 프롬프트</summary>
+사용처: [03-scenario.md 4.2-b 사기 정황 추출](03-scenario.md#42-b-사기-정황-추출)
+`fraud_circumstance` 20종의 enum 정의를 4개 사기유형별로 그룹화해 포함한다.
 
 ```text
 당신은 금융 이상거래 상담에서 고객 답변에 나타난 사기 식별 정황을 추출하는 분류기입니다.
@@ -489,13 +364,29 @@ third_party_payment_followed_by_asset_delivery
 }
 ```
 
-</details>
+## D. 구조화 출력 형식
 
-### 4.3 정보 응답 단계 (RAG)
+두 형식 모두 프롬프트에 의존하지 않고 구조화 출력 스키마로 강제하며, `type` 필드는 파이썬
+화이트리스트로 검증한다
+([02-db-schema.md 7.4](02-db-schema.md#74-customer_action--fraud_circumstance-enum-코드-상수화)).
 
-#### 4.3-a customer_actions RAG 검색 과정
+### D.1 customer_actions
 
-입력:
+[4.2-a 고객 행동 추출](03-scenario.md#42-a-고객-행동-추출)의 출력이자
+[4.3-a RAG 검색](03-scenario.md#43-a-customer_actions-rag-검색-과정)의 입력이다.
+
+```json
+{
+  "customer_actions": [
+    {
+      "type": "customer_action enum",
+      "evidence": "사용자 답변의 정확한 원문"
+    }
+  ]
+}
+```
+
+항목이 여러 개인 경우:
 
 ```json
 {
@@ -507,30 +398,10 @@ third_party_payment_followed_by_asset_delivery
 }
 ```
 
-**외부 조회**: `customer_actions`의 답변 원문(evidence)에 URL, 전화번호/계좌, 이메일이 존재하는가?
+### D.2 fraud_circumstances
 
-| 대상 | 조회처 |
-| --- | --- |
-| URL | Google Safe Browsing API |
-| 전화번호/계좌 | 더치트 API |
-| 이메일 | 경찰청 이메일 조회 사이트 링크 출력 |
-
-각 API 응답을 토대로 URL/전화번호/계좌/이메일 불량 여부를 Augment 단계에 추가한다.
-
-**RAG 단계**
-
-- **Retrieve**: `customer_actions`를 보고 유사한 내용의 청크를 Vector DB에서 가져온다
-- **Augment**: 기본 프롬프트에 유사한 청크를 추가한다
-- **Generate**: 챗봇 응답 생성을 위해 LLM을 호출한 응답값을 고객에게 출력한다
-
-**추가 질문**
-
-최초 대응가이드 응답 이후 유저는 추가 질문이 가능하다.
-추가 질문에 대해 대응가이드가 저장된 벡터 저장소를 추가 문맥으로 하여 응답을 진행한다.
-
-#### 4.3-b fraud_circumstances 사기유형 추가 판정 과정
-
-입력:
+[4.2-b 사기 정황 추출](03-scenario.md#42-b-사기-정황-추출)의 출력이자
+[4.3-b 사기유형 추가 판정](03-scenario.md#43-b-fraud_circumstances-사기유형-추가-판정-과정)의 입력이다.
 
 ```json
 {
@@ -543,16 +414,27 @@ third_party_payment_followed_by_asset_delivery
 }
 ```
 
-4가지 사기유형별 타입이 존재한다. `fraud_circumstances`의 `type`들을 모두 검사하여
-더 많은 쪽에 해당하는 사기유형이 `fraud_type_score_after_chat.primary_fraud_type`이 된다.
+## E. RAG 검색 질의 템플릿
 
-상위 2개 사기유형 type 개수 차이의 절대값이 `primary_fraud_type_score`가 된다.
-이 점수가 클수록 `primary_fraud_type`의 정확도가 높은 것으로 이해한다.
+사용처: [03-scenario.md 4.3-a 검색 질의 구성](03-scenario.md#43-a-customer_actions-rag-검색-과정)
 
-## 5. 제약조건
+`customer_action` enum(영문 스네이크케이스)을 한국어 가이드 문서와 매칭되도록 한국어 검색
+질의로 변환하는 매핑이다. `FRAUD_TYPE_DISPLAY_NAMES`가 화면 표시용 짧은 한글 명칭인 것과
+달리, 이 매핑은 검색 질의이므로 "~했을 때 대응 방법"처럼 가이드 문서의 문체·길이에 가깝게
+한 문장으로 작성해 임베딩 유사도가 잘 잡히도록 한다.
 
-모든 JSON 응답은 프롬프트에 의존하지 않고 템플릿 등으로 강제한다.
+```python
+# app/domain/customer_action_codes.py
+CUSTOMER_ACTION_SEARCH_QUERIES: Mapping[str, str] = {
+    PHISHING_LINK_OPENED: "상대방이 보낸 의심스러운 링크를 열거나 눌렀을 때 대응 방법",
+    SUSPICIOUS_APP_INSTALLED: "상대방이 안내한 앱이나 APK를 설치했을 때 대응 방법",
+    FINANCIAL_CREDENTIALS_ENTERED_OR_SHARED: "금융 아이디·비밀번호·PIN을 입력하거나 전달했을 때 대응 방법",
+    # ... customer_action 19종 전체에 대해 정의
+}
+```
 
-## 6. 추후 해결할 문제들
+실제 검색 질의는 매핑 문구와 `evidence` 원문을 이어붙여 액션 하나당 하나씩 구성한다.
 
-- 세션 ID를 그대로 이메일 URL에 넣으면 추측·공유된 URL로 접근할 수 있는 부분은 나중에 보완
+```python
+query = f"{CUSTOMER_ACTION_SEARCH_QUERIES[action.type]} {action.evidence}"
+```
