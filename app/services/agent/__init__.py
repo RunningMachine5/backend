@@ -7,6 +7,10 @@ from app.services.agent.guide_corpus import (
     load_guide_corpus,
     load_guide_document,
 )
+from app.services.agent.guide_evaluation import (
+    GuideRetrievalEvaluationCase,
+    load_guide_evaluation_cases,
+)
 from app.services.agent.type_confidence import (
     ClassificationStatus,
     TypeConfidenceResult,
@@ -17,6 +21,7 @@ from app.services.agent.type_confidence import (
 
 __all__ = [
     "ClassificationStatus",
+    "GuideRetrievalEvaluationCase",
     "TypeConfidenceResult",
     "TypeConfidenceThresholds",
     "calculate_type_confidence",
@@ -25,4 +30,5 @@ __all__ = [
     "load_and_chunk_guide_corpus",
     "load_guide_corpus",
     "load_guide_document",
+    "load_guide_evaluation_cases",
 ]

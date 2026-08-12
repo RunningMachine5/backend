@@ -39,6 +39,9 @@ class GuideDocument:
     fraud_types: tuple[str, ...]
     audiences: tuple[str, ...]
     topics: tuple[str, ...]
+    risk_grades: tuple[str, ...]
+    action_codes: tuple[str, ...]
+    version: str
     published_at: date | None
     accessed_at: date
     content: str
@@ -60,6 +63,9 @@ class GuideChunk:
     fraud_types: tuple[str, ...]
     audiences: tuple[str, ...]
     topics: tuple[str, ...]
+    risk_grades: tuple[str, ...]
+    action_codes: tuple[str, ...]
+    version: str
 
 
 __all__ = [

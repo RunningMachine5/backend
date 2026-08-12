@@ -47,6 +47,11 @@ audiences:
   - MONITORING
 topics:
   - CUSTOMER_CONFIRMATION
+risk_grades:
+  - HIGH
+action_codes:
+  - VERIFY_CUSTOMER_TRANSACTION
+version: "1.0"
 published_at: null
 accessed_at: 2026-08-10
 ---
@@ -212,6 +217,9 @@ class GuideChunkerTest(unittest.TestCase):
                 self.assertEqual(chunk.fraud_types, document.fraud_types)
                 self.assertEqual(chunk.audiences, document.audiences)
                 self.assertEqual(chunk.topics, document.topics)
+                self.assertEqual(chunk.risk_grades, document.risk_grades)
+                self.assertEqual(chunk.action_codes, document.action_codes)
+                self.assertEqual(chunk.version, document.version)
 
     def test_skips_empty_sections_and_uses_contiguous_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -246,6 +254,9 @@ class GuideChunkerTest(unittest.TestCase):
             fraud_types=document.fraud_types,
             audiences=document.audiences,
             topics=document.topics,
+            risk_grades=document.risk_grades,
+            action_codes=document.action_codes,
+            version=document.version,
             published_at=document.published_at,
             accessed_at=document.accessed_at,
             content="# 제목\n\n## 빈 섹션",
