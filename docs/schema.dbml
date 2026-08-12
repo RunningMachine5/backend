@@ -298,7 +298,7 @@ Table agent_dashboard_insights {
 Table agent_chat_sessions {
   chat_session_id varchar(64) [pk]
   transaction_id varchar(64) [not null, unique, ref: > transactions.transaction_id, note: "ON DELETE CASCADE"]
-  status varchar(16) [not null, default: "WAITING", note: "CHECK IN ('WAITING','IN_PROGRESS','HANDED_OFF','DONE','CLOSED')"]
+  status varchar(32) [not null, default: "URL_SENT", note: "CHECK IN ('URL_SENT','IN_PROGRESS','HANDOFF_REQUESTED','DONE','FAILED')"]
   last_message_id bigint [ref: > agent_chat_messages.message_id, note: "순환 FK, use_alter, ON DELETE SET NULL"]
   is_older boolean [not null, default: false]
   top_fraud_types jsonb [note: "상위 2개 사기유형 코드(점수 내림차순)"]
