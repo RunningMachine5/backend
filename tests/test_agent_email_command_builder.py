@@ -9,6 +9,7 @@ from app.dto.agent import FraudTypeScoreResultDTO, InvestigationResultDTO
 from app.services.agent.email_command_builder import (
     build_fraud_alert_email_command,
 )
+from app.services.agent.type_confidence import calculate_type_confidence
 
 
 class AgentEmailCommandBuilderTest(unittest.TestCase):
@@ -17,7 +18,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
     def test_confident_case_uses_rule_top_two_types(self) -> None:
         command = build_fraud_alert_email_command(
             transaction_id="TX-001",
-            rule_result=self._rule_result(
+            type_confidence=self._confidence(
                 account_takeover=0.80,
                 messenger_phishing=0.40,
             ),
@@ -35,7 +36,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
 
         command = build_fraud_alert_email_command(
             transaction_id="TX-002",
-            rule_result=self._rule_result(
+            type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,
             ),
@@ -52,7 +53,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
     def test_missing_investigation_falls_back_to_rule_order(self) -> None:
         command = build_fraud_alert_email_command(
             transaction_id="TX-003",
-            rule_result=self._rule_result(
+            type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,
             ),
@@ -68,7 +69,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
     def test_recommendation_outside_top_two_keeps_rule_order(self) -> None:
         command = build_fraud_alert_email_command(
             transaction_id="TX-004",
-            rule_result=self._rule_result(
+            type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,
             ),
@@ -82,7 +83,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_fraud_alert_email_command(
                 transaction_id=" ",
-                rule_result=self._rule_result(
+                type_confidence=self._confidence(
                     account_takeover=0.80,
                     messenger_phishing=0.40,
                 ),
@@ -96,7 +97,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
 
         command = build_fraud_alert_email_command(
             transaction_id="TX-005",
-            rule_result=self._rule_result(
+            type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,
             ),
@@ -123,6 +124,20 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
                 "FRAUD_USED_ACCOUNT": 0.10,
             },
             matched_components=[],
+        )
+
+    @classmethod
+    def _confidence(
+        cls,
+        *,
+        account_takeover: float,
+        messenger_phishing: float,
+    ):
+        return calculate_type_confidence(
+            cls._rule_result(
+                account_takeover=account_takeover,
+                messenger_phishing=messenger_phishing,
+            ).type_scores
         )
 
     @staticmethod
