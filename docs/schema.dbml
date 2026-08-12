@@ -301,6 +301,7 @@ Table agent_chat_sessions {
   status varchar(16) [not null, default: "WAITING", note: "CHECK IN ('WAITING','IN_PROGRESS','HANDED_OFF','DONE','CLOSED')"]
   last_message_id bigint [ref: > agent_chat_messages.message_id, note: "순환 FK, use_alter, ON DELETE SET NULL"]
   is_older boolean [not null, default: false]
+  top_fraud_types jsonb [note: "상위 2개 사기유형 코드(점수 내림차순)"]
   created_at timestamptz [not null]
 
   indexes {
