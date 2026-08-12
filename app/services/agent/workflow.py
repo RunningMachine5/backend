@@ -55,6 +55,7 @@ class AmbiguousTypeInvestigator(Protocol):
         self,
         *,
         case_id: str,
+        transaction_id: str,
         rule_result: FraudTypeScoreResultDTO,
         confidence: TypeConfidenceResult,
         risk_score: int,
@@ -81,12 +82,13 @@ class RuleFirstFallbackInvestigator:
         self,
         *,
         case_id: str,
+        transaction_id: str,
         rule_result: FraudTypeScoreResultDTO,
         confidence: TypeConfidenceResult,
         risk_score: int,
         risk_grade: str,
     ) -> InvestigationResultDTO:
-        del case_id, rule_result, risk_score, risk_grade
+        del case_id, transaction_id, rule_result, risk_score, risk_grade
         return InvestigationResultDTO(
             classification_status=ClassificationStatus.AMBIGUOUS,
             score_margin=confidence.score_margin,
@@ -266,6 +268,7 @@ class AgentWorkflow:
         confidence = state["type_confidence"]
         result = self.investigator.investigate(
             case_id=state["case_id"],
+            transaction_id=agent_input.transaction_id,
             rule_result=state["rule_result"],
             confidence=confidence,
             risk_score=agent_input.risk_score,
