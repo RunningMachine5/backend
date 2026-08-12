@@ -14,7 +14,6 @@ from app.dto.agent import (
 from app.dto.agent_investigation import (
     ResolvedCaseDetailDTO,
     SimilarResolvedCaseDTO,
-    TransactionContextDTO,
 )
 from app.repositories.agent_investigation import AgentInvestigationRepository
 from app.services.agent.case_similarity import (
@@ -41,8 +40,6 @@ class SimilarCaseTools(Protocol):
     ) -> list[SimilarResolvedCaseDTO]: ...
 
     def get_resolved_case_detail(self, case_id: str) -> ResolvedCaseDetailDTO: ...
-
-    def get_transaction_context(self, transaction_id: str) -> TransactionContextDTO: ...
 
 
 class DatabaseSimilarCaseTools:
@@ -87,7 +84,7 @@ class DatabaseSimilarCaseTools:
                 risk_score=case.risk_score,
                 risk_grade=case.risk_grade,
             )
-            for case, score, _review in rows
+            for case, score in rows
         ]
         ranked = rank_similar_cases(
             current,
@@ -95,14 +92,9 @@ class DatabaseSimilarCaseTools:
             top_k=top_k,
             config=self.similarity_config,
         )
-        row_by_case = {case.case_id: (case, review) for case, _score, review in rows}
         return [
             SimilarResolvedCaseDTO(
                 case_id=result.case_id,
-                transaction_id=row_by_case[result.case_id][0].transaction_id,
-                confirmed_fraud_type=(
-                    row_by_case[result.case_id][1].confirmed_fraud_type or ""
-                ),
                 similarity_score=result.similarity_score,
                 common_evidence_codes=result.common_evidence_codes,
             )
@@ -110,30 +102,12 @@ class DatabaseSimilarCaseTools:
         ]
 
     def get_resolved_case_detail(self, case_id: str) -> ResolvedCaseDetailDTO:
-        row = self.repository.get_resolved_case(case_id)
-        if row is None:
+        review = self.repository.get_resolved_review(case_id)
+        if review is None:
             raise LookupError(f"완료 사건을 찾을 수 없다: {case_id}")
-        case, review = row
         return ResolvedCaseDetailDTO(
-            case_id=case.case_id,
-            transaction_id=case.transaction_id,
+            case_id=case_id,
             confirmed_fraud_type=review.confirmed_fraud_type or "",
-            performed_actions=list(review.performed_actions or []),
-            checklist_results=list(review.checklist_results or []),
-            resolution_summary=review.resolution_summary,
-            response_result=dict(case.response_result) if case.response_result else None,
-        )
-
-    def get_transaction_context(self, transaction_id: str) -> TransactionContextDTO:
-        transaction = self.repository.get_transaction(transaction_id)
-        if transaction is None:
-            raise LookupError(f"거래를 찾을 수 없다: {transaction_id}")
-        return TransactionContextDTO(
-            transaction_id=transaction.transaction_id,
-            transaction_amount=transaction.transaction_amount,
-            channel=transaction.channel,
-            transaction_datetime=transaction.transaction_datetime,
-            location=transaction.location,
         )
 
 
@@ -159,13 +133,11 @@ class LimitedSimilarCaseInvestigator:
         self,
         *,
         case_id: str,
-        transaction_id: str,
         rule_result: FraudTypeScoreResultDTO,
         confidence: TypeConfidenceResult,
         risk_score: int,
         risk_grade: str,
     ) -> InvestigationResultDTO:
-        del transaction_id  # 현재 유사도 입력에 거래 원문이 충분하므로 기본 경로에서는 조회하지 않는다.
         candidates = (confidence.top_type_code, confidence.second_type_code)
 
         # Reason: 점수 차이가 작으므로 먼저 후보 유형의 완료 사건을 검색한다.
@@ -210,8 +182,7 @@ class LimitedSimilarCaseInvestigator:
             if detail.confirmed_fraud_type == recommended_type
         )
         enough = support_count[recommended_type] >= 2 or (
-            best.confirmed_fraud_type == recommended_type
-            and best.similarity_score >= self.strong_similarity
+            best.similarity_score >= self.strong_similarity
         )
         if not enough:
             return self._insufficient(confidence, "한 유형을 우선 추천할 만큼 과거 확정 근거가 충분하지 않다.")
