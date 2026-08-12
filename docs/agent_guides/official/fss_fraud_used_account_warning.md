@@ -14,6 +14,16 @@ topics:
   - ACCOUNT_FLOW_REVIEW
   - RECIPIENT_ACCOUNT_REVIEW
   - MANUAL_REVIEW
+risk_grades:
+  - LOW
+  - MEDIUM
+  - HIGH
+  - VERY_HIGH
+action_codes:
+  - REVIEW_ACCOUNT_FLOW
+  - REVIEW_LINKED_ACCOUNTS
+  - REQUEST_ACCOUNT_RISK_REVIEW
+version: "1.0"
 published_at: 2026-02-09
 accessed_at: 2026-08-09
 ---

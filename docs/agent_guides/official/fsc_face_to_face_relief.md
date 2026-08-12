@@ -14,6 +14,15 @@ topics:
   - RECIPIENT_ACCOUNT_REVIEW
   - DAMAGE_REPORT
   - EMERGENCY_RESPONSE
+risk_grades:
+  - MEDIUM
+  - HIGH
+  - VERY_HIGH
+action_codes:
+  - REVIEW_RECIPIENT_ACCOUNT
+  - GUIDE_VOICE_PHISHING_RESPONSE
+  - REQUEST_SUSPENSION_REVIEW
+version: "1.0"
 published_at: 2023-02-21
 accessed_at: 2026-08-09
 ---

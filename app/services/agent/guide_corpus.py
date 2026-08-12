@@ -39,6 +39,7 @@ OFFICIAL_GUIDE = "OFFICIAL_GUIDE"
 INTERNAL_DEMO_GUIDE = "INTERNAL_DEMO_GUIDE"
 ALLOWED_SOURCE_TYPES = frozenset({OFFICIAL_GUIDE, INTERNAL_DEMO_GUIDE})
 ALLOWED_AUDIENCES = frozenset({"MONITORING", "CUSTOMER", "COMMON"})
+ALLOWED_RISK_GRADES = frozenset({"LOW", "MEDIUM", "HIGH", "VERY_HIGH"})
 ALLOWED_TOPICS = frozenset(
     {
         "CUSTOMER_CONFIRMATION",
@@ -84,6 +85,9 @@ class _GuideMetadataSchema(BaseModel):
     fraud_types: tuple[NonEmptyText, ...] = Field(min_length=1)
     audiences: tuple[NonEmptyText, ...] = Field(min_length=1)
     topics: tuple[NonEmptyText, ...] = Field(min_length=1)
+    risk_grades: tuple[NonEmptyText, ...] = Field(min_length=1)
+    action_codes: tuple[NonEmptyText, ...] = Field(min_length=1)
+    version: NonEmptyText
     published_at: date | None
     accessed_at: date
 
@@ -99,6 +103,8 @@ class _GuideMetadataSchema(BaseModel):
             raise ValueError("지원하지 않는 문서 대상 코드가 포함되어 있다.")
         if not set(self.topics).issubset(ALLOWED_TOPICS):
             raise ValueError("지원하지 않는 대응 주제 코드가 포함되어 있다.")
+        if not set(self.risk_grades).issubset(ALLOWED_RISK_GRADES):
+            raise ValueError("지원하지 않는 위험등급 코드가 포함되어 있다.")
 
         if self.source_type == OFFICIAL_GUIDE:
             if self.source_url is None:
@@ -177,6 +183,9 @@ def load_guide_document(path: str | Path) -> GuideDocument:
         fraud_types=metadata.fraud_types,
         audiences=metadata.audiences,
         topics=metadata.topics,
+        risk_grades=metadata.risk_grades,
+        action_codes=metadata.action_codes,
+        version=metadata.version,
         published_at=metadata.published_at,
         accessed_at=metadata.accessed_at,
         content=normalized_body,
@@ -233,6 +242,9 @@ def create_guide_chunks(document: GuideDocument) -> tuple[GuideChunk, ...]:
             fraud_types=document.fraud_types,
             audiences=document.audiences,
             topics=document.topics,
+            risk_grades=document.risk_grades,
+            action_codes=document.action_codes,
+            version=document.version,
         )
         for index, (heading, content) in enumerate(raw_sections)
     )
@@ -310,6 +322,7 @@ def _split_semantic_sections(document: GuideDocument) -> tuple[tuple[str, str], 
 
 __all__ = [
     "ALLOWED_AUDIENCES",
+    "ALLOWED_RISK_GRADES",
     "ALLOWED_SOURCE_TYPES",
     "ALLOWED_TOPICS",
     "DEFAULT_CORPUS_ROOT",
