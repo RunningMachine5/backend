@@ -1,0 +1,56 @@
+---
+document_id: FDS-INTERNAL-ACCOUNT-TAKEOVER-MONITORING-001
+title: FDShield 계정탈취 모니터링 대응 절차
+source_type: INTERNAL_DEMO_GUIDE
+source_name: FDShield 시연용 내부 지침
+source_url: null
+fraud_types:
+  - ACCOUNT_TAKEOVER
+audiences:
+  - MONITORING
+topics:
+  - SECURITY_CHECK
+  - CUSTOMER_CONFIRMATION
+  - ADDITIONAL_TRANSACTION_REVIEW
+  - MANUAL_REVIEW
+risk_grades:
+  - LOW
+  - MEDIUM
+  - HIGH
+  - VERY_HIGH
+action_codes:
+  - REVIEW_ACCOUNT_TAKEOVER_EVIDENCE
+  - VERIFY_ACCOUNT_ACCESS_CONTEXT
+  - REVIEW_TRANSACTION_CONTEXT
+  - VERIFY_CUSTOMER_TRANSACTION
+  - GUIDE_SECURITY_CHECK
+  - URGENT_CUSTOMER_CONFIRMATION
+  - REQUEST_EMERGENCY_REVIEW
+version: "1.0"
+published_at: 2026-08-11
+accessed_at: 2026-08-11
+---
+
+# FDShield 계정탈취 모니터링 대응 절차
+
+> FDShield 팀 프로젝트 시연을 위한 가상의 내부 절차이며 실제 금융회사의 승인된 정책이 아니다.
+
+## 단말·인증 근거 확인
+
+원격제어, 루팅·탈옥, 인증수단 변경, 비정상 접속 실패 등 실제 Rule 적중 근거를 확인한다.
+탐지 시점에 알 수 없는 사후 정보는 대응 근거로 사용하지 않는다.
+
+## 고객 거래 확인
+
+등록된 연락처를 이용해 거래의 본인 수행 여부를 확인한다. 고객이 원격제어 앱이나 출처가
+불명확한 앱을 설치했는지 확인하되 앱 이름 하나만으로 악성 여부를 단정하지 않는다.
+
+## 보안 점검 안내
+
+의심 앱의 추가 실행을 중단하고 금융 앱 인증정보와 비밀번호를 안전한 환경에서 점검하도록
+안내한다. 구체적인 삭제·신고 절차는 공식 보안 자료와 금융회사 최신 절차를 함께 확인한다.
+
+## 추가 거래 검토
+
+탐지 이후 발생한 추가 고액송금과 수취계좌 변화를 확인한다. Agent는 계정 잠금이나 거래 제한을
+직접 실행하지 않고 담당자의 승인 대상 조치로 제시한다.

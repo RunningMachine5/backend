@@ -1,4 +1,4 @@
-from app.dto.agent import RagQueryDTO, RetrievedContextDTO
+from app.dto.legacy_agent import RagQueryDTO, RetrievedContextDTO
 from app.dto.chatbot import ChatbotRequestDTO, CustomerGuideDTO
 
 

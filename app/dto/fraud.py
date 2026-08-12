@@ -30,6 +30,17 @@ class FraudTypeScoreDTO:
 
 
 @dataclass(frozen=True)
+class RiskAssessmentDTO:
+    """거래금액과 ML 사기확률로 계산한 위험등급 결과 DTO."""
+
+    risk_score: int
+    risk_grade: RiskGrade
+    amount_risk_factor: float # 거래금액 위험도
+    amount_points: float # 거래금액 기여점수
+    ml_probability_points: float # ML 확률 기여점수
+
+
+@dataclass(frozen=True)
 class FraudAssessmentDTO:
     """분류, 패턴, 유형 점수, 위험등급을 합친 최종 탐지 결과 DTO."""
 
@@ -38,5 +49,9 @@ class FraudAssessmentDTO:
     patterns: list[PatternScoreDTO]
     fraud_type_scores: list[FraudTypeScoreDTO]
     primary_fraud_type: FraudType | None
-    risk_grade: RiskGrade
+    risk_score: int | None
+    risk_grade: RiskGrade | None
+    amount_risk_factor: float | None
+    amount_points: float | None
+    ml_probability_points: float | None
     evidence: list[str]

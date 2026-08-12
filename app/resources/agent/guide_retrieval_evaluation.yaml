@@ -1,0 +1,145 @@
+# 시연용 대응 가이드 검색 평가 세트이다. 각 질문의 기대 문서는 사람이 검토해 지정한다.
+cases:
+  - query_id: VOICE-001
+    query: 기관을 사칭한 고위험 송금에서 고객 본인 거래를 어떻게 확인해야 하는가
+    fraud_type: VOICE_PHISHING
+    audience: MONITORING
+    risk_grade: HIGH
+    action_codes: [VERIFY_CUSTOMER_TRANSACTION]
+    expected_document_ids: [FDS-INTERNAL-VOICE-MONITORING-001]
+  - query_id: VOICE-002
+    query: 매우 높은 보이스피싱 위험에서 고객에게 안내할 피해구제 순서는 무엇인가
+    fraud_type: VOICE_PHISHING
+    audience: CUSTOMER
+    risk_grade: VERY_HIGH
+    action_codes: [GUIDE_VOICE_PHISHING_RESPONSE]
+    expected_document_ids: [NPA-PHISHING-RELIEF-001]
+  - query_id: VOICE-003
+    query: 보이스피싱 의심 거래의 수취계좌를 검토할 때 무엇을 확인해야 하는가
+    fraud_type: VOICE_PHISHING
+    audience: MONITORING
+    risk_grade: MEDIUM
+    action_codes: [REVIEW_RECIPIENT_ACCOUNT]
+    expected_document_ids: [FDS-INTERNAL-VOICE-MONITORING-001]
+  - query_id: VOICE-004
+    query: 보이스피싱 의심 고객이 즉시 중단해야 할 행동은 무엇인가
+    fraud_type: VOICE_PHISHING
+    audience: CUSTOMER
+    risk_grade: HIGH
+    action_codes: [VERIFY_CUSTOMER_TRANSACTION]
+    expected_document_ids: [FDS-INTERNAL-VOICE-CUSTOMER-001]
+  - query_id: VOICE-005
+    query: 대출빙자와 악성 앱 정황이 함께 있을 때 참고할 보안 점검 내용은 무엇인가
+    fraud_type: VOICE_PHISHING
+    audience: MONITORING
+    risk_grade: HIGH
+    action_codes: [GUIDE_SECURITY_CHECK]
+    expected_document_ids: [FSI-BLACKECHO-2024-001]
+
+  - query_id: MESSENGER-001
+    query: 가족을 사칭한 메신저 송금 요청의 신원을 어떻게 확인해야 하는가
+    fraud_type: MESSENGER_PHISHING
+    audience: CUSTOMER
+    risk_grade: HIGH
+    action_codes: [GUIDE_SEPARATE_CONTACT_CHECK]
+    expected_document_ids: [FDS-INTERNAL-MESSENGER-CUSTOMER-001]
+  - query_id: MESSENGER-002
+    query: 메신저피싱 사건에서 신규 수취계좌를 검토하는 절차는 무엇인가
+    fraud_type: MESSENGER_PHISHING
+    audience: MONITORING
+    risk_grade: MEDIUM
+    action_codes: [REVIEW_NEW_RECIPIENT]
+    expected_document_ids: [FDS-INTERNAL-MESSENGER-MONITORING-001]
+  - query_id: MESSENGER-003
+    query: 매우 높은 메신저피싱 위험에서 우선 확인할 항목은 무엇인가
+    fraud_type: MESSENGER_PHISHING
+    audience: MONITORING
+    risk_grade: VERY_HIGH
+    action_codes: [URGENT_CUSTOMER_CONFIRMATION]
+    expected_document_ids: [FDS-INTERNAL-HIGH-RISK-EMERGENCY-001]
+  - query_id: MESSENGER-004
+    query: 메신저피싱 피해 확인을 위해 고객이 보존해야 할 자료는 무엇인가
+    fraud_type: MESSENGER_PHISHING
+    audience: CUSTOMER
+    risk_grade: HIGH
+    action_codes: [GUIDE_MESSENGER_PHISHING_RESPONSE]
+    expected_document_ids: [FSS-MESSENGER-PHISHING-2022-13]
+  - query_id: MESSENGER-005
+    query: 메신저피싱 의심 고객에게 확정적으로 표현하면 안 되는 내용은 무엇인가
+    fraud_type: MESSENGER_PHISHING
+    audience: CUSTOMER
+    risk_grade: LOW
+    action_codes: [VERIFY_MESSENGER_CONTEXT]
+    expected_document_ids: [FDS-INTERNAL-MESSENGER-CUSTOMER-001]
+
+  - query_id: TAKEOVER-001
+    query: 원격제어와 인증 변경이 탐지된 사건의 담당자 확인 절차는 무엇인가
+    fraud_type: ACCOUNT_TAKEOVER
+    audience: MONITORING
+    risk_grade: HIGH
+    action_codes: [GUIDE_SECURITY_CHECK]
+    expected_document_ids: [FDS-INTERNAL-ACCOUNT-TAKEOVER-MONITORING-001]
+  - query_id: TAKEOVER-002
+    query: 계정탈취 의심 고객이 단말에서 확인해야 할 보안 항목은 무엇인가
+    fraud_type: ACCOUNT_TAKEOVER
+    audience: CUSTOMER
+    risk_grade: HIGH
+    action_codes: [GUIDE_SECURITY_CHECK]
+    expected_document_ids: [FDS-INTERNAL-ACCOUNT-TAKEOVER-CUSTOMER-001]
+  - query_id: TAKEOVER-003
+    query: 악성 앱이 금융 앱으로 위장하는 공격의 모니터링 참고사항은 무엇인가
+    fraud_type: ACCOUNT_TAKEOVER
+    audience: MONITORING
+    risk_grade: MEDIUM
+    action_codes: [VERIFY_ACCOUNT_ACCESS_CONTEXT]
+    expected_document_ids: [FSI-BLACKECHO-2024-001]
+  - query_id: TAKEOVER-004
+    query: 매우 높은 계정탈취 위험에서 추가 거래를 어떻게 확인해야 하는가
+    fraud_type: ACCOUNT_TAKEOVER
+    audience: MONITORING
+    risk_grade: VERY_HIGH
+    action_codes: [REQUEST_EMERGENCY_REVIEW]
+    expected_document_ids: [FDS-INTERNAL-ACCOUNT-TAKEOVER-MONITORING-001]
+  - query_id: TAKEOVER-005
+    query: 계정탈취 의심 고객이 인증정보를 안전하게 변경하는 방법은 무엇인가
+    fraud_type: ACCOUNT_TAKEOVER
+    audience: CUSTOMER
+    risk_grade: MEDIUM
+    action_codes: [VERIFY_ACCOUNT_ACCESS_CONTEXT]
+    expected_document_ids: [FDS-INTERNAL-ACCOUNT-TAKEOVER-CUSTOMER-001]
+
+  - query_id: FRAUD-ACCOUNT-001
+    query: 다수 입금 후 빠르게 출금된 계좌의 자금 흐름을 어떻게 검토해야 하는가
+    fraud_type: FRAUD_USED_ACCOUNT
+    audience: MONITORING
+    risk_grade: MEDIUM
+    action_codes: [REVIEW_ACCOUNT_FLOW]
+    expected_document_ids: [FDS-INTERNAL-FRAUD-ACCOUNT-MONITORING-001]
+  - query_id: FRAUD-ACCOUNT-002
+    query: 매우 높은 사기이용계좌 위험에서 추가 자금 이동을 어떻게 검토해야 하는가
+    fraud_type: FRAUD_USED_ACCOUNT
+    audience: MONITORING
+    risk_grade: VERY_HIGH
+    action_codes: [URGENT_ACCOUNT_FLOW_REVIEW]
+    expected_document_ids: [FDS-INTERNAL-FRAUD-ACCOUNT-MONITORING-001]
+  - query_id: FRAUD-ACCOUNT-003
+    query: 개인 간 거래에서 제3자 명의로 입금된 경우 고객이 확인할 내용은 무엇인가
+    fraud_type: FRAUD_USED_ACCOUNT
+    audience: CUSTOMER
+    risk_grade: MEDIUM
+    action_codes: [REVIEW_LINKED_ACCOUNTS]
+    expected_document_ids: [FDS-INTERNAL-FRAUD-ACCOUNT-CUSTOMER-001]
+  - query_id: FRAUD-ACCOUNT-004
+    query: 사기이용계좌 의심 사건에서 고의 가담을 자동 확정하면 안 되는 이유는 무엇인가
+    fraud_type: FRAUD_USED_ACCOUNT
+    audience: MONITORING
+    risk_grade: HIGH
+    action_codes: [REQUEST_ACCOUNT_RISK_REVIEW]
+    expected_document_ids: [FSS-FRAUD-USED-ACCOUNT-2026-05]
+  - query_id: FRAUD-ACCOUNT-005
+    query: 사기이용계좌 사건에서 후속 조사를 위해 보존해야 할 근거는 무엇인가
+    fraud_type: FRAUD_USED_ACCOUNT
+    audience: MONITORING
+    risk_grade: VERY_HIGH
+    action_codes: [PRESERVE_CASE_EVIDENCE]
+    expected_document_ids: [FDS-INTERNAL-FRAUD-ACCOUNT-MONITORING-001]

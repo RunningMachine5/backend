@@ -1,0 +1,178 @@
+name: Backend Dev CD
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: backend-development
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: project-4cc3406c-72d8-4907-a5d
+  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/801817539291/locations/global/workloadIdentityPools/github-actions/providers/backend
+  GCP_SERVICE_ACCOUNT: github-actions-backend@project-4cc3406c-72d8-4907-a5d.iam.gserviceaccount.com
+  REGISTRY: asia-northeast3-docker.pkg.dev
+  IMAGE_NAME: asia-northeast3-docker.pkg.dev/project-4cc3406c-72d8-4907-a5d/fdshield/backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.32"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run unit tests
+        run: uv run python -m unittest discover -s tests -v
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.value }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Log in to Artifact Registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Export immutable image name
+        id: image
+        run: echo "value=${IMAGE_NAME}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_IMAGE: ${{ needs.publish.outputs.image }}
+      VM_HOST: ${{ secrets.VM_HOST }}
+      VM_USER: ${{ secrets.VM_USER }}
+      VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Configure SSH
+        env:
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload VM Compose files
+        run: |
+          scp -P "$VM_SSH_PORT" \
+            docker-compose.yml docker-compose.prod.yml \
+            "$VM_USER@$VM_HOST:/opt/fdshield/backend/"
+
+      - name: Deploy backend container
+        run: |
+          ssh -p "$VM_SSH_PORT" "$VM_USER@$VM_HOST" \
+            "REGISTRY='$REGISTRY' BACKEND_IMAGE='$DEPLOY_IMAGE' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/fdshield
+
+          # VM에 연결된 서비스 계정의 단기 토큰으로 Artifact Registry에 로그인한다.
+          registry_token="$(
+            curl -fsS \
+              -H 'Metadata-Flavor: Google' \
+              'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \
+              | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'
+          )"
+          test -n "$registry_token"
+          printf '%s' "$registry_token" | docker login \
+            --username oauth2accesstoken \
+            --password-stdin \
+            "https://$REGISTRY"
+          unset registry_token
+          trap 'docker logout "$REGISTRY" >/dev/null 2>&1 || true' EXIT
+
+          compose=(
+            docker compose
+            --project-name fdshield
+            --env-file .env.dev
+            -f backend/docker-compose.yml
+            -f backend/docker-compose.prod.yml
+          )
+
+          # ParadeDB 첫 부팅 중 임시 PostgreSQL이 한 번 재시작되므로 DB를 먼저 기동한다.
+          "${compose[@]}" up -d db
+          "${compose[@]}" pull backend
+
+          # 초기화 재시작과 겹친 일시적인 connection refused를 견디도록 재시도한다.
+          migration_succeeded=false
+          for attempt in $(seq 1 30); do
+            if "${compose[@]}" run --rm --no-deps --interactive=false backend alembic upgrade head; then
+              migration_succeeded=true
+              break
+            fi
+
+            echo "Database is not ready for migration yet ($attempt/30); retrying in 2s..."
+            sleep 2
+          done
+
+          if [ "$migration_succeeded" != true ]; then
+            echo "Alembic migration failed after 30 attempts."
+            "${compose[@]}" logs --tail 100 db
+            exit 1
+          fi
+
+          # Backend를 새 이미지로 교체하고 Compose healthcheck가 성공할 때까지 기다린다.
+          if ! "${compose[@]}" up \
+            -d \
+            --no-deps \
+            --wait \
+            --wait-timeout 60 \
+            backend; then
+            echo "Backend did not become healthy within 60 seconds."
+            "${compose[@]}" ps backend
+            "${compose[@]}" logs --tail 100 backend
+            exit 1
+          fi
+
+          echo "Backend deployment completed successfully."
+          REMOTE

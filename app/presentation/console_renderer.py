@@ -1,4 +1,4 @@
-from app.dto.agent import AgentResultDTO
+from app.dto.legacy_agent import AgentResultDTO
 from app.dto.chatbot import ChatbotResponseDTO
 from app.dto.fraud import FraudAssessmentDTO
 
@@ -15,7 +15,28 @@ class ConsoleRenderer:
             f"사기 분류: {assessment.prediction.is_fraud} "
             f"(확률={assessment.prediction.fraud_probability:.2f})"
         )
-        print(f"위험등급: {assessment.risk_grade.value}")
+        risk_grade_text = (
+            assessment.risk_grade.value
+            if assessment.risk_grade
+            else "미산정"
+        )
+        risk_score_text = (
+            f"{assessment.risk_score}점"
+            if assessment.risk_score is not None
+            else "미산정"
+        )
+        print(f"위험점수: {risk_score_text}")
+        print(f"위험등급: {risk_grade_text}")
+        if (
+            assessment.amount_risk_factor is not None
+            and assessment.amount_points is not None
+            and assessment.ml_probability_points is not None
+        ):
+            print(f"- 거래금액 위험도: {assessment.amount_risk_factor:.2f}")
+            print(f"- 거래금액 기여점수: {assessment.amount_points:.1f}점")
+            print(f"- ML 확률 기여점수: {assessment.ml_probability_points:.1f}점")
+        else:
+            print("- 위험등급 근거: 정상 거래이므로 미산정")
         fraud_type_text = (
             assessment.primary_fraud_type.value
             if assessment.primary_fraud_type

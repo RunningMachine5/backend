@@ -1,0 +1,50 @@
+services:
+  db:
+    # 운영 VM에서는 PostgreSQL을 호스트/인터넷에 직접 공개하지 않는다.
+    ports: !reset []
+    expose:
+      - "5432"
+
+  backend:
+    # 운영에서는 VM에서 소스를 빌드하지 않고 CI가 Artifact Registry에 올린 이미지를 받는다.
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be set to an Artifact Registry image with a commit SHA tag}
+    container_name: fdshield-backend-container
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-fdshield-db}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ML_SERVING_URL: ${ML_SERVING_URL:-http://host.docker.internal:8001}
+      ML_SERVING_TIMEOUT_SECONDS: ${ML_SERVING_TIMEOUT_SECONDS:-5}
+      ML_SERVING_MAX_ATTEMPTS: ${ML_SERVING_MAX_ATTEMPTS:-2}
+      ML_SERVING_RETRY_DELAY_SECONDS: ${ML_SERVING_RETRY_DELAY_SECONDS:-0.25}
+      ML_SERVING_AUTH_MODE: ${ML_SERVING_AUTH_MODE:-none}
+      MLOPS_ADMIN_TOKEN: ${MLOPS_ADMIN_TOKEN:-}
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-project-4cc3406c-72d8-4907-a5d}
+      GCP_REGION: ${GCP_REGION:-asia-northeast3}
+      CLOUD_RUN_TRAINING_JOB: ${CLOUD_RUN_TRAINING_JOB:-fdshield-binary-training}
+      CLOUD_RUN_TRAINING_CONTAINER: ${CLOUD_RUN_TRAINING_CONTAINER:-}
+      CLOUD_RUN_SERVING_SERVICE: ${CLOUD_RUN_SERVING_SERVICE:-fdshield-ml-serving}
+      CLOUD_RUN_SERVING_CONTAINER: ${CLOUD_RUN_SERVING_CONTAINER:-}
+      CLOUD_RUN_ADMIN_TIMEOUT_SECONDS: ${CLOUD_RUN_ADMIN_TIMEOUT_SECONDS:-20}
+      MLOPS_MODEL_NAME: ${MLOPS_MODEL_NAME:-fdshield-fraud-detector}
+      MLOPS_MODEL_ALIAS: ${MLOPS_MODEL_ALIAS:-champion}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-}
+      MLFLOW_TRACKING_TIMEOUT_SECONDS: ${MLFLOW_TRACKING_TIMEOUT_SECONDS:-10}
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s

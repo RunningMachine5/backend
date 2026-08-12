@@ -4,10 +4,10 @@ from enum import Enum
 class RiskGrade(str, Enum):
     """거래의 최종 위험등급."""
 
-    LOW = "낮음"
-    MEDIUM = "보통"
-    HIGH = "높음"
-    VERY_HIGH = "매우높음"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    VERY_HIGH = "VERY_HIGH"
 
 
 class FraudType(str, Enum):
