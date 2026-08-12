@@ -5,16 +5,15 @@ from __future__ import annotations
 from app.domain.agent_status import ClassificationStatus, InvestigationStatus
 from app.dto.agent import (
     FraudAlertEmailCommand,
-    FraudTypeScoreResultDTO,
     InvestigationResultDTO,
 )
-from app.services.agent.type_confidence import calculate_type_confidence
+from app.services.agent.type_confidence import TypeConfidenceResult
 
 
 def build_fraud_alert_email_command(
     *,
     transaction_id: str,
-    rule_result: FraudTypeScoreResultDTO,
+    type_confidence: TypeConfidenceResult,
     investigation_result: InvestigationResultDTO | None = None,
 ) -> FraudAlertEmailCommand:
     """Rule 상위 후보와 선택적인 Agent 추천으로 이메일 표시 순서를 결정한다."""
@@ -22,10 +21,9 @@ def build_fraud_alert_email_command(
     if not isinstance(transaction_id, str) or not transaction_id.strip():
         raise ValueError("transaction_id는 비어 있지 않은 문자열이어야 한다.")
 
-    confidence = calculate_type_confidence(rule_result.type_scores)
-    primary_type = confidence.top_type_code
-    secondary_type = confidence.second_type_code
-    classification_status = confidence.classification_status
+    primary_type = type_confidence.top_type_code
+    secondary_type = type_confidence.second_type_code
+    classification_status = type_confidence.classification_status
 
     if investigation_result is not None:
         classification_status = investigation_result.classification_status
