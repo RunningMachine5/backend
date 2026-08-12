@@ -25,11 +25,11 @@ from app.domain.agent_status import AgentExecutionStatus
 class ChatSessionStatus(str, Enum):
     """고객 상담 세션의 진행 상태."""
 
-    WAITING = "WAITING"
-    IN_PROGRESS = "IN_PROGRESS"
-    HANDED_OFF = "HANDED_OFF"
-    DONE = "DONE"
-    CLOSED = "CLOSED"
+    URL_SENT = "URL_SENT"  # 챗봇URL전송
+    IN_PROGRESS = "IN_PROGRESS"  # 챗봇 상담 진행중
+    HANDOFF_REQUESTED = "HANDOFF_REQUESTED"  # 상담사 연결 요청
+    DONE = "DONE"  # 챗봇 상담 완료
+    FAILED = "FAILED"  # 챗봇 상담 실패
 
 
 class ChatSenderType(str, Enum):
@@ -207,7 +207,8 @@ class AgentChatSession(SQLModel, table=True):
         ),
         Index("ix_agent_chat_sessions_status", "status"),
         CheckConstraint(
-            "status IN ('WAITING', 'IN_PROGRESS', 'HANDED_OFF', 'DONE', 'CLOSED')",
+            "status IN "
+            "('URL_SENT', 'IN_PROGRESS', 'HANDOFF_REQUESTED', 'DONE', 'FAILED')",
             name="ck_agent_chat_sessions_status",
         ),
     )
@@ -218,7 +219,7 @@ class AgentChatSession(SQLModel, table=True):
         ondelete="CASCADE",
         max_length=64,
     )
-    status: str = Field(default=ChatSessionStatus.WAITING.value, max_length=16)
+    status: str = Field(default=ChatSessionStatus.URL_SENT.value, max_length=32)
     # 세션 목록에서 마지막 메시지를 보여줄 때 메시지 테이블을 정렬하지 않으려고
     # 최신 메시지를 캐시한다. agent_chat_messages와 서로 참조하는 순환 FK라
     # use_alter=True로 테이블 생성 후 ALTER로 제약을 건다.
