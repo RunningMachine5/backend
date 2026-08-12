@@ -44,7 +44,36 @@ class DashboardInsightLLM:
         response = self.client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-5"),
             temperature=0.2,
-            response_format={"type": "json_object"},
+
+            # json_object는 json 형식만 강제함. 필드 구조는 못 정함.
+            # response_format={"type": "json_object"}, 
+
+            # json_schema는 우리가 정해놓은 필드 구조만 통과 가능
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "dashboard_insight_selection",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "selected_labels": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "title": {"type": "string"},
+                            "summary": {"type": "string"},
+                        },
+                        "required": [
+                            "selected_labels",
+                            "title",
+                            "summary",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        
             messages=[
                 {
                     "role": "system",
@@ -116,6 +145,7 @@ class DashboardInsightLLM:
         return (
             "아래 JSON은 비식별 집계 결과다.\n"
             "대시보드에 표시할 핵심 이상징후 3~5개를 선택해.\n"
-            "반드시 JSON만 반환해. 설명 문장은 JSON 밖에 쓰지 마.\n\n"
+            "selected_labels에는 후보 label 중 선택한 값만 넣어.\n\n"
+            
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
