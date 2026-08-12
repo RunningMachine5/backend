@@ -21,7 +21,7 @@ class DerivedFeatures(SQLModel, table=True):
 
     __tablename__ = "derived_features"
 
-    transaction_id: str = Field(
+    id: str = Field(
         primary_key=True,
         foreign_key="transactions.transaction_id",
         ondelete="CASCADE",

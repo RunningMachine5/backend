@@ -15,12 +15,12 @@ class Account(SQLModel, table=True):
     __tablename__ = "accounts"
     __table_args__ = (
         CheckConstraint(
-            "account_type IS NULL OR account_type IN ('a', 'b', 'c', 'd')",
+            "account_type IS NULL OR account_type IN ('a', 'b', 'c', 'd', 'e')",
             name="ck_accounts_account_type",
         ),
     )
 
-    account_id: str = Field(primary_key=True, max_length=64)
+    id: str = Field(primary_key=True, max_length=64)
     customer_id: str | None = Field(
         default=None,
         foreign_key="customers.customer_id",

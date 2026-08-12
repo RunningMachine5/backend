@@ -23,20 +23,19 @@ class Customer(SQLModel, table=True):
         ),
     )
 
-    customer_id: str = Field(primary_key=True, max_length=64)
-    # ML 54개 입력 계약이 제공하는 값은 생년월일이 아니라 출생연도뿐이다.
-    birthyear: int = Field(sa_column=Column(SmallInteger, nullable=False))
-    gender: str = Field(max_length=16)
+    id: str = Field(primary_key=True, max_length=64)
     # 생성 원본에서 고객 이름으로 사용되는 값이라 동명이인을 허용한다.
-    personal_identifier: str = Field(max_length=255)
+    name: str = Field(max_length=255)
+    birth_date: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    gender: str = Field(max_length=16)
     identification_number: str = Field(max_length=255, unique=True)
+    phone_number: str | None = Field(default=None, max_length=32)
+    email: str | None = Field(default=None, max_length=255)
     registration_datetime: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False)
     )
     credit_rating: int = Field(sa_column=Column(SmallInteger, nullable=False))
     loan_type: str = Field(max_length=8)
-    email: str | None = Field(default=None, max_length=255)
-    phone_number: str | None = Field(default=None, max_length=32)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False),

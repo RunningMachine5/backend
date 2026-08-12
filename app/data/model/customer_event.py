@@ -19,11 +19,10 @@ class CustomerEventType(str, Enum):
     4종 관리하지만 ERD의 이벤트 종류에는 AUTH가 3종뿐이다. 네 번째 플래그를
     어떤 이벤트가 채우는지는 아직 정의되지 않았다.
     """
-
-    AUTH_1 = "AUTH_1"
-    AUTH_2 = "AUTH_2"
-    AUTH_3 = "AUTH_3"
-    PRIVACY = "PRIVACY"
+    AUTH_1 = "OFFICIAL_CERTIFICATION"
+    AUTH_2 = "PRIVATE_CERTIFICATION"
+    AUTH_3 = "SECURITY_CARD_OTP"
+    AUTH_4 = "PRIVACY_MODIFICATION"
     ATM_LIMIT_INQUIRY = "ATM_LIMIT_INQUIRY"
     ATM_LIMIT_INCREASE = "ATM_LIMIT_INCREASE"
     SUSPENSION_RELEASE = "SUSPENSION_RELEASE"
@@ -53,7 +52,7 @@ class CustomerEvent(SQLModel, table=True):
         ),
     )
 
-    event_id: int | None = Field(
+    id: int | None = Field(
         default=None,
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
