@@ -17,7 +17,6 @@ from app.data.model.cs_guide_document_chunk import (  # noqa: F401
     CsGuideDocumentChunk,
 )
 from app.data.model.customer import Customer  # noqa: F401
-from app.data.model.customer_contact import CustomerContact  # noqa: F401
 from app.data.model.customer_event import (  # noqa: F401
     CustomerEvent,
     CustomerEventType,
@@ -50,7 +49,6 @@ __all__ = [
     "CsGuideDocument",
     "CsGuideDocumentChunk",
     "Customer",
-    "CustomerContact",
     "CustomerEvent",
     "CustomerEventType",
     "DatasetVersion",

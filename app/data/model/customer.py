@@ -35,6 +35,8 @@ class Customer(SQLModel, table=True):
     )
     credit_rating: int = Field(sa_column=Column(SmallInteger, nullable=False))
     loan_type: str = Field(max_length=8)
+    email: str | None = Field(default=None, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=32)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False),
