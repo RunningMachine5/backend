@@ -35,6 +35,13 @@ audiences:
   - CUSTOMER
 topics:
   - MESSENGER_IDENTITY_CHECK
+risk_grades:
+  - HIGH
+  - VERY_HIGH
+action_codes:
+  - GUIDE_SEPARATE_CONTACT_CHECK
+  - GUIDE_MESSENGER_PHISHING_RESPONSE
+version: "1.0"
 published_at: 2022-10-13
 accessed_at: 2026-08-09
 ---
@@ -72,6 +79,22 @@ MESSENGER_IDENTITY_CHECK
 EMERGENCY_RESPONSE
 MANUAL_REVIEW
 ```
+
+### 위험등급
+
+```text
+LOW
+MEDIUM
+HIGH
+VERY_HIGH
+```
+
+### 정책 조치 코드와 문서 버전
+
+- `action_codes`는 `response_policies.yaml`에 정의된 조치 코드만 사용한다.
+- 하나의 문서는 여러 조치의 구체적인 수행 절차를 제공할 수 있다.
+- `version`은 문서 내용이나 검색 메타데이터가 변경될 때 함께 변경한다.
+- 정책은 필수 조치를 결정하고, 대응 문서는 해당 조치의 수행 방법과 주의사항을 제공한다.
 
 ## 내부 정책과 검색 주제 연결
 
@@ -140,4 +163,14 @@ DB 저장, 임베딩 생성, pgvector 적재는 이 단계에 포함하지 않�
 
 ```powershell
 uv run python -m unittest tests.test_agent_guide_loader tests.test_agent_guide_corpus -v
+```
+
+## 검색 평가 세트
+
+`app/resources/agent/guide_retrieval_evaluation.yaml`은 4개 사기 유형별 5개씩,
+총 20개의 검색 질문과 기대 문서를 관리한다. 후속 pgvector 검색 구현에서 동일한
+평가 세트를 사용하여 Hit Rate@K, MRR, Precision@1을 반복 측정한다.
+
+```powershell
+uv run python -m unittest tests.test_agent_guide_evaluation -v
 ```

@@ -13,6 +13,15 @@ topics:
   - SECURITY_CHECK
   - CUSTOMER_CONFIRMATION
   - MANUAL_REVIEW
+risk_grades:
+  - MEDIUM
+  - HIGH
+  - VERY_HIGH
+action_codes:
+  - VERIFY_ACCOUNT_ACCESS_CONTEXT
+  - VERIFY_CUSTOMER_TRANSACTION
+  - GUIDE_SECURITY_CHECK
+version: "1.0"
 published_at: 2024-12-31
 accessed_at: 2026-08-09
 ---
