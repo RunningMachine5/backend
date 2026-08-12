@@ -174,3 +174,27 @@ uv run python -m unittest tests.test_agent_guide_loader tests.test_agent_guide_c
 ```powershell
 uv run python -m unittest tests.test_agent_guide_evaluation -v
 ```
+
+## 임베딩 적재와 pgvector 검색
+
+검증된 Markdown 문서는 `text-embedding-3-small`의 1536차원 벡터로 변환하여
+`documents`, `document_chunks`에 적재한다. 같은 `document_id`의 내용과 검색
+메타데이터가 바뀌면 해당 문서의 Chunk만 교체하며, 변경이 없으면 재임베딩하지 않는다.
+
+```powershell
+python -m app.scripts.index_agent_guides
+```
+
+검색은 사기 유형, 대상, 위험등급, 조치 코드로 후보 문서를 먼저 제한한 후 pgvector
+코사인 유사도로 Top-K Chunk를 반환한다. 다음 명령은 20개 고정 평가 질의로 필터 없는
+벡터 검색과 메타데이터 결합 검색의 Precision@1, Hit Rate@3/5, MRR을 비교한다.
+
+```powershell
+python -m app.scripts.evaluate_agent_guide_search
+```
+
+외부 API와 PostgreSQL 없이 실행하는 단위 테스트는 다음과 같다.
+
+```powershell
+python -m unittest tests.test_agent_guide_vector_search -v
+```
