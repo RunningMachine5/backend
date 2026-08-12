@@ -240,6 +240,11 @@ class AgentChatSession(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False),
     )
+    # 상담 시작 전 상위 2개 사기유형 코드
+    top_fraud_types: list[str] | None = Field(
+        default=None,
+        sa_column=Column(JSON_COLUMN, nullable=True),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
