@@ -1,9 +1,9 @@
 # 프론트에 반환할 통합 응답 DTO
+
 from enum import Enum
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
-
 
 T = TypeVar("T")
 
@@ -48,7 +48,7 @@ class MLView(BaseModel):
 # 유사 사례 결과를 담는 DTO
 class SimilarCaseView(BaseModel):
     similar_case_id: str
-    similarity_rank: int = Field(ge=1, le=3) # 이런 값도 있나?
+    similarity_rank: int = Field(ge=1, le=3) # 이런 값도 있나? -> 없으면 뺄 것
     similarity_score: float = Field(ge=0, le=1)
     similarity_reason: str
 
@@ -73,14 +73,12 @@ class CaseAgentView(BaseModel):
     created_at: str | None = None
     completed_at: str | None = None
 
-
+# 채팅 부분(변경될 수도 있음)
 class ChatMessageView(BaseModel):
     message_id: str
     sender_type: str # 왜 이런 식으로 저장하지?
     message_text: str
     sent_at: str
-
-
 class ChatView(BaseModel):
     chat_session_id: str | None = None
     session_status: str | None = None # 이게 뭐임
@@ -99,7 +97,7 @@ class CaseDetailResponse(BaseModel):
     chat: SectionResult[ChatView]
     review: SectionResult[dict[str, Any]]
 
-# 유사 사례 뜻하는 거임?
+# 위험 점수와 위험 등급, 사기 유형 등의 거래 정보
 class CaseListItemResponse(BaseModel):
     case_id: str
     transaction_id: str
@@ -119,3 +117,54 @@ class DashboardSummaryResponse(BaseModel):
     completed_case_count: int = Field(ge=0)
     email_required_count: int = Field(ge=0)
     prevented_amount: int = Field(ge=0)
+
+# 대시보드 기간 설정 값
+class DashboardOverviewPeriod(BaseModel):
+    period_start: str
+    period_end: str
+
+# 대시보드 최상단 카드 값
+class DashboardOverviewSummary(BaseModel):
+    total_transaction_count: int # 총 거래 건수
+    suspicious_transaction_count: int # 사기 거래 건수
+    priority_review_count: int # 우선 대응 필요한 건수
+    suspicious_amount: int # 사기 의심 사건 총 피해 금액
+    rule_analysis_completed_count: int # 룰 분석 완료 건수
+
+# 우선순위 검토 대상 그래프
+class PriorityTrendPoint(BaseModel):
+    date: str
+    very_high_count: int
+    high_count: int
+    total_count: int
+
+# 의심 거래 건수/액수 그래프
+class SuspiciousTrendPoint(BaseModel):
+    date: str
+    suspicious_count: int
+    suspicious_amount: int
+
+# 위험등급별 건수/액수 그래프
+class DistributionItem(BaseModel):
+    label: str
+    count: int
+    amount: int
+
+# 대시보드 에이전트 분석 그래프
+class DashboardAgentInsight(BaseModel):
+    insight_id: str
+    title: str
+    summary: str
+    chart_spec: dict
+    created_at: str
+
+
+# 대시보드 그래프 
+class DashboardOverviewResponse(BaseModel):
+    period: DashboardOverviewPeriod
+    summary: DashboardOverviewSummary
+    priority_trend: list[PriorityTrendPoint]
+    suspicious_trend: list[SuspiciousTrendPoint]
+    risk_grade_distribution: list[DistributionItem]
+    channel_distribution: list[DistributionItem]
+    agent_insight: DashboardAgentInsight | None = None
