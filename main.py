@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 
 from app.api import chat, dashboard_graph, fraud_rule, health, mlops, transaction, dashboard_insight
+from app.core.exception_handlers import register_exception_handlers
 
 app = FastAPI()
+register_exception_handlers(app)
 
 # 라우터 등록. 파일이 늘어나면 여기에 include_router 만 추가하면 된다.
 app.include_router(health.router)
