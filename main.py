@@ -1,15 +1,7 @@
 from fastapi import FastAPI
 
-from app.api import (
-    agent_case,
-    chat,
-    dashboard_insight,
-    fraud_rule,
-    health,
-    mlops,
-    transaction,
-)
 # from app.api import dashboard_insight
+from app.api import agent_case, chat, dashboard_graph, fraud_rule, health, mlops, transaction, dashboard_insight
 
 app = FastAPI()
 
@@ -21,6 +13,7 @@ app.include_router(mlops.router)
 app.include_router(fraud_rule.router)
 app.include_router(dashboard_insight.router)
 app.include_router(agent_case.router)
+app.include_router(dashboard_graph.router)
 
 
 @app.get("/")
