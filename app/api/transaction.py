@@ -9,7 +9,7 @@ from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.transaction import (
-    TransactionCreateDTO,
+    TransactionRequestDTO,
     TransactionLabelResponseDTO,
     TransactionLabelUpdateDTO,
     TransactionResponseDTO,
@@ -58,7 +58,7 @@ def _transaction_response(
             # SQLAlchemy가 commit 뒤 객체를 expire하면 SQLModel.model_dump()가
             # 빈 dict를 반환할 수 있다. 응답 계약의 필드를 명시적으로 읽어
             # 세션 상태와 관계없이 같은 응답을 만든다.
-            "transaction_id": transaction.transaction_id,
+            "transaction_id": transaction.id,
             "customer_id": transaction.customer_id,
             "source_account_id": transaction.source_account_id,
             "recipient_account_id": transaction.recipient_account_id,
@@ -104,7 +104,7 @@ def _transaction_response(
     status_code=status.HTTP_201_CREATED,
 )
 def create_transaction(
-    payload: TransactionCreateDTO,
+    payload: TransactionRequestDTO,
     session: SessionDep,
     ml_client: MLServingClientDep,
 ) -> TransactionResponseDTO:
@@ -138,7 +138,7 @@ def create_transaction(
         result.prediction_result,
         result.score_result,
         TransactionLabelRepository(session).get(
-            result.transaction.transaction_id
+            result.transaction.id
         ),
         prediction_status=result.prediction_status,
         ml_features=result.ml_features,
@@ -226,7 +226,7 @@ def get_transaction(
     session: SessionDep,
 ) -> TransactionResponseDTO:
     transaction = session.exec(
-        select(Transaction).where(Transaction.transaction_id == transaction_id)
+        select(Transaction).where(Transaction.id == transaction_id)
     ).first()
     if transaction is None:
         raise HTTPException(

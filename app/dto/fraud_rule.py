@@ -10,7 +10,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.data.model.fraud_rule import FraudRuleSetStatus
-from app.dto.ml_prediction import MLTransactionFeatures
+from app.dto.ml_features import MLTransactionFeatures
 
 
 class RuleExpressionOperator(str, Enum):

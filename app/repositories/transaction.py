@@ -10,8 +10,8 @@ from app.data.model.derived_features import DerivedFeatures
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
-from app.dto.ml_prediction import MLTransactionFeatures
-from app.dto.transaction import TransactionCreateDTO
+from app.dto.ml_features import MLTransactionFeatures
+from app.dto.transaction import TransactionRequestDTO
 from app.services.features.ml_feature_assembler import (
     FeatureAssemblyError,
     assemble_ml_features,
@@ -76,7 +76,7 @@ class TransactionRepository:
         self.session = session
 
     def get(self, transaction_id: str) -> Transaction | None:
-        return self.session.get(Transaction, transaction_id)
+        return self.session.get(Transaction, id)
 
     def load_ml_features(
         self,
@@ -88,9 +88,9 @@ class TransactionRepository:
         경우에는 호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
         """
 
-        derived = self.session.get(DerivedFeatures, transaction.transaction_id)
+        derived = self.session.get(DerivedFeatures, transaction.id)
         customer = self.session.get(Customer, transaction.customer_id)
-        source_account = self.session.get(Account, transaction.source_account_id)
+        source_account = self.session.get(Account, transaction.id)
         if derived is None or customer is None or source_account is None:
             return None
 
@@ -104,7 +104,7 @@ class TransactionRepository:
         except FeatureAssemblyError:
             return None
 
-    def add_received(self, payload: TransactionCreateDTO) -> Transaction:
+    def add_received(self, payload: TransactionRequestDTO) -> Transaction:
         features = payload.raw_features
 
         customer = self._upsert_customer(payload, features)
@@ -153,7 +153,7 @@ class TransactionRepository:
 
     def _upsert_customer(
         self,
-        payload: TransactionCreateDTO,
+        payload: TransactionRequestDTO,
         features: MLTransactionFeatures,
     ) -> Customer:
         customer = self.session.get(Customer, payload.customer_id)
@@ -194,7 +194,7 @@ class TransactionRepository:
 
     def _upsert_source_account(
         self,
-        payload: TransactionCreateDTO,
+        payload: TransactionRequestDTO,
         features: MLTransactionFeatures,
     ) -> str:
         """출금 계좌를 만들거나 마지막으로 처리된 요청값으로 갱신한다.
@@ -236,7 +236,7 @@ class TransactionRepository:
 
     def _upsert_recipient_account(
         self,
-        payload: TransactionCreateDTO,
+        payload: TransactionRequestDTO,
     ) -> str | None:
         """외부 수취 계좌는 식별 정보만 알 수 있으므로 나머지는 NULL로 둔다."""
 

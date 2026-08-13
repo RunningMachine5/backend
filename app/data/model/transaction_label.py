@@ -11,7 +11,7 @@ class TransactionLabel(SQLModel, table=True):
 
     transaction_id: str = Field(
         primary_key=True,
-        foreign_key="transactions.transaction_id",
+        foreign_key="transactions.id",
         ondelete="CASCADE",
         max_length=64,
     )

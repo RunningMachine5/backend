@@ -23,7 +23,7 @@ from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
-from app.dto.ml_prediction import (
+from app.dto.ml_features import (
     RAW_TRANSACTION_FEATURE_COLUMNS,
     MLTransactionFeatures,
 )

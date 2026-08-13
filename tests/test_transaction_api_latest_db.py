@@ -27,8 +27,8 @@ from app.data.model.fraud_rule import (
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
-from app.dto.ml_prediction import RAW_TRANSACTION_FEATURE_COLUMNS
-from app.dto.transaction import TransactionCreateDTO
+from app.dto.ml_features import RAW_TRANSACTION_FEATURE_COLUMNS
+from app.dto.transaction import TransactionRequestDTO
 from app.repositories.transaction import TransactionRepository
 from app.services.ml_serving.client import (
     MLPredictionResponse,
@@ -156,7 +156,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
 
     def test_flat_54_contract_persists_prediction_and_reassembles(self) -> None:
         row = valid_transaction_row("TX-API-ROUNDTRIP")
-        expected = TransactionCreateDTO.model_validate(row).raw_features.model_dump(
+        expected = TransactionRequestDTO.model_validate(row).raw_features.model_dump(
             mode="json",
             by_alias=True,
         )
@@ -227,7 +227,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         loser_row = valid_transaction_row("TX-API-RACE-LOSER")
         with Session(self.engine) as session:
             TransactionRepository(session).add_received(
-                TransactionCreateDTO.model_validate(winner_row)
+                TransactionRequestDTO.model_validate(winner_row)
             )
             session.commit()
 
@@ -236,7 +236,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
 
         def add_received_after_customer_race(
             repository: TransactionRepository,
-            payload: TransactionCreateDTO,
+            payload: TransactionRequestDTO,
         ) -> Transaction:
             nonlocal attempts
             attempts += 1
@@ -264,7 +264,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
     def test_ml_failure_keeps_transaction_and_derived_snapshot(self) -> None:
         app.dependency_overrides[get_ml_serving_client] = lambda: FailingMLClient()
         row = valid_transaction_row("TX-API-ML-FAILED")
-        expected = TransactionCreateDTO.model_validate(row).raw_features.model_dump(
+        expected = TransactionRequestDTO.model_validate(row).raw_features.model_dump(
             mode="json",
             by_alias=True,
         )

@@ -90,8 +90,8 @@ class Transaction(SQLModel, table=True):
 
     channel: str = Field(max_length=32)
     type_general_automatic: str = Field(max_length=16)
-    access_medium: str | None = Field(max_length=8)
-    error_code: str = Field(max_length=8)
+    access_medium: str | None = Field(max_length=8, nullable=True)
+    error_code: str | None = Field(max_length=8, nullable=True)
     num_connection_failure: int = Field(
         sa_column=Column(SmallInteger, nullable=False)
     )
