@@ -59,7 +59,7 @@ class DashboardOverviewRepository:
             .select_from(FraudTypeScoreResult)
             .join(
                 Transaction,
-                Transaction.transaction_id
+                Transaction.id
                 == FraudTypeScoreResult.transaction_id
             )
             .where(
@@ -86,12 +86,12 @@ class DashboardOverviewRepository:
             .join(
                 FraudTypeScoreResult,
                 FraudTypeScoreResult.transaction_id
-                == Transaction.transaction_id,
+                == Transaction.id,
             )
             .outerjoin(
                 AgentCase,
                 AgentCase.transaction_id
-                == Transaction.transaction_id,
+                == Transaction.id,
             )
             .where(
                 Transaction.transaction_datetime >= period_start,
@@ -100,7 +100,7 @@ class DashboardOverviewRepository:
             )
             .order_by(
                 Transaction.transaction_datetime,
-                Transaction.transaction_id,
+                Transaction.id,
             )
         )
 
@@ -109,7 +109,7 @@ class DashboardOverviewRepository:
         # 이거 왤케 김?
         return[
             DashboardSuspiciousRow(
-            transaction_id=transaction.transaction_id,
+            transaction_id=transaction.id,
             transaction_datetime=transaction.transaction_datetime,
             transaction_amount=transaction.transaction_amount,
             channel=transaction.channel,

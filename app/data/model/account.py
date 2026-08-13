@@ -8,8 +8,8 @@ class Account(SQLModel, table=True):
     """내부·외부 계좌 식별 정보와 현재 한도·정지 상태.
 
     수취 계좌처럼 외부에서 처음 관측되는 계좌는 한도·잔액을 알 수 없으므로
-    해당 컬럼을 NULL로 남긴다. 룰 평가가 읽는 값은 항상 출금 계좌 쪽이며,
-    출금 계좌는 거래 요청의 54개 Feature로 전부 채워진다.
+    해당 컬럼을 NULL로 남긴다. 출금 계좌도 원천 데이터가 제공하지 않은 값은
+    NULL을 허용한다.
     """
 
     __tablename__ = "accounts"
@@ -17,6 +17,14 @@ class Account(SQLModel, table=True):
         CheckConstraint(
             "account_type IS NULL OR account_type IN ('a', 'b', 'c', 'd', 'e')",
             name="ck_accounts_account_type",
+        ),
+        CheckConstraint(
+            "amount_daily_limit IS NULL OR amount_daily_limit >= 0",
+            name="ck_accounts_amount_daily_limit_nonnegative",
+        ),
+        CheckConstraint(
+            "remaining_daily_limit IS NULL OR remaining_daily_limit >= 0",
+            name="ck_accounts_remaining_daily_limit_nonnegative",
         ),
     )
 

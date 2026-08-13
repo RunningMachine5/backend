@@ -48,30 +48,33 @@ class TransactionRequestDTO(BaseModel):
     customer_flag_terminal_malicious_behavior_5: bool = Field(default=0)
     customer_flag_terminal_malicious_behavior_6: bool = Field(default=0)
 
-    @field_validator("ip_address", mode="before")
+    @field_validator("transaction_id", mode="before")
     @classmethod
-    def validate_ip_address(cls, value: object) -> str | None:
-        """PostgreSQL INET에 도달하기 전에 주소를 검증·정규화한다."""
-
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        try:
-            return ip_address(str(value).strip()).compressed
-        except ValueError as exc:
-            raise ValueError("IP_Address는 올바른 IPv4 또는 IPv6여야 합니다.") from exc
-
-    @field_validator("mac_address", mode="before")
-    @classmethod
-    def validate_mac_address(cls, value: object) -> str | None:
-        """PostgreSQL MACADDR가 받는 6옥텟 주소를 표준 표기로 정규화한다."""
-
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
+    def normalize_transaction_id(cls, value: object) -> str:
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            # Pydantic v2 does not wrap TypeError raised by validators.
+            raise ValueError(  # noqa: TRY004
+                "transaction_id must be a non-empty string or integer"
+            )
         normalized = str(value).strip()
-        if MAC_ADDRESS_PATTERN.fullmatch(normalized) is None:
-            raise ValueError("MAC_Address는 6옥텟 MAC 주소여야 합니다.")
-        return normalized.replace("-", ":").lower()
+        if not normalized:
+            raise ValueError("transaction_id must not be empty")
+        return normalized
 
+    @field_validator("is_fraud", mode="before")
+    @classmethod
+    def normalize_fraud_label(cls, value: object) -> bool | None:
+        if value is None or value == "":
+            return None
+        if value in (0, 1, False, True, "0", "1"):
+            return str(value).lower() in {"1", "true"}
+        raise ValueError("is_fraud must be 0, 1, true, false, or null")
+
+    @model_validator(mode="before")
+    @classmethod
+    def split_flat_raw64_row(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "raw_features" in value:
+            return value
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
@@ -90,17 +93,40 @@ class TransactionResponseDTO(BaseModel):
 class TransactionLabelUpdateDTO(BaseModel):
     """담당자가 확정한 거래의 이진 정답 라벨."""
 
+class TransactionLabelUpdateDTO(SQLModel):
     model_config = ConfigDict(extra="forbid")
 
-    confirmed_is_fraud: StrictBool
+    confirmed_is_fraud: bool
 
 
 class TransactionLabelResponseDTO(BaseModel):
     """저장된 거래 정답 라벨 응답."""
 
+class TransactionLabelResponseDTO(SQLModel):
     transaction_id: str
     confirmed_is_fraud: bool
     labeled_at: datetime
+
+
+@dataclass(frozen=True)
+class TransactionDTO:
+    user_id: str
+    user_name: str
+    email: str
+    transaction_time: str
+    amount: int
+    user_amount_std_dev: float
+    payment_method: str
+    merchant_category: str
+
+
+@dataclass(frozen=True)
+class TransactionFeaturesDTO:
+    user_id: str
+    is_fraud: bool
+    high_relevance_feature: dict
+    fraud_probability: float
+
 
 __all__ = [
     "MAC_ADDRESS_PATTERN",
@@ -108,4 +134,5 @@ __all__ = [
     "TransactionResponseDTO",
     "TransactionLabelResponseDTO",
     "TransactionLabelUpdateDTO",
+    "TransactionResponseDTO",
 ]

@@ -66,11 +66,11 @@ class SuccessfulNormalMLClient:
         self.last_features = features
         return MLPredictionResponse(
             transaction_id=transaction_id,
-            is_fraud=self.is_fraud,
-            fraud_probability=self.fraud_probability,
-            shap={},
-            model_name="fdshield-fraud-detector",
-            model_version="5",
+            predict_result=int(self.is_fraud),
+            predict_proba=self.fraud_probability,
+            shap_values={},
+            model_name="fdshield-fraud-detector-v2",
+            model_version="1",
         )
 
 
@@ -136,17 +136,13 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                 session.add(rule)
                 session.flush()
                 assert rule.id is not None
-                for component_order, component in enumerate(
-                    definition.components
-                ):
+                for component_order, component in enumerate(definition.components):
                     session.add(
                         FraudRuleComponent(
                             rule_id=rule.id,
                             component_key=component.component_key,
                             name=component.name,
-                            condition_expression=dict(
-                                component.condition_expression
-                            ),
+                            condition_expression=dict(component.condition_expression),
                             weight=component.weight,
                             sort_order=component_order,
                         )
@@ -154,7 +150,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             session.commit()
             return rule_set.id
 
-    def test_flat_54_contract_persists_prediction_and_reassembles(self) -> None:
+    def test_flat_raw64_contract_persists_prediction_and_reassembles(self) -> None:
         row = valid_transaction_row("TX-API-ROUNDTRIP")
         expected = TransactionRequestDTO.model_validate(row).raw_features.model_dump(
             mode="json",
@@ -169,12 +165,12 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(body["prediction_status"], "COMPLETED")
         self.assertFalse(body["ml_is_fraud"])
         self.assertEqual(body["fraud_probability"], 0.05)
-        self.assertEqual(body["model_name"], "fdshield-fraud-detector")
-        self.assertEqual(body["model_version"], "5")
+        self.assertEqual(body["model_name"], "fdshield-fraud-detector-v2")
+        self.assertEqual(body["model_version"], "1")
         self.assertGreaterEqual(body["latency_ms"], 0)
         self.assertEqual(self.ml_client.last_transaction_id, "TX-API-ROUNDTRIP")
         self.assertEqual(self.ml_client.last_features, expected)
-        self.assertEqual(len(expected), 54)
+        self.assertEqual(len(expected), 59)
         self.assertEqual(set(expected), set(RAW_TRANSACTION_FEATURE_COLUMNS))
 
         with Session(self.engine) as session:
@@ -189,18 +185,124 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             self.assertEqual(prediction.transaction_id, "TX-API-ROUNDTRIP")
             self.assertFalse(prediction.prediction_is_fraud)
             self.assertEqual(prediction.fraud_probability, 0.05)
-            self.assertEqual(prediction.model_name, "fdshield-fraud-detector")
-            self.assertEqual(prediction.model_version, "5")
+            self.assertEqual(prediction.model_name, "fdshield-fraud-detector-v2")
+            self.assertEqual(prediction.model_version, "1")
             self.assertGreaterEqual(prediction.latency_ms, 0)
 
-    def test_missing_ml_feature_returns_422_without_partial_storage(self) -> None:
-        row = valid_transaction_row("TX-API-MISSING-FEATURE")
-        row.pop("Location")
+    def test_ml_owner_nullable_fields_and_account_type_e_round_trip(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-NULLABLE"),
+            "account_account_type": "e",
+            "account_initial_balance": None,
+            "account_balance": None,
+            "account_remaining_amount_daily_limit_exceeded": None,
+            "access_medium": None,
+            "error_code": "E1234567",
+        }
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["transaction_id"], "TX-API-NULLABLE")
+        self.assertEqual(body["source_account_id"], row["account_account_number"])
+        self.assertEqual(
+            body["recipient_account_id"],
+            row["recipient_account_number"],
+        )
+        self.assertIsNone(body["raw_features"]["account_initial_balance"])
+        self.assertIsNone(body["raw_features"]["account_balance"])
+        self.assertIsNone(
+            body["raw_features"][
+                "account_remaining_amount_daily_limit_exceeded"
+            ]
+        )
+        self.assertIsNone(body["raw_features"]["access_medium"])
+        self.assertEqual(self.ml_client.last_features, body["raw_features"])
+        self.assertEqual(len(body["raw_features"]), 59)
+
+        with Session(self.engine) as session:
+            transaction = session.get(Transaction, "TX-API-NULLABLE")
+            self.assertIsNotNone(transaction)
+            assert transaction is not None
+            self.assertIsNone(transaction.initial_balance)
+            self.assertIsNone(transaction.balance)
+            self.assertIsNone(
+                transaction.remaining_amount_daily_limit_exceeded
+            )
+            self.assertIsNone(transaction.access_medium)
+            assembled = TransactionRepository(session).load_ml_features(transaction)
+            self.assertIsNotNone(assembled)
+            assert assembled is not None
+            self.assertEqual(
+                assembled.model_dump(mode="json", by_alias=True),
+                body["raw_features"],
+            )
+
+    def test_train1_blank_nullable_fields_are_normalized_to_null(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-BLANK-NULLABLE"),
+            "account_initial_balance": "",
+            "account_balance": "   ",
+            "account_remaining_amount_daily_limit_exceeded": "",
+            "access_medium": " ",
+        }
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 201, response.text)
+        raw_features = response.json()["raw_features"]
+        self.assertIsNone(raw_features["account_initial_balance"])
+        self.assertIsNone(raw_features["account_balance"])
+        self.assertIsNone(
+            raw_features["account_remaining_amount_daily_limit_exceeded"]
+        )
+        self.assertIsNone(raw_features["access_medium"])
+        self.assertEqual(self.ml_client.last_features, raw_features)
+
+    def test_error_code_longer_than_eight_characters_returns_422(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-ERROR-CODE"),
+            "error_code": "123456789",
+        }
 
         response = self.client.post("/transactions", json=row)
 
         self.assertEqual(response.status_code, 422, response.text)
-        self.assertIn("Location", response.text)
+        self.assertIn("error_code", response.text)
+        self.assertEqual(self.ml_client.calls, 0)
+
+    def test_empty_error_code_is_allowed_by_ml_owner_contract(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-EMPTY-ERROR-CODE"),
+            "error_code": "",
+        }
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["raw_features"]["error_code"], "")
+
+    def test_train1_single_digit_hours_are_normalized(self) -> None:
+        row = valid_transaction_row("TX-API-SINGLE-HOUR")
+        row["customer_registration_datetime"] = "2012-12-04 4:41"
+        row["account_creation_datetime"] = "2017-11-13 0:52"
+        row["transaction_datetime"] = "2025-01-01 1:02"
+
+        parsed = TransactionCreateDTO.model_validate(row).raw_features
+
+        self.assertEqual(parsed.customer_registration_datetime.hour, 4)
+        self.assertEqual(parsed.account_creation_datetime.hour, 0)
+        self.assertEqual(parsed.transaction_datetime.hour, 1)
+
+    def test_missing_ml_feature_returns_422_without_partial_storage(self) -> None:
+        row = valid_transaction_row("TX-API-MISSING-FEATURE")
+        row.pop("location")
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("location", response.text)
         self.assertEqual(self.ml_client.calls, 0)
         with Session(self.engine) as session:
             self.assertEqual(session.exec(select(Transaction)).all(), [])
@@ -390,19 +492,19 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         shared_name = "김민수"
         first_row = {
             **valid_transaction_row("TX-API-SAME-NAME-1"),
-            "Customer_ID": "C-SAME-NAME-1",
-            "Customer_personal_identifier": shared_name,
-            "Customer_identification_number": "identity-same-name-1",
-            "Account_account_number": "account-same-name-1",
-            "Recipient_Account_Number": "recipient-same-name-1",
+            "customer_id": "C-SAME-NAME-1",
+            "customer_name": shared_name,
+            "customer_identification_number": "identity-same-name-1",
+            "account_account_number": "account-same-name-1",
+            "recipient_account_number": "recipient-same-name-1",
         }
         second_row = {
             **valid_transaction_row("TX-API-SAME-NAME-2"),
-            "Customer_ID": "C-SAME-NAME-2",
-            "Customer_personal_identifier": shared_name,
-            "Customer_identification_number": "identity-same-name-2",
-            "Account_account_number": "account-same-name-2",
-            "Recipient_Account_Number": "recipient-same-name-2",
+            "customer_id": "C-SAME-NAME-2",
+            "customer_name": shared_name,
+            "customer_identification_number": "identity-same-name-2",
+            "account_account_number": "account-same-name-2",
+            "recipient_account_number": "recipient-same-name-2",
         }
 
         first = self.client.post("/transactions", json=first_row)
@@ -414,7 +516,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             customers = session.exec(select(Customer)).all()
             self.assertEqual(len(customers), 2)
             self.assertEqual(
-                {customer.personal_identifier for customer in customers},
+                {customer.name for customer in customers},
                 {shared_name},
             )
 
@@ -429,7 +531,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row("TX-API-MASTER-2"),
-                "Customer_credit_rating": 5,
+                "customer_credit_rating": 5,
             },
         )
         self.assertEqual(customer_update.status_code, 201, customer_update.text)
@@ -438,15 +540,15 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row("TX-API-MASTER-3"),
-                "Customer_credit_rating": 5,
-                "Account_amount_daily_limit": 20_000_000,
+                "customer_credit_rating": 5,
+                "account_amount_daily_limit": 20_000_000,
             },
         )
         self.assertEqual(account_update.status_code, 201, account_update.text)
 
         with Session(self.engine) as session:
             customer = session.get(Customer, "C000494")
-            account = session.get(Account, "TLBxRCjZdK")
+            account = session.get(Account, "123456789400")
             self.assertIsNotNone(customer)
             self.assertIsNotNone(account)
             self.assertEqual(customer.credit_rating, 5)
@@ -458,8 +560,8 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row("TX-API-RECIPIENT"),
-                "Recipient_Account_Number": target_account,
-                "Recipient_account_suspend_status": 1,
+                "recipient_account_number": target_account,
+                "recipient_account_suspend_status": True,
             },
         )
         self.assertEqual(first.status_code, 201, first.text)
@@ -468,11 +570,11 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row("TX-API-CLAIM"),
-                "Customer_ID": "C-CLAIM",
-                "Customer_personal_identifier": "실소유자",
-                "Customer_identification_number": "identity-claim",
-                "Account_account_number": target_account,
-                "Recipient_Account_Number": "claim-recipient",
+                "customer_id": "C-CLAIM",
+                "customer_name": "실소유자",
+                "customer_identification_number": "identity-claim",
+                "account_account_number": target_account,
+                "recipient_account_number": "claim-recipient",
             },
         )
         self.assertEqual(claimed.status_code, 201, claimed.text)
@@ -486,11 +588,11 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row("TX-API-WRONG-OWNER"),
-                "Customer_ID": "C-WRONG",
-                "Customer_personal_identifier": "다른고객",
-                "Customer_identification_number": "identity-wrong",
-                "Account_account_number": target_account,
-                "Recipient_Account_Number": "wrong-recipient",
+                "customer_id": "C-WRONG",
+                "customer_name": "다른고객",
+                "customer_identification_number": "identity-wrong",
+                "account_account_number": target_account,
+                "recipient_account_number": "wrong-recipient",
             },
         )
         self.assertEqual(wrong_owner.status_code, 409)
@@ -510,10 +612,10 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row("TX-IDENTIFICATION-2"),
-                "Customer_ID": "C-IDENTIFICATION-2",
-                "Customer_personal_identifier": "다른고객",
-                "Account_account_number": "identification-source-2",
-                "Recipient_Account_Number": "identification-recipient-2",
+                "customer_id": "C-IDENTIFICATION-2",
+                "customer_name": "다른고객",
+                "account_account_number": "identification-source-2",
+                "recipient_account_number": "identification-recipient-2",
             },
         )
 
@@ -528,21 +630,21 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             "/transactions",
             json={
                 **valid_transaction_row("TX-INVALID-IP"),
-                "IP_Address": "999.1.1.1",
+                "ip_address": "999.1.1.1",
             },
         )
         self.assertEqual(invalid_ip.status_code, 422)
-        self.assertIn("IP_Address", invalid_ip.text)
+        self.assertIn("ip_address", invalid_ip.text)
 
         invalid_mac = self.client.post(
             "/transactions",
             json={
                 **valid_transaction_row("TX-INVALID-MAC"),
-                "MAC_Address": "not-a-mac",
+                "mac_address": "not-a-mac",
             },
         )
         self.assertEqual(invalid_mac.status_code, 422)
-        self.assertIn("MAC_Address", invalid_mac.text)
+        self.assertIn("mac_address", invalid_mac.text)
 
 
 if __name__ == "__main__":

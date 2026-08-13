@@ -83,8 +83,15 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         fields = {feature["field"] for feature in response.json()}
         self.assertEqual(fields, set(RULE_CONTEXT_FIELDS))
-        self.assertIn("Account_release_suspension", fields)
-        self.assertNotIn("Account_release_suspention", fields)
+        self.assertIn("account_release_suspention", fields)
+        self.assertNotIn("account_release_suspension", fields)
+        self.assertNotIn("customer_name", fields)
+        self.assertNotIn("account_account_number", fields)
+        self.assertNotIn("recipient_account_number", fields)
+        self.assertNotIn("ip_address", fields)
+        self.assertNotIn("mac_address", fields)
+        self.assertNotIn("location", fields)
+        self.assertNotIn("customer_birth_date", fields)
         self.assertIn("transaction_age", fields)
         self.assertIn("strong_auth_change", fields)
         self.assertIn("all_limit_actions", fields)
@@ -92,6 +99,12 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertIn("amount_anomaly", fields)
         self.assertIn("impossible_travel", fields)
         self.assertNotIn("card_context_proxy", fields)
+        account_type = next(
+            feature
+            for feature in response.json()
+            if feature["field"] == "account_account_type"
+        )
+        self.assertEqual(account_type["allowed_values"], ["a", "b", "c", "d", "e"])
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_rule_set_test_returns_all_default_rule_scores(self) -> None:
@@ -103,15 +116,15 @@ class FraudRuleApiTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Customer_flag_terminal_malicious_behavior_1": 1,
-                "Customer_flag_terminal_malicious_behavior_2": 1,
-                "Customer_loan_type": "b",
-                "Customer_inquery_atm_limit": 1,
-                "Customer_increase_atm_limit": 1,
-                "Account_indicator_release_limit_excess": 1,
-                "Transaction_Amount": 9_000_000,
-                "Transaction_history_with_the_account": 1,
-                "Another_Person_Account": 1,
+                "customer_flag_terminal_malicious_behavior_1": 1,
+                "customer_flag_terminal_malicious_behavior_2": 1,
+                "customer_loan_type": "b",
+                "customer_inquery_atm_limit": 1,
+                "customer_increase_atm_limit": 1,
+                "account_indicator_release_limit_excess": 1,
+                "transaction_amount": 9_000_000,
+                "transaction_history_with_the_account": 1,
+                "another_person_account": 1,
             }
         )
         response = self.client.post(
@@ -129,6 +142,40 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertAlmostEqual(score_by_type["VOICE_PHISHING"], 1.0)
         self.assertNotIn("status", body)
         self.assertNotIn("fraud_type", body)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_new_draft_cannot_activate_transition_only_legacy_field(self) -> None:
+        draft = self.client.post("/rule-sets/drafts", headers=ADMIN_HEADERS).json()
+        added = self.client.post(
+            f"/rule-sets/{draft['id']}/rules",
+            headers=ADMIN_HEADERS,
+            json={
+                "type_code": "LEGACY_BYPASS",
+                "display_name": "레거시 우회",
+                "components": [
+                    {
+                        "component_key": "legacy_open_banking",
+                        "name": "레거시 오픈뱅킹",
+                        "condition_expression": {
+                            "field": "Account_indicator_Openbanking",
+                            "operator": "EQ",
+                            "value": 1,
+                        },
+                        "weight": 1.0,
+                    }
+                ],
+            },
+        )
+        self.assertEqual(added.status_code, 201, added.text)
+
+        validation = self.client.post(
+            f"/rule-sets/{draft['id']}/validate",
+            headers=ADMIN_HEADERS,
+        )
+
+        self.assertEqual(validation.status_code, 200, validation.text)
+        self.assertFalse(validation.json()["valid"])
+        self.assertIn("raw60 snake_case", validation.text)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_activation_archives_previous_set_and_clone_is_editable(self) -> None:
@@ -201,9 +248,7 @@ class FraudRuleApiTest(unittest.TestCase):
             headers=ADMIN_HEADERS,
         ).json()
         loan_rule = next(
-            rule
-            for rule in draft["rules"]
-            if rule["type_code"] == "VOICE_PHISHING"
+            rule for rule in draft["rules"] if rule["type_code"] == "VOICE_PHISHING"
         )
         components = loan_rule["components"]
         components[0]["weight"] = 0.50
@@ -271,7 +316,12 @@ class FraudRuleApiTest(unittest.TestCase):
         )
 
         self.assertEqual(duplicate.status_code, 409, duplicate.text)
-        self.assertIn(str(first["id"]), duplicate.json()["detail"])
+        body = duplicate.json()
+        self.assertFalse(body["success"])
+        self.assertIsNone(body["data"])
+        self.assertEqual(body["error"]["code"], "HTTP_409")
+        self.assertIn(str(first["id"]), body["error"]["message"])
+        self.assertIsNone(body["error"]["details"])
 
         discarded = self.client.delete(
             f"/rule-sets/{first['id']}",

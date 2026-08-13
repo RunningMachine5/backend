@@ -10,15 +10,8 @@ from app.data.model.types import BIGINT_PRIMARY_KEY
 
 
 class CustomerEventType(str, Enum):
-    """ERD 주석의 이벤트 종류를 영문 코드로 통일한 값.
+    """ML 원천 이벤트와 일치하도록 확정한 고객 이벤트 코드."""
 
-    ERD 원문은 'AUTH1~3 / PRIVACY / ATM문의 / ATM증액 / 정지해제'처럼 한글과
-    영문이 섞여 있어 코드에서 다루기 어려우므로 영문 코드로 고정한다.
-
-    주의: derived_features는 flag_change_of_authentication_1~4로 인증 변경을
-    4종 관리하지만 ERD의 이벤트 종류에는 AUTH가 3종뿐이다. 네 번째 플래그를
-    어떤 이벤트가 채우는지는 아직 정의되지 않았다.
-    """
     AUTH_1 = "OFFICIAL_CERTIFICATION"
     AUTH_2 = "PRIVATE_CERTIFICATION"
     AUTH_3 = "SECURITY_CARD_OTP"
@@ -69,7 +62,7 @@ class CustomerEvent(SQLModel, table=True):
         default=None,
         foreign_key="accounts.account_number",
         ondelete="SET NULL",
-        max_length=255,
+        max_length=64,
         index=True,
     )
     event_type: str = Field(max_length=32)

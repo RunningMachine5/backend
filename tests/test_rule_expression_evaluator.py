@@ -51,12 +51,12 @@ class RuleExpressionEvaluatorTest(unittest.TestCase):
         )
 
     def test_supports_in_and_comparison_operators(self) -> None:
-        context = {"Customer_loan_type": "c", "transaction_age": 65}
+        context = {"customer_loan_type": "c", "transaction_age": 65}
 
         self.assertTrue(
             self.evaluator.evaluate(
                 {
-                    "field": "Customer_loan_type",
+                    "field": "customer_loan_type",
                     "operator": "IN",
                     "value": ["b", "c", "d", "e"],
                 },
@@ -69,6 +69,30 @@ class RuleExpressionEvaluatorTest(unittest.TestCase):
                     "field": "transaction_age",
                     "operator": "GT",
                     "value": 60,
+                },
+                context,
+            )
+        )
+
+    def test_nullable_feature_does_not_fail_ordering_comparison(self) -> None:
+        context = {"account_balance": None}
+
+        self.assertFalse(
+            self.evaluator.evaluate(
+                {
+                    "field": "account_balance",
+                    "operator": "LT",
+                    "value": 0,
+                },
+                context,
+            )
+        )
+        self.assertFalse(
+            self.evaluator.evaluate(
+                {
+                    "field": "account_balance",
+                    "operator": "NE",
+                    "value": 0,
                 },
                 context,
             )

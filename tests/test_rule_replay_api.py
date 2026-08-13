@@ -33,7 +33,7 @@ from app.dto.fraud_rule import (
 from app.dto.transaction import TransactionCreateDTO
 from app.repositories.transaction import TransactionRepository
 from app.services.rules.replay import _component_changes, replay_rule_sets
-from tests.ml_feature_fixture import valid_transaction_row
+from tests.test_rule_feature_builder import valid_rule_raw_data
 
 ADMIN_HEADERS = {"X-MLOps-Admin-Token": "admin-secret"}
 
@@ -48,16 +48,22 @@ def _transaction_payload(
     loan_type: str = "c",
 ) -> TransactionCreateDTO:
     suffix = transaction_id.lower()
+    raw_features = valid_rule_raw_data()
+    raw_features.update(
+        {
+            "customer_name": "동명이인 허용 고객",
+            "account_account_number": f"source-{suffix}",
+            "recipient_account_number": f"recipient-{suffix}",
+            "customer_loan_type": loan_type,
+            "transaction_datetime": transaction_datetime.isoformat(),
+        }
+    )
     return TransactionCreateDTO.model_validate(
         {
-            **valid_transaction_row(transaction_id),
-            "Customer_ID": f"C-{suffix}",
-            "Customer_personal_identifier": "동명이인 허용 고객",
-            "Customer_identification_number": f"identity-{suffix}",
-            "Account_account_number": f"source-{suffix}",
-            "Recipient_Account_Number": f"recipient-{suffix}",
-            "Customer_loan_type": loan_type,
-            "Transaction_Datetime": transaction_datetime.isoformat(),
+            "transaction_id": transaction_id,
+            "customer_id": f"C-{suffix}",
+            "customer_identification_number": f"identity-{suffix}",
+            **raw_features,
         }
     )
 
@@ -154,7 +160,7 @@ class FraudRuleReplayApiTest(unittest.TestCase):
                         "component_key": "positive_amount",
                         "name": "양수 거래금액",
                         "condition_expression": {
-                            "field": "Transaction_Amount",
+                            "field": "transaction_amount",
                             "operator": "GT",
                             "value": 0,
                         },
@@ -383,7 +389,7 @@ class FraudRuleReplayApiTest(unittest.TestCase):
             session.add_all(
                 [
                     _prediction(
-                        transaction.transaction_id,
+                        transaction.id,
                         is_fraud=True,
                         created_at=base + timedelta(hours=1, seconds=index),
                     )
@@ -420,11 +426,11 @@ class FraudRuleReplayApiTest(unittest.TestCase):
                 "TX-MISSING-DERIVED",
                 transaction_datetime=base,
             )
-            derived = session.get(DerivedFeatures, transaction.transaction_id)
+            derived = session.get(DerivedFeatures, transaction.id)
             session.delete(derived)
             session.add(
                 _prediction(
-                    transaction.transaction_id,
+                    transaction.id,
                     is_fraud=True,
                     created_at=base + timedelta(minutes=1),
                 )

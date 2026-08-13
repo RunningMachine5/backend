@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.db import SessionDep
+from app.core.common_response import ApiResponse, success_response
 from app.dto.dashboard import DashboardOverviewResponse
 from app.repositories.dashboard_overview import (
     DashboardOverviewRepository,
@@ -22,21 +23,22 @@ router = APIRouter(
 
 @router.get(
     "/overview",
-    response_model=DashboardOverviewResponse,
+    response_model=ApiResponse[DashboardOverviewResponse],
 )
 def get_dashboard_overview(
     session: SessionDep,
     period_start: datetime = Query(...),
     period_end: datetime = Query(...),
-) -> DashboardOverviewResponse:
+) -> ApiResponse[DashboardOverviewResponse]:
     repository = DashboardOverviewRepository(session)
     service = DashboardOverviewService(repository)
 
     try:
-        return service.get_overview(
+        overview = service.get_overview(
             period_start=period_start,
             period_end=period_end,
         )
+        return success_response(overview)
 
     except ValueError as exc:
         raise HTTPException(

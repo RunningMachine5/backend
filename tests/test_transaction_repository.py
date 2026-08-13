@@ -2,7 +2,7 @@ import unittest
 
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from app.data.model.account import Account
 from app.data.model.customer import Customer
@@ -28,10 +28,10 @@ def _payload(
 ) -> TransactionCreateDTO:
     row = {
         **valid_transaction_row(transaction_id),
-        "Customer_ID": customer_id,
-        "Customer_identification_number": identification_number,
-        "Account_account_number": source_account_number,
-        "Recipient_Account_Number": recipient_account_number,
+        "customer_id": customer_id,
+        "customer_identification_number": identification_number,
+        "account_account_number": source_account_number,
+        "recipient_account_number": recipient_account_number,
         **overrides,
     }
     return TransactionCreateDTO.model_validate(row)
@@ -77,10 +77,10 @@ class TransactionRepositoryTest(unittest.TestCase):
 
         second_payload = _payload(
             "TX-ROUNDTRIP-2",
-            Account_initial_balance=4_817_417,
-            Account_balance=3_000_000,
-            Account_remaining_amount_daily_limit_exceeded=4_000_000,
-            Transaction_Amount=1_817_417,
+            account_initial_balance=4_817_417,
+            account_balance=-3_000_000,
+            account_remaining_amount_daily_limit_exceeded=4_000_000,
+            transaction_amount=1_817_417,
         )
         second_transaction = self._save(second_payload)
 
@@ -97,9 +97,13 @@ class TransactionRepositoryTest(unittest.TestCase):
             second_assembled.model_dump(mode="json", by_alias=True),
             second_payload.raw_features.model_dump(mode="json", by_alias=True),
         )
-        account = self.session.get(Account, first_transaction.source_account_id)
+        account = self.session.exec(
+            select(Account).where(
+                Account.account_number == first_transaction.source_account_number
+            )
+        ).one()
         self.assertIsNotNone(account)
-        self.assertEqual(account.current_balance, 3_000_000)
+        self.assertEqual(account.current_balance, -3_000_000)
         self.assertEqual(account.remaining_daily_limit, 4_000_000)
 
     def test_transaction_is_inserted_before_derived_features(self) -> None:
@@ -138,10 +142,10 @@ class TransactionRepositoryTest(unittest.TestCase):
 
         latest = _payload(
             "TX-MASTER-2",
-            Customer_credit_rating=5,
-            Customer_loan_type="d",
-            Account_amount_daily_limit=20_000_000,
-            Account_indicator_Openbanking=0,
+            customer_credit_rating=5,
+            customer_loan_type="d",
+            account_amount_daily_limit=20_000_000,
+            account_indicator_openbanking=False,
         )
         self._save(latest)
 
@@ -160,7 +164,7 @@ class TransactionRepositoryTest(unittest.TestCase):
             _payload(
                 "TX-RECIPIENT-FIRST",
                 recipient_account_number=target_account,
-                Recipient_account_suspend_status=1,
+                recipient_account_suspend_status=True,
             )
         )
         recipient = self.session.get(Account, target_account)
@@ -174,7 +178,7 @@ class TransactionRepositoryTest(unittest.TestCase):
             identification_number="owner-identity-2",
             source_account_number=target_account,
             recipient_account_number="recipient-owner-2",
-            Customer_personal_identifier="계좌주인",
+            customer_name="계좌주인",
         )
         self._save(owner_payload)
 
@@ -182,7 +186,7 @@ class TransactionRepositoryTest(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertEqual(claimed.customer_id, "C-OWNER-2")
         self.assertEqual(
-            claimed.account_type, owner_payload.raw_features.Account_account_type
+            claimed.account_type, owner_payload.raw_features.account_account_type
         )
 
         with self.assertRaises(AccountOwnershipConflictError):
@@ -193,7 +197,7 @@ class TransactionRepositoryTest(unittest.TestCase):
                     identification_number="wrong-owner-identity",
                     source_account_number=target_account,
                     recipient_account_number="recipient-wrong-owner",
-                    Customer_personal_identifier="다른고객",
+                    customer_name="다른고객",
                 )
             )
         self.session.rollback()
@@ -206,7 +210,7 @@ class TransactionRepositoryTest(unittest.TestCase):
         self._save(
             _payload(
                 "TX-SUSPEND-1",
-                Recipient_account_suspend_status=1,
+                recipient_account_suspend_status=True,
             )
         )
         recipient = self.session.get(Account, "yeTPcVrUhr")
@@ -216,7 +220,7 @@ class TransactionRepositoryTest(unittest.TestCase):
         self._save(
             _payload(
                 "TX-SUSPEND-2",
-                Recipient_account_suspend_status=0,
+                recipient_account_suspend_status=False,
             )
         )
         self.assertFalse(self.session.get(Account, "yeTPcVrUhr").suspend_status)
