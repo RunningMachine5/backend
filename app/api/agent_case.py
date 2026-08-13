@@ -27,6 +27,7 @@ from app.services.agent.case_service import (
     AgentCaseNotFoundError,
     AgentCaseService,
 )
+from app.services.agent.dashboard_similar_cases import DashboardSimilarCaseService
 from app.services.agent.guide_embedder import OpenAIGuideEmbedder
 from app.services.agent.guide_search import GuideSearchService
 from app.services.agent.response_policy import get_default_policy_repository
@@ -93,6 +94,9 @@ def get_agent_workflow(session: SessionDep) -> AgentWorkflow:
         response_plan_generator=RagResponsePlanGenerator(),
         email_notifier=FraudAlertEmailService.from_env(
             AgentEmailRepository(session)
+        ),
+        dashboard_similar_case_finder=DashboardSimilarCaseService(
+            similar_case_tools
         ),
     )
 
