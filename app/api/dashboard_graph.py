@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.db import SessionDep
-from app.dto.common_response import ApiResponse, success_response
+from app.core.common_response import ApiResponse, success_response
 from app.dto.dashboard import DashboardOverviewResponse
 from app.repositories.dashboard_overview import (
     DashboardOverviewRepository,
