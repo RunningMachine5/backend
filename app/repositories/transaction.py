@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 
 from sqlalchemy import func
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from app.data.model.account import Account
@@ -82,7 +83,7 @@ class TransactionRepository:
         self,
         transaction: Transaction,
     ) -> MLTransactionFeatures | None:
-        """저장된 평탄 컬럼에서 ML 54개 Feature 계약을 다시 조립한다.
+        """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다.
 
         파생 피처 행이 없거나 외부 계좌 정보만 있는 등 계약을 복원할 수 없는
         경우에는 호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
@@ -91,13 +92,24 @@ class TransactionRepository:
         derived = self.session.get(DerivedFeatures, transaction.transaction_id)
         customer = self.session.get(Customer, transaction.customer_id)
         source_account = self.session.get(Account, transaction.source_account_id)
-        if derived is None or customer is None or source_account is None:
+        recipient_account = (
+            self.session.get(Account, transaction.recipient_account_id)
+            if transaction.recipient_account_id
+            else None
+        )
+        if (
+            derived is None
+            or customer is None
+            or source_account is None
+            or recipient_account is None
+        ):
             return None
 
         try:
             return assemble_ml_features(
                 customer=customer,
                 source_account=source_account,
+                recipient_account=recipient_account,
                 transaction=transaction,
                 derived=derived,
             )
@@ -244,7 +256,7 @@ class TransactionRepository:
             return None
 
         recipient_account_id = _account_id(payload.recipient_account_number)
-        suspend_status = bool(payload.raw_features.Recipient_account_suspend_status)
+        suspend_status = payload.raw_features.recipient_account_suspend_status
         recipient_account = self.session.get(Account, recipient_account_id)
         if recipient_account is None:
             self.session.add(
@@ -327,12 +339,13 @@ class PredictionResultRepository:
                 Transaction,
                 Customer | None,
                 Account | None,
+                Account | None,
                 DerivedFeatures | None,
             ]
         ],
         bool,
     ]:
-        """최신 ML 결과가 양성인 최근 거래와 54개 조립 행을 한 번에 읽는다.
+        """최신 ML 결과가 양성인 최근 거래와 raw59 조립 행을 한 번에 읽는다.
 
         양성 예측부터 거르면 과거 양성·최신 음성인 거래가 섞이므로 거래별 최신
         예측을 먼저 확정한다. 거래시각과 거래 ID를 함께 정렬해 같은 데이터에서는
@@ -354,8 +367,16 @@ class PredictionResultRepository:
             .label("prediction_rank"),
         ).subquery()
 
+        source_account = aliased(Account)
+        recipient_account = aliased(Account)
         statement = (
-            select(Transaction, Customer, Account, DerivedFeatures)
+            select(
+                Transaction,
+                Customer,
+                source_account,
+                recipient_account,
+                DerivedFeatures,
+            )
             .select_from(Transaction)
             .join(
                 MLPredictionResult,
@@ -366,7 +387,14 @@ class PredictionResultRepository:
                 ranked_predictions.c.prediction_result_id == MLPredictionResult.id,
             )
             .outerjoin(Customer, Customer.customer_id == Transaction.customer_id)
-            .outerjoin(Account, Account.account_id == Transaction.source_account_id)
+            .outerjoin(
+                source_account,
+                source_account.account_id == Transaction.source_account_id,
+            )
+            .outerjoin(
+                recipient_account,
+                recipient_account.account_id == Transaction.recipient_account_id,
+            )
             .outerjoin(
                 DerivedFeatures,
                 DerivedFeatures.transaction_id == Transaction.transaction_id,
@@ -382,8 +410,14 @@ class PredictionResultRepository:
             .limit(limit + 1)
         )
         rows = [
-            (transaction, customer, source_account, derived)
-            for transaction, customer, source_account, derived in self.session.exec(
+            (
+                transaction,
+                customer,
+                source,
+                recipient,
+                derived,
+            )
+            for transaction, customer, source, recipient, derived in self.session.exec(
                 statement
             ).all()
         ]
@@ -391,8 +425,8 @@ class PredictionResultRepository:
 
 
 __all__ = [
-    "AccountOwnershipConflictError",
     "AccountIdentifierConflictError",
+    "AccountOwnershipConflictError",
     "CustomerIdentificationConflictError",
     "PredictionResultRepository",
     "TransactionLabelRepository",

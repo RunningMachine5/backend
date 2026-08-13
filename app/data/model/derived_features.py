@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import BigInteger, Column, DateTime, Float
+from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Float
 from sqlmodel import Field, SQLModel
 
 from app.data.model.types import INTERVAL_COLUMN
@@ -20,6 +20,35 @@ class DerivedFeatures(SQLModel, table=True):
     """
 
     __tablename__ = "derived_features"
+    __table_args__ = (
+        CheckConstraint(
+            "distance >= 0", name="ck_derived_features_distance_nonnegative"
+        ),
+        CheckConstraint(
+            "one_month_max_amount >= 0",
+            name="ck_derived_features_month_max_nonnegative",
+        ),
+        CheckConstraint(
+            "one_month_std_dev >= 0",
+            name="ck_derived_features_month_std_nonnegative",
+        ),
+        CheckConstraint(
+            "dawn_one_month_max_amount >= 0",
+            name="ck_derived_features_dawn_max_nonnegative",
+        ),
+        CheckConstraint(
+            "dawn_one_month_std_dev >= 0",
+            name="ck_derived_features_dawn_std_nonnegative",
+        ),
+        CheckConstraint(
+            "number_of_transaction_with_the_account >= 0",
+            name="ck_derived_features_recent_count_nonnegative",
+        ),
+        CheckConstraint(
+            "transaction_history_with_the_account >= 0",
+            name="ck_derived_features_history_count_nonnegative",
+        ),
+    )
 
     transaction_id: str = Field(
         primary_key=True,
@@ -38,9 +67,7 @@ class DerivedFeatures(SQLModel, table=True):
     one_month_max_amount: int = Field(sa_type=BigInteger)
     one_month_std_dev: float = Field(sa_column=Column(Float, nullable=False))
     dawn_one_month_max_amount: int = Field(sa_type=BigInteger)
-    dawn_one_month_std_dev: float = Field(
-        sa_column=Column(Float, nullable=False)
-    )
+    dawn_one_month_std_dev: float = Field(sa_column=Column(Float, nullable=False))
 
     # TXN 7일
     unused_terminal_status: bool

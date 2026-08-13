@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, Column, DateTime, SmallInteger
+from sqlalchemy import CheckConstraint, Column, Date, DateTime, SmallInteger
 from sqlmodel import Field, SQLModel
 
 
@@ -24,8 +24,7 @@ class Customer(SQLModel, table=True):
     )
 
     customer_id: str = Field(primary_key=True, max_length=64)
-    # ML 54개 입력 계약이 제공하는 값은 생년월일이 아니라 출생연도뿐이다.
-    birthyear: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    birth_date: date = Field(sa_column=Column(Date, nullable=False))
     gender: str = Field(max_length=16)
     # 생성 원본에서 고객 이름으로 사용되는 값이라 동명이인을 허용한다.
     personal_identifier: str = Field(max_length=255)

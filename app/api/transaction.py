@@ -36,7 +36,7 @@ def _dumped_features(
     repository: TransactionRepository,
     transaction: Transaction,
 ) -> dict[str, Any] | None:
-    """평탄 컬럼에서 조립한 54개 Feature를 응답용 JSON dict로 바꾼다."""
+    """정규화 컬럼에서 조립한 raw59 Feature를 응답용 JSON dict로 바꾼다."""
 
     features = repository.load_ml_features(transaction)
     if features is None:
