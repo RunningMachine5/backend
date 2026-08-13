@@ -1,4 +1,5 @@
 import unittest
+import json
 from types import SimpleNamespace
 
 from app.domain.agent_status import (
@@ -11,12 +12,15 @@ from app.dto.agent import (
     RuleEvidenceDTO,
 )
 from app.dto.agent_investigation import (
+    InvestigationAction,
+    InvestigationActionDTO,
     ResolvedCaseDetailDTO,
     SimilarResolvedCaseDTO,
 )
 from app.services.agent.similar_case_investigator import (
     DatabaseSimilarCaseTools,
     LimitedSimilarCaseInvestigator,
+    OpenAIInvestigationActionSelector,
 )
 from app.services.agent.type_confidence import calculate_type_confidence
 
@@ -44,6 +48,21 @@ class FakeSimilarCaseTools:
             case_id=case_id,
             confirmed_fraud_type=self.confirmed_types[case_id],
         )
+
+
+class FakeActionSelector:
+    """테스트에서 LLM의 구조화 Action 응답을 순서대로 재현한다."""
+
+    def __init__(self, actions: list[InvestigationActionDTO] | None = None) -> None:
+        self.actions = list(actions or [])
+        self.call_count = 0
+        self.error: Exception | None = None
+
+    def select_action(self, **_kwargs) -> InvestigationActionDTO:
+        self.call_count += 1
+        if self.error is not None:
+            raise self.error
+        return self.actions.pop(0)
 
 
 class FakeInvestigationRepository:
@@ -112,10 +131,62 @@ class DatabaseSimilarCaseToolsTest(unittest.TestCase):
         self.assertEqual(detail.confirmed_fraud_type, "ACCOUNT_TAKEOVER")
 
 
+class FakeChatCompletions:
+    def __init__(self) -> None:
+        self.request = None
+
+    def create(self, **kwargs):
+        self.request = kwargs
+        content = json.dumps(
+            {
+                "action": "INSPECT_CASE",
+                "case_id": "CASE-PAST",
+                "recommended_fraud_type": None,
+                "reason": "공통 Rule 근거와 유사도가 높다.",
+            }
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+
+
+class OpenAIInvestigationActionSelectorTest(unittest.TestCase):
+    def test_structured_llm_response_maps_to_action_dto(self) -> None:
+        completions = FakeChatCompletions()
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=completions)
+        )
+        selector = OpenAIInvestigationActionSelector(
+            client=client,
+            model="test-model",
+        )
+
+        action = selector.select_action(
+            candidate_fraud_types=("ACCOUNT_TAKEOVER", "MESSENGER_PHISHING"),
+            similar_cases=[
+                SimilarResolvedCaseDTO(
+                    case_id="CASE-PAST",
+                    similarity_score=0.91,
+                    common_evidence_codes=("ACCOUNT_TAKEOVER:REMOTE_CONTROL",),
+                )
+            ],
+            inspected_cases=[],
+            remaining_detail_calls=2,
+        )
+
+        self.assertEqual(action.action, InvestigationAction.INSPECT_CASE)
+        self.assertEqual(action.case_id, "CASE-PAST")
+        self.assertEqual(
+            completions.request["response_format"]["type"],
+            "json_schema",
+        )
+
+
 class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
     def test_no_similar_case_stops_without_detail_lookup(self) -> None:
         tools = FakeSimilarCaseTools([])
-        result = self._investigate(tools)
+        selector = FakeActionSelector()
+        result = self._investigate(tools, selector)
 
         self.assertEqual(
             result.investigation_status,
@@ -123,6 +194,7 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
         )
         self.assertEqual(tools.search_calls, 1)
         self.assertEqual(tools.detail_calls, [])
+        self.assertEqual(selector.call_count, 0)
 
     def test_two_supported_cases_complete_recommendation(self) -> None:
         tools = FakeSimilarCaseTools(
@@ -137,7 +209,17 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
                 "CASE-103": "MESSENGER_PHISHING",
             },
         )
-        result = self._investigate(tools)
+        selector = FakeActionSelector(
+            [
+                self._action(InvestigationAction.INSPECT_CASE, case_id="CASE-101"),
+                self._action(InvestigationAction.INSPECT_CASE, case_id="CASE-102"),
+                self._action(
+                    InvestigationAction.STOP_RECOMMEND,
+                    recommended_type="ACCOUNT_TAKEOVER",
+                ),
+            ]
+        )
+        result = self._investigate(tools, selector)
 
         self.assertEqual(result.investigation_status, InvestigationStatus.COMPLETED)
         self.assertEqual(result.recommended_fraud_type, "ACCOUNT_TAKEOVER")
@@ -149,7 +231,16 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
             [self._case("CASE-201", 0.91)],
             {"CASE-201": "MESSENGER_PHISHING"},
         )
-        result = self._investigate(tools)
+        selector = FakeActionSelector(
+            [
+                self._action(InvestigationAction.INSPECT_CASE, case_id="CASE-201"),
+                self._action(
+                    InvestigationAction.STOP_RECOMMEND,
+                    recommended_type="MESSENGER_PHISHING",
+                ),
+            ]
+        )
+        result = self._investigate(tools, selector)
 
         self.assertEqual(result.investigation_status, InvestigationStatus.COMPLETED)
         self.assertEqual(result.recommended_fraud_type, "MESSENGER_PHISHING")
@@ -160,13 +251,78 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
             [self._case("CASE-301", 0.70)],
             {"CASE-301": "ACCOUNT_TAKEOVER"},
         )
-        result = self._investigate(tools)
+        selector = FakeActionSelector()
+        result = self._investigate(tools, selector)
 
         self.assertEqual(
             result.investigation_status,
             InvestigationStatus.INSUFFICIENT_EVIDENCE,
         )
         self.assertEqual(tools.detail_calls, [])
+        self.assertEqual(selector.call_count, 0)
+
+    def test_unlisted_case_selected_by_llm_is_rejected(self) -> None:
+        tools = FakeSimilarCaseTools(
+            [self._case("CASE-401", 0.90)],
+            {"CASE-401": "ACCOUNT_TAKEOVER"},
+        )
+        selector = FakeActionSelector(
+            [self._action(InvestigationAction.INSPECT_CASE, case_id="CASE-UNKNOWN")]
+        )
+
+        result = self._investigate(tools, selector)
+
+        self.assertEqual(
+            result.investigation_status,
+            InvestigationStatus.INSUFFICIENT_EVIDENCE,
+        )
+        self.assertEqual(tools.detail_calls, [])
+
+    def test_llm_failure_falls_back_without_detail_lookup(self) -> None:
+        tools = FakeSimilarCaseTools(
+            [self._case("CASE-501", 0.90)],
+            {"CASE-501": "ACCOUNT_TAKEOVER"},
+        )
+        selector = FakeActionSelector()
+        selector.error = RuntimeError("LLM timeout")
+
+        result = self._investigate(tools, selector)
+
+        self.assertEqual(
+            result.investigation_status,
+            InvestigationStatus.INSUFFICIENT_EVIDENCE,
+        )
+        self.assertIn("Rule 1순위", result.recommendation_reason)
+        self.assertEqual(tools.detail_calls, [])
+
+    def test_investigation_records_generation_metrics(self) -> None:
+        tools = FakeSimilarCaseTools([])
+        selector = FakeActionSelector()
+        metrics: dict[str, object] = {}
+
+        self._investigate(tools, selector, metrics=metrics)
+
+        self.assertGreaterEqual(metrics["investigation_latency_ms"], 0)
+        self.assertEqual(metrics["react_llm_call_count"], 0)
+        self.assertEqual(metrics["api_attempt_count"], 0)
+        self.assertEqual(metrics["retry_count"], 0)
+        self.assertEqual(metrics["tool_call_count"], 1)
+        self.assertTrue(metrics["fallback_used"])
+        self.assertIsNotNone(metrics["fallback_reason"])
+
+    @staticmethod
+    def _action(
+        action: InvestigationAction,
+        *,
+        case_id: str | None = None,
+        recommended_type: str | None = None,
+    ) -> InvestigationActionDTO:
+        return InvestigationActionDTO(
+            action=action,
+            case_id=case_id,
+            recommended_fraud_type=recommended_type,
+            reason="테스트 조사 판단이다.",
+        )
 
     @staticmethod
     def _case(
@@ -180,7 +336,13 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
         )
 
     @classmethod
-    def _investigate(cls, tools: FakeSimilarCaseTools):
+    def _investigate(
+        cls,
+        tools: FakeSimilarCaseTools,
+        selector: FakeActionSelector,
+        *,
+        metrics: dict[str, object] | None = None,
+    ):
         rule_result = FraudTypeScoreResultDTO(
             fraud_type_score_result_id=1,
             rule_filter_status=RuleFilterStatus.APPLIED,
@@ -200,12 +362,13 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
                 )
             ],
         )
-        return LimitedSimilarCaseInvestigator(tools).investigate(
+        return LimitedSimilarCaseInvestigator(tools, selector).investigate(
             case_id="CASE-CURRENT",
             rule_result=rule_result,
             confidence=calculate_type_confidence(rule_result.type_scores),
             risk_score=90,
             risk_grade="VERY_HIGH",
+            metrics=metrics,
         )
 
 
