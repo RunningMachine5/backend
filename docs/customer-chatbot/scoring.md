@@ -1,15 +1,15 @@
 # 고객 대응 챗봇 — 사기 정황 내부 채점표
 
-[고객 대응 챗봇 설계 (PRD)](customer-chatbot.md)의 부속 문서다.
+[고객 대응 챗봇 설계 (PRD)](README.md)의 부속 문서다.
 추출된 `fraud_circumstance`를 사기유형별 점수로 환산하는 표를 담는다.
 
-- 언제 추출하고 언제 집계하는지: PRD [2.6 사기 정황 추출과 채점](customer-chatbot.md#26-사기-정황-추출과-채점-4-2)
-- 추출 프롬프트와 20종 정의: [LLM 프롬프트 A.3](customer-chatbot-prompts.md#a3-사기-정황-추출-프롬프트)
-- 점수를 저장하는 테이블: [DB·스키마 3.7](customer-chatbot-schema.md#37-fraud_type_score_after_chat--구조-변경)
+- 언제 추출하고 언제 집계하는지: PRD [2.6 사기 정황 추출과 채점](README.md#26-사기-정황-추출과-채점-4-2)
+- 추출 프롬프트와 20종 정의: [LLM 프롬프트 A.3](prompts.md#a3-사기-정황-추출-프롬프트)
+- 점수를 저장하는 테이블: [DB·스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)
 
 이 표는 코드에서 `app/domain/fraud_circumstance_codes.py`의
 `FRAUD_CIRCUMSTANCE_SCORES: Mapping[str, Mapping[str, int]]`로 관리한다
-([DB·스키마 3.8](customer-chatbot-schema.md#38-appdomain-enum-코드-상수화)).
+([DB·스키마 3.8](schema.md#38-appdomain-enum-코드-상수화)).
 **표와 코드 상수는 한 소스여야 하므로, 값을 바꿀 때 양쪽을 함께 고친다.**
 
 정황 하나가 여러 유형에 점수를 주므로 이 매핑 안에 정황 → 사기유형 관계가 포함된다.

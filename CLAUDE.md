@@ -61,9 +61,9 @@ This applies to work touching:
 - `app/pipelines/customer_chatbot_pipeline.py`
 - `app/api/chat.py`
 - the `agent_chat_*` / `fraud_type_score_after_chat` tables in `app/data/model/agent.py`
-- `docs/customer-chatbot*.md`
+- `docs/customer-chatbot/`
 
-The design lives in five documents, with `docs/customer-chatbot.md` as the entry point (flow and
+The design lives in `docs/customer-chatbot/`, with `README.md` as the entry point (flow and
 branching only; prompts, customer-facing wording, the scoring table, and the table definitions are
 split into sibling files). **Never invent new prompt text or customer-facing wording in code** —
 add it to the relevant document first, then move it into code. The skill's index table tells you

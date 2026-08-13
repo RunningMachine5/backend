@@ -5,9 +5,9 @@
 그 결과로 대응 가이드를 제공하고 사기유형을 추가 판정하는 시스템의 설계 문서다.
 
 - 시나리오·분기 조건: [2. 작동 시나리오](#2-작동-시나리오)
-- 테이블·컬럼 정의: [customer-chatbot-schema.md](customer-chatbot-schema.md)
-- LLM 프롬프트 전문: [customer-chatbot-prompts.md](customer-chatbot-prompts.md)
-- 고객 안내 문구: [customer-chatbot-messages.md](customer-chatbot-messages.md)
+- 테이블·컬럼 정의: [schema.md](schema.md)
+- LLM 프롬프트 전문: [prompts.md](prompts.md)
+- 고객 안내 문구: [messages.md](messages.md)
 - 아직 정하지 못한 것: [3. 미해결 문제](#3-미해결-문제)
 
 ---
@@ -32,11 +32,11 @@ SQLAlchemy, SQLModel, langchain-openai.
 ### 1.3 현재 구현 상태
 
 `agent_chat_sessions` / `agent_chat_messages` / `fraud_type_score_after_chat`은
-[app/data/model/agent.py](../app/data/model/agent.py)에 테이블 정의와 마이그레이션이
+[app/data/model/agent.py](../../app/data/model/agent.py)에 테이블 정의와 마이그레이션이
 이미 있으나, **비즈니스 로직에서 참조하는 코드는 없다.** 챗봇 리포지토리도 없고
-[app/api/chat.py](../app/api/chat.py)는 세션 개념이 없는 `POST /chat/ask` 하나뿐이다.
+[app/api/chat.py](../../app/api/chat.py)는 세션 개념이 없는 `POST /chat/ask` 하나뿐이다.
 
-RAG 쪽은 [app/services/rag/chatbot_retriever.py](../app/services/rag/chatbot_retriever.py)에
+RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
 다만 검색 0건일 때 `"관련 문서를 찾지 못했습니다."`라는 **문자열을 컨텍스트로 반환**하므로,
 [2.5의 0건 분기](#검색-결과-0건-처리)를 구현하려면 구조화된 결과를 돌려주도록 바꿔야 한다.
@@ -76,7 +76,7 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 ```
 
 `customers.email`은 nullable이고 **거래 수집 경로가 이메일을 채우지 않으면 항상 `NULL`이다**
-([스키마 3.9](customer-chatbot-schema.md#39-customersemail-확보-경로) 참고). 주소가 없다는 이유로 안내를 건너뛰면 챗봇이
+([스키마 3.9](schema.md#39-customersemail-확보-경로) 참고). 주소가 없다는 이유로 안내를 건너뛰면 챗봇이
 아예 시작되지 않으므로, 값이 없으면 기본 주소 `CHAT_FALLBACK_EMAIL`(기본값
 `abcd@kosa.com`)로 대신 보낸다. `status`는 정상대로 `URL_SENT`가 된다.
 
@@ -86,7 +86,7 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
   `CHAT_BASE_URL`과 `CHAT_FALLBACK_EMAIL`은 `app/core/config.py`에 env var로 둔다
   (settings 클래스를 쓰지 않는 기존 패턴).
 - 기본 주소로 보냈는지는 세션의 `notified_email`을 `customers.email`과 비교해 구분한다.
-  **폴백은 데모용 임시 조치이지 이메일 확보의 대체재가 아니다**([스키마 3.9](customer-chatbot-schema.md#39-customersemail-확보-경로)).
+  **폴백은 데모용 임시 조치이지 이메일 확보의 대체재가 아니다**([스키마 3.9](schema.md#39-customersemail-확보-경로)).
 
 ### 2.2 채팅 접속 및 본인인증
 
@@ -105,7 +105,7 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 거래시각·거래금액·입금/출금은 DB에서 조회해 템플릿에 채운다.
 (실제로 보류를 구현하지는 않는다.)
 
-→ 문구: [B.1](customer-chatbot-messages.md#b1-최초-알림-메시지)
+→ 문구: [B.1](messages.md#b1-최초-알림-메시지)
 
 **입금/출금 판정**: `transactions.transaction_amount`의 부호로 판정한다.
 음수면 출금, 양수면 입금이다.
@@ -119,7 +119,7 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 | 상담사 연결 | 대기 안내 메시지 출력 | `URL_SENT` → `HANDOFF_REQUESTED` |
 | 종료 | 거래정지를 어떻게 푸는지 링크 등 구체적인 정보 출력 | `URL_SENT` → `DONE` |
 
-→ 문구: [B.2](customer-chatbot-messages.md#b2-버튼-선택-시-출력-메시지)
+→ 문구: [B.2](messages.md#b2-버튼-선택-시-출력-메시지)
 
 ### 2.4 정보 수집 — 챗봇 질문
 
@@ -144,7 +144,7 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 
 #### 조건 2: 고객응답 평가 LLM
 
-→ 프롬프트: [A.1](customer-chatbot-prompts.md#a1-고객응답-평가-프롬프트)
+→ 프롬프트: [A.1](prompts.md#a1-고객응답-평가-프롬프트)
 
 | 판정 | 동작 | 재질문 안내 문구 | `question_step` |
 | --- | --- | --- | --- |
@@ -168,7 +168,7 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 
 #### 고객 행동 추출
 
-→ 프롬프트: [A.2](customer-chatbot-prompts.md#a2-고객-행동-추출-프롬프트)
+→ 프롬프트: [A.2](prompts.md#a2-고객-행동-추출-프롬프트)
 
 ```json
 {
@@ -178,7 +178,7 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 }
 ```
 
-`type`의 허용값은 프롬프트가 아니라 파이썬 코드로 강제한다([스키마 3.8](customer-chatbot-schema.md#38-appdomain-enum-코드-상수화)).
+`type`의 허용값은 프롬프트가 아니라 파이썬 코드로 강제한다([스키마 3.8](schema.md#38-appdomain-enum-코드-상수화)).
 
 #### 검색 질의 구성
 
@@ -192,7 +192,7 @@ query = f"{CUSTOMER_ACTION_SEARCH_QUERIES[action.type]} {action.evidence}"
 ```
 
 매핑 문구가 검색이 걸리는 기본 신호를 담당하고, `evidence`는 고객의 구체적 상황을
-덧붙여 검색 결과를 보정한다. 매핑은 [스키마 3.8](customer-chatbot-schema.md#38-appdomain-enum-코드-상수화)에 둔다.
+덧붙여 검색 결과를 보정한다. 매핑은 [스키마 3.8](schema.md#38-appdomain-enum-코드-상수화)에 둔다.
 
 #### RAG 단계: 액션별 Retrieve/Augment, Generate는 1회 통합
 
@@ -228,7 +228,7 @@ Generate를 1회로 묶으면 LLM 호출 수가 액션 개수와 무관하게 1�
 0건 판정 기준은 리트리버의 `MAX_DISTANCE = 0.6`을 그대로 쓴다.
 
 **0건은 예외가 아니라 흔한 경우다.** `cs_guide_document_chunks`를 채우는
-[docs_embedding.py](../app/services/rag/docs_embedding.py)의 대상은 `docs/embed_target_pdfs/`의
+[docs_embedding.py](../../app/services/rag/docs_embedding.py)의 대상은 `docs/embed_target_pdfs/`의
 금감원 보도자료 PDF이고, 이는 특정 사건 중심 자료이지 `customer_action` 19종별 대응
 가이드가 아니다. `identity_document_shared`, `remote_control_or_security_permission_granted`처럼
 대응 문서가 없는 액션이 다수 존재한다. 따라서 0건을 "드물게 발생하는 예외"로 보고
@@ -246,11 +246,11 @@ Generate를 1회로 묶으면 LLM 호출 수가 액션 개수와 무관하게 1�
 3. **제외한 액션은 `assemble` 단계에서 고정 문구로 채운다.** 소제목은
    `CUSTOMER_ACTION_DESCRIPTIONS`에서 가져오므로 **고객이 말한 행동은 근거가 있든 없든
    전부 응답 목록에 나타난다.** 답을 찾지 못했다는 사실을 침묵이 아니라 명시적으로 알린다.
-   → 문구: [B.5](customer-chatbot-messages.md#b5-근거를-찾지-못한-액션-안내)
+   → 문구: [B.5](messages.md#b5-근거를-찾지-못한-액션-안내)
 4. **모든 액션이 0건이면** 챗봇이 할 말이 없으므로 그때만
    `agent_chat_sessions.status = HANDOFF_REQUESTED`로 전이하고
    [2.7의 SSE 이벤트](#27-상담사-반환-경로-sse)를 발행한다.
-   → 문구: [B.6](customer-chatbot-messages.md#b6-전체-액션이-0건일-때)
+   → 문구: [B.6](messages.md#b6-전체-액션이-0건일-때)
 
 ```python
 grounded   = [a for a in augmented if a.chunks]
@@ -300,7 +300,7 @@ response = assemble(fragments)
 사기 정황을 분석해서 내부 채점표에 따라 사기 의심 점수를 누적한다.
 [2.5](#25-정보-응답--rag-대응-가이드-4-1)와 마찬가지로 `SUFFICIENT` 판정마다 실행된다.
 
-→ 프롬프트: [A.3](customer-chatbot-prompts.md#a3-사기-정황-추출-프롬프트)
+→ 프롬프트: [A.3](prompts.md#a3-사기-정황-추출-프롬프트)
 
 ```json
 {
@@ -316,7 +316,7 @@ response = assemble(fragments)
 #### 내부 채점표
 
 정황 하나가 여러 유형에 점수를 줄 수 있다. 점수는 유형별로 누적한다.
-20종 전체의 유형별 점수는 [사기 정황 내부 채점표](customer-chatbot-scoring.md)에 있다.
+20종 전체의 유형별 점수는 [사기 정황 내부 채점표](scoring.md)에 있다.
 
 #### 채점 시점과 중복 방지
 
@@ -333,14 +333,14 @@ response = assemble(fragments)
 
 집계 결과는 4개 유형 점수를 전부 `type_scores`에 남기고, 최고점 유형을
 `primary_fraud_type` / `primary_fraud_type_score`에 담는다. 동점이거나 정황이 하나도
-없으면 `primary_fraud_type = NULL`로 두고 `decision_status`로 구분한다([스키마 3.7](customer-chatbot-schema.md#37-fraud_type_score_after_chat--구조-변경)).
+없으면 `primary_fraud_type = NULL`로 두고 `decision_status`로 구분한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)).
 
 ### 2.7 상담사 반환 경로 (SSE)
 
 챗봇이 처리할 수 없어 사람에게 넘겨야 하는 순간 — [2.3](#23-최초-알림-메시지와-버튼)의
 "상담사 연결" 버튼으로 `status`가 `HANDOFF_REQUESTED`로 바뀌는 순간 — 을 담당자가 어떻게
 알아채는지가 필요하다. 또한 `agent_cases`와 `agent_chat_sessions`는 둘 다 `transaction_id`에
-`UNIQUE` 제약만 있을 뿐([app/data/model/agent.py:53-60](../app/data/model/agent.py#L53-L60))
+`UNIQUE` 제약만 있을 뿐([app/data/model/agent.py:53-60](../../app/data/model/agent.py#L53-L60))
 서로를 가리키는 FK가 없어, 담당자 화면이 "이 상담 요청이 어느 조사 사건에 대응하는지"를
 얻으려면 매번 `transaction_id`로 조인해야 한다.
 
@@ -368,7 +368,7 @@ response = assemble(fragments)
 
 - **평가 LLM 실패 시 무한 루프.** 타임아웃/커넥션 오류 시 `question_step`을 증가시키지 않고
   재입력을 요청하므로, LLM이 계속 실패하면 고객이 같은 질문에 갇힌다. 호출당 타임아웃과
-  재시도 상한(`ML_SERVING_MAX_ATTEMPTS` 패턴을 [app/core/config.py](../app/core/config.py)에
+  재시도 상한(`ML_SERVING_MAX_ATTEMPTS` 패턴을 [app/core/config.py](../../app/core/config.py)에
   복제), 상한 소진 시 최종 폴백(권장: `REFUSAL`과 동일하게 다음 질문으로 진행하고
   `verdict_skip_reason = EVALUATOR_FAILED`로 기록)이 필요하다. 이때 `attempt_no`를 소모하는지도
   정해야 한다.
@@ -387,15 +387,15 @@ response = assemble(fragments)
 - **평가 LLM만 JSON 출력을 프롬프트로 요구한다.** "출력은 JSON만 반환하세요"는 강제가
   아니므로 추출 LLM과 마찬가지로 structured output 스키마를 지정해야 한다.
 - **리트리버가 아직 문자열을 돌려준다.**
-  [chatbot_retriever.py:31](../app/services/rag/chatbot_retriever.py#L31)이 0건일 때
+  [chatbot_retriever.py:31](../../app/services/rag/chatbot_retriever.py#L31)이 0건일 때
   `"관련 문서를 찾지 못했습니다."`를 컨텍스트로 반환한다.
   [2.5 검색 결과 0건 처리](#검색-결과-0건-처리)의 1번(구조화된 결과 반환)이 선결 조건이며,
   이것 없이는 2~4번이 동작하지 않는다. 호출부가
-  [customer_chatbot.py](../app/services/chatbot/customer_chatbot.py) 한 곳뿐이라 영향 범위는 좁다.
+  [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳뿐이라 영향 범위는 좁다.
 - **가이드 코퍼스가 `customer_action` 19종을 덮지 못한다.** 0건 처리 로직은 틀린 답을 막을
   뿐 0건 비율을 낮추지 못한다. 효과 순서대로 세 가지 과제가 있다.
   1. `docs/agent_guides/internal_demo/*_customer.md` 4종(사기유형별 **고객용** 대응 가이드)이
-     현재 [guide_indexing.py](../app/services/agent/guide_indexing.py)를 통해 Agent 쪽
+     현재 [guide_indexing.py](../../app/services/agent/guide_indexing.py)를 통해 Agent 쪽
      `documents` / `document_chunks`로만 들어간다. 이를 `cs_guide_documents`에도 적재하면
      가장 적은 노력으로 0건이 크게 줄어든다.
   2. 청킹이 페이지 단위(1페이지 = 1청크)라 청크가 길고 주제가 섞여 있어 액션별 질의와
@@ -414,7 +414,7 @@ response = assemble(fragments)
 - **세션 만료(TTL)가 없다.** 이메일 URL이 영구 유효하다.
 - **FDS 파이프라인과의 결합 방식이 미정이다.** 세션 생성이 `POST /transactions` 동기 경로
   안이면 이메일 발송까지 거래 응답이 기다린다.
-  [fraud_detection_pipeline.py](../app/pipelines/fraud_detection_pipeline.py)는 "룰 실패가
+  [fraud_detection_pipeline.py](../../app/pipelines/fraud_detection_pipeline.py)는 "룰 실패가
   ML 결과 저장을 막지 않는다"는 원칙으로 짜여 있으니, 챗봇 세션 생성 실패도 거래 저장을
   롤백하지 않는다를 같은 방식으로 명시해야 한다. `rule_replay` 재처리 경로가 있으므로
   멱등 규칙(이미 있으면 기존 세션 반환)도 필요하다.
@@ -426,7 +426,7 @@ response = assemble(fragments)
 ### 3.4 스키마·계약
 
 - **`transaction_amount` 부호 규칙이 코드와 어긋난다.** 이 문서는 음수=출금, 양수=입금을
-  전제하지만 [app/dto/ml_prediction.py:69](../app/dto/ml_prediction.py#L69)의
+  전제하지만 [app/dto/ml_prediction.py:69](../../app/dto/ml_prediction.py#L69)의
   `Transaction_Amount: int = Field(gt=0)`가 살아 있어 음수 거래는 `POST /transactions`에서
   422로 걸린다. DB에는 CHECK가 없어 저장 자체는 가능하다. ML 계약을 바꿀지, 방향을 다른
   값에서 파생할지(`source_account.customer_id == transaction.customer_id`면 출금) 정해야 한다. -> ML 계약을 바꾼다 ML 계약의 ge 부분을 수정한다
@@ -452,42 +452,42 @@ response = assemble(fragments)
 
 | 문서 | 담고 있는 것 |
 | --- | --- |
-| [customer-chatbot-prompts.md](customer-chatbot-prompts.md) | LLM 프롬프트 A.1~A.3 |
-| [customer-chatbot-messages.md](customer-chatbot-messages.md) | 고객 안내 문구 B.1~B.6 |
-| [customer-chatbot-scoring.md](customer-chatbot-scoring.md) | 사기 정황 내부 채점표 (20종 × 4유형) |
-| [customer-chatbot-schema.md](customer-chatbot-schema.md) | 테이블·컬럼 정의 3.1~3.10 |
+| [prompts.md](prompts.md) | LLM 프롬프트 A.1~A.3 |
+| [messages.md](messages.md) | 고객 안내 문구 B.1~B.6 |
+| [scoring.md](scoring.md) | 사기 정황 내부 채점표 (20종 × 4유형) |
+| [schema.md](schema.md) | 테이블·컬럼 정의 3.1~3.10 |
 
-### [LLM 프롬프트](customer-chatbot-prompts.md)
+### [LLM 프롬프트](prompts.md)
 
 | 절 | 프롬프트 | 이 PRD의 사용처 |
 | --- | --- | --- |
-| [A.1](customer-chatbot-prompts.md#a1-고객응답-평가-프롬프트) | 고객응답 평가 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
-| [A.2](customer-chatbot-prompts.md#a2-고객-행동-추출-프롬프트) | 고객 행동 추출 (`customer_action` 19종) | [2.5 고객 행동 추출](#고객-행동-추출) |
-| [A.3](customer-chatbot-prompts.md#a3-사기-정황-추출-프롬프트) | 사기 정황 추출 (`fraud_circumstance` 20종) | [2.6](#26-사기-정황-추출과-채점-4-2) |
+| [A.1](prompts.md#a1-고객응답-평가-프롬프트) | 고객응답 평가 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
+| [A.2](prompts.md#a2-고객-행동-추출-프롬프트) | 고객 행동 추출 (`customer_action` 19종) | [2.5 고객 행동 추출](#고객-행동-추출) |
+| [A.3](prompts.md#a3-사기-정황-추출-프롬프트) | 사기 정황 추출 (`fraud_circumstance` 20종) | [2.6](#26-사기-정황-추출과-채점-4-2) |
 
-### [고객 안내 문구](customer-chatbot-messages.md)
+### [고객 안내 문구](messages.md)
 
 | 절 | 문구 | 이 PRD의 사용처 |
 | --- | --- | --- |
-| [B.1](customer-chatbot-messages.md#b1-최초-알림-메시지) | 최초 알림 메시지 | [2.3](#23-최초-알림-메시지와-버튼) |
-| [B.2](customer-chatbot-messages.md#b2-버튼-선택-시-출력-메시지) | 버튼 선택 시 출력 | [2.3](#23-최초-알림-메시지와-버튼) |
-| [B.3](customer-chatbot-messages.md#b3-평가-판정별-안내-문구) | 평가 판정별 안내 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
-| [B.4](customer-chatbot-messages.md#b4-평가-llm-실패-안내-문구) | 평가 LLM 실패 안내 | [2.4 평가 LLM 실패 시 동작](#평가-llm-실패-시-동작) |
-| [B.5](customer-chatbot-messages.md#b5-근거를-찾지-못한-액션-안내) | 근거를 찾지 못한 액션 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
-| [B.6](customer-chatbot-messages.md#b6-전체-액션이-0건일-때) | 전체 액션 0건 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
+| [B.1](messages.md#b1-최초-알림-메시지) | 최초 알림 메시지 | [2.3](#23-최초-알림-메시지와-버튼) |
+| [B.2](messages.md#b2-버튼-선택-시-출력-메시지) | 버튼 선택 시 출력 | [2.3](#23-최초-알림-메시지와-버튼) |
+| [B.3](messages.md#b3-평가-판정별-안내-문구) | 평가 판정별 안내 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
+| [B.4](messages.md#b4-평가-llm-실패-안내-문구) | 평가 LLM 실패 안내 | [2.4 평가 LLM 실패 시 동작](#평가-llm-실패-시-동작) |
+| [B.5](messages.md#b5-근거를-찾지-못한-액션-안내) | 근거를 찾지 못한 액션 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
+| [B.6](messages.md#b6-전체-액션이-0건일-때) | 전체 액션 0건 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
 
-### [DB·스키마](customer-chatbot-schema.md) · [내부 채점표](customer-chatbot-scoring.md)
+### [DB·스키마](schema.md) · [내부 채점표](scoring.md)
 
 | 절 | 내용 | 이 PRD의 사용처 |
 | --- | --- | --- |
-| [3.3](customer-chatbot-schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-sse) |
-| [3.4](customer-chatbot-schema.md#34-agent_chat_sessions--컬럼-추가) | `agent_chat_sessions` 컬럼 + 대화 진행 상태 | [2.1](#21-채팅-세션-생성-및-이메일-전송), [2.4](#24-정보-수집--챗봇-질문) |
-| [3.5](customer-chatbot-schema.md#35-agent_chat_answers--신규) | `agent_chat_answers` | [2.4 조건 1](#조건-1-현재-질문에-대한-재시도-횟수) |
-| [3.6](customer-chatbot-schema.md#36-agent_chat_extractions--신규) | `agent_chat_extractions` | [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |
-| [3.7](customer-chatbot-schema.md#37-fraud_type_score_after_chat--구조-변경) | `fraud_type_score_after_chat` | [2.6](#26-사기-정황-추출과-채점-4-2) |
-| [3.8](customer-chatbot-schema.md#38-appdomain-enum-코드-상수화) | enum 코드 상수화 | [2.5 검색 질의 구성](#검색-질의-구성) |
-| [3.9](customer-chatbot-schema.md#39-customersemail-확보-경로) | `customers.email` 확보 경로 | [2.1 발송 구현과 기본 주소 폴백](#발송-구현과-기본-주소-폴백) |
-| [채점표](customer-chatbot-scoring.md#채점표) | 정황 20종 × 사기유형 4종 점수 | [2.6 내부 채점표](#내부-채점표) |
+| [3.3](schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-sse) |
+| [3.4](schema.md#34-agent_chat_sessions--컬럼-추가) | `agent_chat_sessions` 컬럼 + 대화 진행 상태 | [2.1](#21-채팅-세션-생성-및-이메일-전송), [2.4](#24-정보-수집--챗봇-질문) |
+| [3.5](schema.md#35-agent_chat_answers--신규) | `agent_chat_answers` | [2.4 조건 1](#조건-1-현재-질문에-대한-재시도-횟수) |
+| [3.6](schema.md#36-agent_chat_extractions--신규) | `agent_chat_extractions` | [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |
+| [3.7](schema.md#37-fraud_type_score_after_chat--구조-변경) | `fraud_type_score_after_chat` | [2.6](#26-사기-정황-추출과-채점-4-2) |
+| [3.8](schema.md#38-appdomain-enum-코드-상수화) | enum 코드 상수화 | [2.5 검색 질의 구성](#검색-질의-구성) |
+| [3.9](schema.md#39-customersemail-확보-경로) | `customers.email` 확보 경로 | [2.1 발송 구현과 기본 주소 폴백](#발송-구현과-기본-주소-폴백) |
+| [채점표](scoring.md#채점표) | 정황 20종 × 사기유형 4종 점수 | [2.6 내부 채점표](#내부-채점표) |
 
 챗봇 질문(`question_step` 1~4 이상)은 분기 조건과 붙어 있어야 읽히므로
 [2.4](#24-정보-수집--챗봇-질문)에 그대로 둔다.

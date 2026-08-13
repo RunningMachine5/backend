@@ -1,11 +1,11 @@
 ---
 name: chatbot-feature
-description: Implement or modify the customer-response chatbot — chat sessions, the question flow, customer_action/fraud_circumstance extraction, RAG guide answers, fraud-type scoring, and handoff to a human agent. Use when work touches app/services/{chatbot,rag}/, app/pipelines/customer_chatbot_pipeline.py, app/api/chat.py, the agent_chat_* tables, or docs/customer-chatbot*.md.
+description: Implement or modify the customer-response chatbot — chat sessions, the question flow, customer_action/fraud_circumstance extraction, RAG guide answers, fraud-type scoring, and handoff to a human agent. Use when work touches app/services/{chatbot,rag}/, app/pipelines/customer_chatbot_pipeline.py, app/api/chat.py, the agent_chat_* tables, or docs/customer-chatbot/.
 ---
 
 # 고객 대응 챗봇 기능 구현
 
-설계는 `docs/customer-chatbot*.md` 5개 문서가 유일한 출처다. 이 스킬은 문서에 **없는 것** —
+설계는 `docs/customer-chatbot/` 5개 문서가 유일한 출처다. 이 스킬은 문서에 **없는 것** —
 어디를 봐야 하는지, 코드를 어디에 두는지, 작업 후 무엇을 갱신하는지 — 만 담는다.
 
 ## 1. 어디를 보는가
@@ -14,7 +14,7 @@ description: Implement or modify the customer-response chatbot — chat sessions
 
 | 하려는 작업 | 볼 곳 |
 | --- | --- |
-| **무엇부터 볼지 모를 때** | [docs/customer-chatbot.md](../../../docs/customer-chatbot.md) — PRD 본문. 흐름과 분기 조건만 있다 |
+| **무엇부터 볼지 모를 때** | [docs/customer-chatbot/README.md](../../../docs/customer-chatbot/README.md) — PRD 본문. 흐름과 분기 조건만 있다 |
 | 세션 생성, 이메일 발송, 본인인증 | PRD 2.1 ~ 2.2 |
 | 최초 알림 메시지, 버튼 3종, 상태 전이 | PRD 2.3 |
 | 질문 진행(`question_step`), 재질문 횟수, 평가 LLM 판정 | PRD 2.4 |
@@ -22,10 +22,10 @@ description: Implement or modify the customer-response chatbot — chat sessions
 | 사기 정황 추출, 채점 시점, 중복 방지 | PRD 2.6 |
 | 상담사 연결(SSE) | PRD 2.7 |
 | **아직 안 정해진 것 확인** (중복 제기 금지) | PRD 3. 미해결 문제 |
-| 테이블·컬럼·제약조건·마이그레이션 순서 | [customer-chatbot-schema.md](../../../docs/customer-chatbot-schema.md) |
-| LLM에 보내는 프롬프트 전문, enum 19종/20종 정의 | [customer-chatbot-prompts.md](../../../docs/customer-chatbot-prompts.md) |
-| 고객에게 출력하는 안내 문구 | [customer-chatbot-messages.md](../../../docs/customer-chatbot-messages.md) |
-| 정황 → 사기유형 점수 환산표 | [customer-chatbot-scoring.md](../../../docs/customer-chatbot-scoring.md) |
+| 테이블·컬럼·제약조건·마이그레이션 순서 | [schema.md](../../../docs/customer-chatbot/schema.md) |
+| LLM에 보내는 프롬프트 전문, enum 19종/20종 정의 | [prompts.md](../../../docs/customer-chatbot/prompts.md) |
+| 고객에게 출력하는 안내 문구 | [messages.md](../../../docs/customer-chatbot/messages.md) |
+| 정황 → 사기유형 점수 환산표 | [scoring.md](../../../docs/customer-chatbot/scoring.md) |
 
 문서끼리 상호 링크가 걸려 있으므로, 한 절을 읽다 다른 문서 참조가 나오면 따라간다.
 PRD 맨 아래 **4. 부속 문서 색인**에 A.1~A.3 / B.1~B.6 / 스키마 3.x 전체가 역방향 링크와 함께 있다.
@@ -49,11 +49,11 @@ PRD 맨 아래 **4. 부속 문서 색인**에 A.1~A.3 / B.1~B.6 / 스키마 3.x 
 
 ## 3. 지켜야 할 것
 
-- **프롬프트·문구를 코드에 새로 쓰지 않는다.** `customer-chatbot-prompts.md` /
-  `customer-chatbot-messages.md`의 것을 그대로 옮기고, 없는 문구가 필요하면 문서에 먼저 추가한다.
+- **프롬프트·문구를 코드에 새로 쓰지 않는다.** `prompts.md` /
+  `messages.md`의 것을 그대로 옮기고, 없는 문구가 필요하면 문서에 먼저 추가한다.
 - **enum은 파이썬에서 강제한다.** 스키마 3.8대로 `app/domain/`에 한 소스를 두고, 구조화 출력
   스키마와 저장 직전 검증이 모두 그 상수를 참조한다. 프롬프트에 나열된 것만으로는 강제가 아니다.
-- **채점표와 코드 상수는 한 소스다.** `customer-chatbot-scoring.md`의 표와
+- **채점표와 코드 상수는 한 소스다.** `scoring.md`의 표와
   `FRAUD_CIRCUMSTANCE_SCORES`를 함께 고친다.
 - **커밋/트랜잭션은 파이프라인이 소유한다.** `get_session`은 commit하지 않는다.
 - **테이블을 추가·변경하면** `app/data/model/__init__.py`에서 도달 가능해야 하고
@@ -113,15 +113,16 @@ LLM·외부 API를 실제로 부르지 않는다. CI가 `OPENAI_API_KEY=test-onl
 
 | 무엇이 바뀌었나 | 갱신할 문서 |
 | --- | --- |
-| 흐름·분기·폴백·재시도 값 | `customer-chatbot.md` 2장 |
-| 미뤄둔 문제, 새로 알게 된 제약 | `customer-chatbot.md` 3장 |
-| 테이블·컬럼·상태값·제약조건 | `customer-chatbot-schema.md` |
-| LLM 프롬프트 | `customer-chatbot-prompts.md` |
-| 고객에게 보이는 문구 | `customer-chatbot-messages.md` |
-| 정황별 점수 | `customer-chatbot-scoring.md` + `FRAUD_CIRCUMSTANCE_SCORES` |
-| 절 구성이 바뀜 | `customer-chatbot.md`의 4. 부속 문서 색인 |
+| 흐름·분기·폴백·재시도 값 | `README.md` 2장 |
+| 미뤄둔 문제, 새로 알게 된 제약 | `README.md` 3장 |
+| 테이블·컬럼·상태값·제약조건 | `schema.md` |
+| LLM 프롬프트 | `prompts.md` |
+| 고객에게 보이는 문구 | `messages.md` |
+| 정황별 점수 | `scoring.md` + `FRAUD_CIRCUMSTANCE_SCORES` |
+| 절 구성이 바뀜 | `README.md`의 4. 부속 문서 색인 |
 
-문서 간 상호 링크와 코드 링크(`../app/...`)를 함께 유지한다. 새 절을 추가하면 색인에도 한 줄 넣는다.
+문서 간 상호 링크와 코드 링크(`../../app/...`)를 함께 유지한다.
+새 절을 추가하면 색인에도 한 줄 넣는다.
 
 작업 요약에는 **어느 문서의 어느 절을 갱신했는지** 명시한다. 갱신하지 않았다면
 "설계 변경 없음"이라고 명시적으로 말한다.

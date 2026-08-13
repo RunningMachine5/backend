@@ -1,8 +1,8 @@
 # 고객 대응 챗봇 — DB·스키마
 
-[고객 대응 챗봇 설계 (PRD)](customer-chatbot.md)의 부속 문서다.
+[고객 대응 챗봇 설계 (PRD)](README.md)의 부속 문서다.
 챗봇이 쓰는 테이블·컬럼 정의와 마이그레이션 적용 순서를 담는다.
-각 값을 언제 쓰는지는 PRD의 [2. 작동 시나리오](customer-chatbot.md#2-작동-시나리오)에 있다.
+각 값을 언제 쓰는지는 PRD의 [2. 작동 시나리오](README.md#2-작동-시나리오)에 있다.
 
 | 절 | 내용 |
 | --- | --- |
@@ -18,13 +18,13 @@
 | [3.10](#310-마이그레이션-적용-순서) | 마이그레이션 적용 순서 |
 
 미해결로 남은 스키마·계약 문제는 PRD
-[3.4 스키마·계약](customer-chatbot.md#34-스키마계약)에 모여 있다.
+[3.4 스키마·계약](README.md#34-스키마계약)에 모여 있다.
 
 ---
 
 ### 3.1 사기 유형
 
-[app/domain/fraud_type_codes.py](../app/domain/fraud_type_codes.py)의 기존 정의를 그대로 쓴다.
+[app/domain/fraud_type_codes.py](../../app/domain/fraud_type_codes.py)의 기존 정의를 그대로 쓴다.
 
 ```python
 FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
@@ -61,7 +61,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 별도의 "생성됨" 상태는 두지 않는다. 세션 생성 시 기본값은 `URL_SENT`다.
 
 `FAILED`로 분기하는 로직은 아직 없다. 고객 이메일이 없는 경우는
-[2.1의 기본 주소 폴백](customer-chatbot.md#발송-구현과-기본-주소-폴백)으로 처리되므로 실패가 아니다.
+[2.1의 기본 주소 폴백](README.md#발송-구현과-기본-주소-폴백)으로 처리되므로 실패가 아니다.
 실패 분기가 정해지면 사유를 남길 컬럼(`agent_cases.failure_reason` 패턴)을 함께 추가한다.
 
 ### 3.4 `agent_chat_sessions` — 컬럼 추가
@@ -90,7 +90,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
   기록되므로, 유실되는 것은 "지금 어느 노드에서 무엇을 기다리는지"뿐이다. 이미 받은
   고객 답변과 판정, 추출 결과는 남는다.
 - `question_step`은 `InMemorySaver`의 사본이 아니라 운영 조회용 값이다. 턴이 끝날 때 갱신한다.
-- 다중 인스턴스 배포도 고려하지 않는다([2.7의 SSE](customer-chatbot.md#27-상담사-반환-경로-sse)와 같은 전제다).
+- 다중 인스턴스 배포도 고려하지 않는다([2.7의 SSE](README.md#27-상담사-반환-경로-sse)와 같은 전제다).
 
 ### 3.5 `agent_chat_answers` — 신규
 
@@ -177,7 +177,7 @@ CHECK 없이 코드로 관리하는 것과 같은 선택이다.
 
 ### 3.7 `fraud_type_score_after_chat` — 구조 변경
 
-현재 대표 유형 하나만 저장하는 구조([app/data/model/agent.py:292-316](../app/data/model/agent.py#L292-L316))를
+현재 대표 유형 하나만 저장하는 구조([app/data/model/agent.py:292-316](../../app/data/model/agent.py#L292-L316))를
 유형별 점수를 전부 남기는 구조로 바꾼다. `fraud_type_score_results.type_scores`가
 `dict[str, float]`로 전부 남기는 것과 대칭이 된다.
 
@@ -196,7 +196,7 @@ CHECK 없이 코드로 관리하는 것과 같은 선택이다.
 `decision_status`로 표현한다.
 
 **중복 갱신 방지**: `transaction_id`가 PK이므로 거래당 1행이다. 채점은
-[2.6](customer-chatbot.md#채점-시점과-중복-방지)대로 상담 종료 시 한 번만 수행하고, 이미 행이 있으면
+[2.6](README.md#채점-시점과-중복-방지)대로 상담 종료 시 한 번만 수행하고, 이미 행이 있으면
 갱신하지 않는다(`ON CONFLICT DO NOTHING`). 재상담이 생기면 그때 정책을 다시 정한다.
 
 ### 3.8 `app/domain/` enum 코드 상수화
@@ -223,7 +223,7 @@ app/domain/fraud_circumstance_codes.py
     FINAL_FRAUD_CIRCUMSTANCE_CODES = frozenset(...)
 ```
 
-`FRAUD_CIRCUMSTANCE_SCORES`가 [내부 채점표](customer-chatbot-scoring.md#채점표)를 그대로 담는다.
+`FRAUD_CIRCUMSTANCE_SCORES`가 [내부 채점표](scoring.md#채점표)를 그대로 담는다.
 정황 하나가 여러 유형에 점수를 주므로 `Mapping[정황코드, Mapping[사기유형코드, 점수]]`
 구조이며, 이 안에 정황 → 사기유형 관계가 포함되어 별도 매핑이 필요 없다.
 검색 질의 매핑 예:
@@ -252,15 +252,15 @@ CUSTOMER_ACTION_SEARCH_QUERIES: Mapping[str, str] = {
 현재 코드에서 이 값은 **어떤 경로로도 채워지지 않는다.**
 
 - ML 54개 입력 계약에 이메일 컬럼이 없고,
-  `build_customer_fields`([ml_feature_assembler.py:75-84](../app/services/features/ml_feature_assembler.py#L75-L84))도
+  `build_customer_fields`([ml_feature_assembler.py:75-84](../../app/services/features/ml_feature_assembler.py#L75-L84))도
   `birthyear` / `gender` / `registration_datetime` / `credit_rating` / `loan_type`만 뽑는다.
 - 마이그레이션 `b21f6a97c4d1`이 "Allow contacts omitted by the transaction CSV contract"라는
   이유로 `email` / `phone_number`를 nullable로 바꿨다.
-- `Customer.email`에 값을 쓰는 곳은 [app/data/fake_data.py](../app/data/fake_data.py)뿐이고,
+- `Customer.email`에 값을 쓰는 곳은 [app/data/fake_data.py](../../app/data/fake_data.py)뿐이고,
   `test-data-injection/data/transactions_v5_1000.csv`에도 이메일 컬럼이 없다.
 
 따라서 `POST /transactions`로 만들어지는 고객은 **예외 없이 `email = NULL`** 이다.
-[2.1의 기본 주소 폴백](customer-chatbot.md#발송-구현과-기본-주소-폴백)이 있어 챗봇이 멈추지는 않지만, 그대로 두면
+[2.1의 기본 주소 폴백](README.md#발송-구현과-기본-주소-폴백)이 있어 챗봇이 멈추지는 않지만, 그대로 두면
 **모든 안내 메일이 실제 고객이 아니라 `abcd@kosa.com` 한 곳으로만 간다.** 폴백은 데모가
 돌아가게 하는 임시 조치일 뿐이므로 실제 주소가 들어올 경로가 따로 필요하다.
 
@@ -297,9 +297,9 @@ customer_email: str | None = Field(
 
 1. `app/domain/customer_action_codes.py`, `app/domain/fraud_circumstance_codes.py` —
    나머지가 전부 여기 의존한다.
-2. [app/data/model/agent.py](../app/data/model/agent.py)에 `AgentChatAnswer`,
+2. [app/data/model/agent.py](../../app/data/model/agent.py)에 `AgentChatAnswer`,
    `AgentChatExtraction` 추가 + `AgentChatSession` / `FraudTypeScoreAfterChat` 수정.
-3. **[app/data/model/\_\_init\_\_.py](../app/data/model/__init__.py)에 새 모델 import 추가.**
+3. **[app/data/model/\_\_init\_\_.py](../../app/data/model/__init__.py)에 새 모델 import 추가.**
    빠뜨리면 autogenerate가 `DROP TABLE`을 낸다.
 4. `uv run --env-file .env alembic revision --autogenerate` →
    부분 유니크 인덱스(`WHERE is_adopted`)는 autogenerate가 잡지 못하므로 손으로 넣는다.

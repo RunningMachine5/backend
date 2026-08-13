@@ -1,11 +1,11 @@
 # 고객 대응 챗봇 — LLM 프롬프트
 
-[고객 대응 챗봇 설계 (PRD)](customer-chatbot.md)의 부속 문서다.
+[고객 대응 챗봇 설계 (PRD)](README.md)의 부속 문서다.
 챗봇이 LLM에 보내는 프롬프트 전문을 모아둔다.
-흐름과 분기 조건은 PRD의 [2. 작동 시나리오](customer-chatbot.md#2-작동-시나리오)에 있다.
+흐름과 분기 조건은 PRD의 [2. 작동 시나리오](README.md#2-작동-시나리오)에 있다.
 
 고객에게 출력하는 안내 문구는 이 문서가 아니라
-[고객 안내 문구](customer-chatbot-messages.md)에 있다.
+[고객 안내 문구](messages.md)에 있다.
 
 | 절 | 프롬프트 | 사용처 |
 | --- | --- | --- |
@@ -14,13 +14,13 @@
 | [A.3](#a3-사기-정황-추출-프롬프트) | 사기 정황 추출 | `fraud_circumstance` 20종 |
 
 > `type` 필드의 허용값은 프롬프트가 아니라 파이썬 코드로 강제한다.
-> PRD [DB·스키마 3.8](customer-chatbot-schema.md#38-appdomain-enum-코드-상수화)를 따른다.
+> PRD [DB·스키마 3.8](schema.md#38-appdomain-enum-코드-상수화)를 따른다.
 
 ---
 
 ### A.1 고객응답 평가 프롬프트
 
-사용처: [2.4 조건 2](customer-chatbot.md#조건-2-고객응답-평가-llm)
+사용처: [2.4 조건 2](README.md#조건-2-고객응답-평가-llm)
 
 ```text
 QUALITY_CHECK_PROMPT = """
@@ -54,7 +54,7 @@ QUALITY_CHECK_PROMPT = """
 
 ### A.2 고객 행동 추출 프롬프트
 
-사용처: [2.5 고객 행동 추출](customer-chatbot.md#고객-행동-추출) · `customer_action` 19종
+사용처: [2.5 고객 행동 추출](README.md#고객-행동-추출) · `customer_action` 19종
 
 ```text
 당신은 금융 이상거래 상담에서 고객이 실제로 수행한 행동을 추출하는 분류기입니다.
@@ -151,7 +151,7 @@ crypto_purchased_or_transferred
 
 ### A.3 사기 정황 추출 프롬프트
 
-사용처: [2.6 사기 정황 추출과 채점](customer-chatbot.md#26-사기-정황-추출과-채점-4-2) · `fraud_circumstance` 20종
+사용처: [2.6 사기 정황 추출과 채점](README.md#26-사기-정황-추출과-채점-4-2) · `fraud_circumstance` 20종
 
 ```text
 당신은 금융 이상거래 상담에서 고객 답변에 나타난 사기 식별 정황을 추출하는 분류기입니다.
