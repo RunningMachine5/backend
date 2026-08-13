@@ -48,14 +48,14 @@ class MLView(BaseModel):
 # 유사 사례 결과를 담는 DTO
 class SimilarCaseView(BaseModel):
     similar_case_id: str
-    similarity_rank: int = Field(ge=1, le=3) # 이런 값도 있나? -> 없으면 뺄 것
+    similarity_rank: int = Field(ge=1, le=3) # 유사한 사례 상위 3개 보여준다는 뜻
     similarity_score: float = Field(ge=0, le=1)
     similarity_reason: str
 
 # 덕현님 에이전트가 반환하는 결과를 담는 DTO
 class CaseAgentView(BaseModel):
     execution_status: str # 실행 상태
-    failure_reason: str | None = None # 뭐에 실패한 거임?
+    failure_reason: str | None = None # 에이전트 실행 실패 이유
     risk_score: int | None = Field(default=None, ge=0, le=100) # 위험 점수
     risk_grade: str | None = None # 위험 등급
 
@@ -73,16 +73,16 @@ class CaseAgentView(BaseModel):
     created_at: str | None = None
     completed_at: str | None = None
 
-# 채팅 부분(변경될 수도 있음)
+# 채팅 부분(이거 거의 그대로 감)
 class ChatMessageView(BaseModel):
     message_id: str
-    sender_type: str # 왜 이런 식으로 저장하지?
+    sender_type: str # 채팅 메시지를 보낸 주체
     message_text: str
     sent_at: str
 class ChatView(BaseModel):
     chat_session_id: str | None = None
-    session_status: str | None = None # 이게 뭐임
-    started_at: str | None = None
+    session_status: str | None = None # 
+    started_at: str | None = None 
     closed_at: str | None = None
     messages: list[ChatMessageView] = Field(default_factory=list)
 
