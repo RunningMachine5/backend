@@ -301,8 +301,11 @@ Table agent_chat_sessions {
   status varchar(32) [not null, default: "URL_SENT", note: "CHECK IN ('URL_SENT','IN_PROGRESS','HANDOFF_REQUESTED','DONE','FAILED')"]
   last_message_id bigint [ref: > agent_chat_messages.message_id, note: "순환 FK, use_alter, ON DELETE SET NULL"]
   is_older boolean [not null, default: false]
-  top_fraud_types jsonb [note: "상위 2개 사기유형 코드(점수 내림차순)"]
+  question_step integer [not null, default: 0]
+  email_sent_at timestamptz
+  notified_email varchar(255)
   created_at timestamptz [not null]
+  completed_at timestamptz
 
   indexes {
     status
@@ -321,9 +324,55 @@ Table agent_chat_messages {
   }
 }
 
+Table agent_chat_answers {
+  answer_id bigint [pk, increment]
+  chat_session_id varchar(64) [not null, ref: > agent_chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
+  question_step integer [not null]
+  attempt_no integer [not null, note: "CHECK BETWEEN 1 AND 3"]
+  message_id bigint [not null, unique, ref: > agent_chat_messages.message_id, note: "ON DELETE CASCADE"]
+  quality_verdict varchar(16)
+  verdict_skip_reason varchar(24)
+  is_adopted boolean [not null, default: false]
+  created_at timestamptz [not null]
+
+  indexes {
+    (chat_session_id, question_step)
+    (chat_session_id, question_step, attempt_no) [unique]
+    (chat_session_id, question_step) [unique, note: "WHERE is_adopted"]
+  }
+}
+
+Table agent_chat_customer_actions {
+  action_id bigint [pk, increment]
+  chat_session_id varchar(64) [not null, ref: > agent_chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
+  action_code varchar(64) [not null]
+  evidence text [not null]
+  evidence_verified boolean [not null]
+  source_answer_id bigint [ref: > agent_chat_answers.answer_id, note: "ON DELETE SET NULL"]
+  extracted_at timestamptz [not null]
+
+  indexes {
+    (chat_session_id, action_code) [unique]
+  }
+}
+
+Table agent_chat_fraud_circumstances {
+  circumstance_id bigint [pk, increment]
+  chat_session_id varchar(64) [not null, ref: > agent_chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
+  circumstance_code varchar(64) [not null]
+  evidence text [not null]
+  evidence_verified boolean [not null]
+  source_answer_id bigint [ref: > agent_chat_answers.answer_id, note: "ON DELETE SET NULL"]
+  extracted_at timestamptz [not null]
+
+  indexes {
+    (chat_session_id, circumstance_code) [unique]
+  }
+}
+
 Table fraud_type_score_after_chat {
   transaction_id varchar(64) [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
-  primary_fraud_type varchar(64)
-  primary_fraud_type_score float
+  chat_session_id varchar(64) [not null, ref: > agent_chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
+  type_scores jsonb [not null, default: "{}"]
   scored_at timestamptz [not null]
 }

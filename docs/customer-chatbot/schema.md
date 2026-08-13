@@ -11,7 +11,7 @@
 | [3.3](#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 |
 | [3.4](#34-agent_chat_sessions--컬럼-추가) | `agent_chat_sessions` 컬럼 추가 + 대화 진행 상태 |
 | [3.5](#35-agent_chat_answers--신규) | `agent_chat_answers` 신규 |
-| [3.6](#36-agent_chat_extractions--신규) | `agent_chat_extractions` 신규 |
+| [3.6](#36-추출-결과-테이블--신규) | 고객 행동·사기 정황 추출 테이블 신규 |
 | [3.7](#37-fraud_type_score_after_chat--구조-변경) | `fraud_type_score_after_chat` 구조 변경 |
 | [3.8](#38-appdomain-enum-코드-상수화) | `app/domain/` enum 코드 상수화 |
 | [3.9](#39-customersemail-확보-경로) | `customers.email` 확보 경로 |
@@ -42,7 +42,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 | 거래 원장 | `transactions` | 기존, 변경 없음 |
 | 챗봇 세션·메시지 | `agent_chat_sessions`, `agent_chat_messages` | 기존, 세션에 컬럼 추가 |
 | 질문·시도·판정 이력 | `agent_chat_answers` | **신규** |
-| 추출 결과 | `agent_chat_extractions` | **신규** |
+| 추출 결과 | `agent_chat_customer_actions`, `agent_chat_fraud_circumstances` | **신규** |
 | 채팅 후 사기유형 점수 | `fraud_type_score_after_chat` | 기존, 구조 변경 |
 | 유저 대응가이드 임베딩 | `cs_guide_documents`, `cs_guide_document_chunks` | 기존, 변경 없음 |
 
@@ -142,37 +142,31 @@ CREATE UNIQUE INDEX uq_agent_chat_answers_adopted
 `verdict_skip_reason`이 없으면 "재시도 초과로 평가 없이 pass"와 "평가 LLM 장애"가 똑같이
 `NULL`로 보여 구분할 수 없다. 로그는 지워지므로 컬럼으로 남긴다.
 
-### 3.6 `agent_chat_extractions` — 신규
+### 3.6 추출 결과 테이블 — 신규
 
-`customer_action`과 `fraud_circumstance`는 형태가 `{type, evidence}`로 동일하므로
-`kind`로 구분하는 한 테이블에 담는다.
+고객 행동은 RAG 검색에, 사기 정황은 점수 집계에 사용되므로 별도 테이블에 저장한다.
+두 테이블은 `kind` 구분자 없이 각 도메인의 코드 컬럼을 명시적으로 가진다.
+
+| 테이블 | PK | 코드 컬럼 | 세션별 중복 방지 |
+| --- | --- | --- | --- |
+| `agent_chat_customer_actions` | `action_id BIGSERIAL` | `action_code varchar(64)` | `UNIQUE (chat_session_id, action_code)` |
+| `agent_chat_fraud_circumstances` | `circumstance_id BIGSERIAL` | `circumstance_code varchar(64)` | `UNIQUE (chat_session_id, circumstance_code)` |
+
+두 테이블의 공통 컬럼은 다음과 같다.
 
 | 컬럼 | 타입 | 설명 |
 | --- | --- | --- |
-| `extraction_id` | `BIGSERIAL PK` | |
 | `chat_session_id` | `varchar(64)` FK → `agent_chat_sessions.chat_session_id`, `ON DELETE CASCADE` | |
-| `kind` | `varchar(24) NOT NULL` | `CUSTOMER_ACTION` / `FRAUD_CIRCUMSTANCE` |
-| `code` | `varchar(64) NOT NULL` | enum 값 |
 | `evidence` | `text NOT NULL` | |
 | `evidence_verified` | `boolean NOT NULL` | 고객 답변 원문 대조 통과 여부 |
 | `source_answer_id` | `bigint NULL` FK → `agent_chat_answers.answer_id`, `ON DELETE SET NULL` | 어느 턴의 답변에서 나왔는지 |
 | `extracted_at` | `timestamptz NOT NULL` | |
 
-```sql
-CHECK (kind IN ('CUSTOMER_ACTION', 'FRAUD_CIRCUMSTANCE'))
-
--- 세션당 enum 1행. 매 턴 추출 구조에서 중복 가산을 막는 1차 방어선
-UNIQUE (chat_session_id, kind, code)
-
-CREATE INDEX ix_agent_chat_extractions_session_kind
-    ON agent_chat_extractions (chat_session_id, kind);
-```
-
-`code`에 39종 CHECK를 걸지 않는다. enum 하나 추가할 때마다 마이그레이션이 필요하고,
-이 값들은 프롬프트 튜닝과 함께 자주 바뀐다. [3.8](#38-appdomain-enum-코드-상수화)의
-파이썬 화이트리스트를 1차 방어선으로 두고(구조화 출력 스키마 + 저장 직전 검증),
-DB는 `kind`만 CHECK한다. `fraud_type_score_results.type_scores`가 유형 코드를 JSON으로 담고
-CHECK 없이 코드로 관리하는 것과 같은 선택이다.
+코드 컬럼에 19종·20종 CHECK를 걸지 않는다. enum 하나 추가할 때마다 마이그레이션이
+필요하고, 이 값들은 프롬프트 튜닝과 함께 자주 바뀐다. [3.8](#38-appdomain-enum-코드-상수화)의
+파이썬 화이트리스트를 1차 방어선으로 둔다(구조화 출력 스키마 + 저장 직전 검증).
+`fraud_type_score_results.type_scores`가 유형 코드를 JSON으로 담고 CHECK 없이 코드로
+관리하는 것과 같은 선택이다.
 
 `evidence_verified`는 프롬프트의 "evidence는 사용자 답변에 실제로 존재하는 연속된 원문
 문자열이어야 합니다" 규칙이 지켜졌는지를 저장 직전에 대조한 결과다. 이 규칙은 LLM에 대한
@@ -180,23 +174,19 @@ CHECK 없이 코드로 관리하는 것과 같은 선택이다.
 
 ### 3.7 `fraud_type_score_after_chat` — 구조 변경
 
-현재 대표 유형 하나만 저장하는 구조([app/data/model/chatbot.py](../../app/data/model/chatbot.py))를
 유형별 점수를 전부 남기는 구조로 바꾼다. `fraud_type_score_results.type_scores`가
-`dict[str, float]`로 전부 남기는 것과 대칭이 된다.
+`dict[str, float]`로 전부 남기는 것과 대칭이 된다. 대표 유형과 판정 상태는 중복 저장하지
+않고 `type_scores`에서 계산한다.
 
 | 컬럼 | 변경 | 설명 |
 | --- | --- | --- |
 | `transaction_id` | 유지 | PK |
 | `chat_session_id` | **추가** `varchar(64)` FK, `ON DELETE CASCADE` | 어느 세션의 결과인지 |
 | `type_scores` | **추가** `jsonb NOT NULL DEFAULT '{}'` | 4개 유형별 누적 점수 전부 |
-| `primary_fraud_type` | 유지 (nullable) | CHECK `IN` 4종 `OR NULL` |
-| `primary_fraud_type_score` | 유지 | 최고점 유형의 점수 |
-| `decision_status` | **추가** `varchar(16) NOT NULL` | `DECIDED` / `DRAW` / `NO_EVIDENCE` |
 | `scored_at` | 유지 | |
 
-동점이나 정황 없음을 `primary_fraud_type`에 `"DRAW"` 같은 문자열로 넣으면
-`FINAL_FRAUD_TYPE_CODES`와 대조하는 코드가 전부 깨진다. `primary_fraud_type = NULL` +
-`decision_status`로 표현한다.
+최고점이 0이면 정황 없음, 0보다 큰 최고점을 여러 유형이 공유하면 동점으로 판정한다.
+그 외에는 최고점을 가진 하나의 유형을 대표 유형으로 계산한다.
 
 **중복 갱신 방지**: `transaction_id`가 PK이므로 거래당 1행이다. 채점은
 [2.6](README.md#채점-시점과-중복-방지)대로 상담 종료 시 한 번만 수행하고, 이미 행이 있으면
@@ -316,7 +306,8 @@ customer_email: str | None = Field(
 1. `app/domain/customer_action_codes.py`, `app/domain/fraud_circumstance_codes.py` —
    나머지가 전부 여기 의존한다.
 2. [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 `AgentChatAnswer`,
-   `AgentChatExtraction` 추가 + `AgentChatSession` / `FraudTypeScoreAfterChat` 수정.
+   `AgentChatCustomerAction`, `AgentChatFraudCircumstance` 추가 +
+   `AgentChatSession` / `FraudTypeScoreAfterChat` 수정.
 3. **[app/data/model/\_\_init\_\_.py](../../app/data/model/__init__.py)에 새 모델 import 추가.**
    빠뜨리면 autogenerate가 `DROP TABLE`을 낸다.
 4. `uv run --env-file .env alembic revision --autogenerate` →

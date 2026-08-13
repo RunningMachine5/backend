@@ -324,16 +324,16 @@ response = assemble(fragments)
 매 턴 추출하는 구조이므로 서로 다른 턴에서 같은 enum이 다시 나올 수 있고, 그대로 더하면
 같은 정황이 중복 가산된다. 이를 다음 두 단계로 막는다.
 
-1. 추출 결과는 `agent_chat_extractions`에 저장하되
-   `UNIQUE (chat_session_id, kind, code)`로 세션당 enum 1행을 강제한다.
+1. 추출 결과는 종류에 따라 `agent_chat_customer_actions` 또는
+   `agent_chat_fraud_circumstances`에 저장한다. 각 테이블의
+   `UNIQUE (chat_session_id, *_code)`로 세션당 enum 1행을 강제한다.
    같은 enum이 다시 나오면 저장하지 않는다(`ON CONFLICT DO NOTHING`).
-2. 점수 계산은 매 턴 더하지 않고, **상담 종료 시점에 `agent_chat_extractions`의
-   `FRAUD_CIRCUMSTANCE` 행 전체를 읽어 한 번만 집계**해
+2. 점수 계산은 매 턴 더하지 않고, **상담 종료 시점에
+   `agent_chat_fraud_circumstances` 행 전체를 읽어 한 번만 집계**해
    `fraud_type_score_after_chat`에 기록한다.
 
-집계 결과는 4개 유형 점수를 전부 `type_scores`에 남기고, 최고점 유형을
-`primary_fraud_type` / `primary_fraud_type_score`에 담는다. 동점이거나 정황이 하나도
-없으면 `primary_fraud_type = NULL`로 두고 `decision_status`로 구분한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)).
+집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
+상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)).
 
 ### 2.7 상담사 반환 경로 (SSE)
 
@@ -481,7 +481,7 @@ response = assemble(fragments)
 | [3.3](schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-sse) |
 | [3.4](schema.md#34-agent_chat_sessions--컬럼-추가) | `agent_chat_sessions` 컬럼 + 대화 진행 상태 | [2.1](#21-채팅-세션-생성-및-이메일-전송), [2.4](#24-정보-수집--챗봇-질문) |
 | [3.5](schema.md#35-agent_chat_answers--신규) | `agent_chat_answers` | [2.4 조건 1](#조건-1-현재-질문에-대한-재시도-횟수) |
-| [3.6](schema.md#36-agent_chat_extractions--신규) | `agent_chat_extractions` | [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |
+| [3.6](schema.md#36-추출-결과-테이블--신규) | 고객 행동·사기 정황 추출 테이블 | [2.5 고객 행동 추출](#고객-행동-추출), [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |
 | [3.7](schema.md#37-fraud_type_score_after_chat--구조-변경) | `fraud_type_score_after_chat` | [2.6](#26-사기-정황-추출과-채점-4-2) |
 | [3.8](schema.md#38-appdomain-enum-코드-상수화) | enum 코드 상수화 | [2.5 검색 질의 구성](#검색-질의-구성) |
 | [3.9](schema.md#39-customersemail-확보-경로) | `customers.email` 확보 경로 | [2.1 발송 구현과 기본 주소 폴백](#발송-구현과-기본-주소-폴백) |
