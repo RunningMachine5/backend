@@ -1,36 +1,35 @@
-# Backend 로컬 테스트 데이터 주입 가이드
+# Backend 로컬 raw60 E2E 데이터 주입 가이드
 
-이 문서는 GCP와 원격 MLflow를 사용하지 않고 Git에 포함된 운영 v5 모델로 다음 흐름을
-확인하는 절차다.
-
-이 폴더 하나에 실행 스크립트와 1,000건 샘플 CSV가 함께 들어 있다.
+GCP와 원격 MLflow 없이 ML 담당자의 `train1.csv` 계약과 전달 모델을 사용해 다음 흐름을
+확인하는 절차다. 실행 스크립트와 비식별화한 raw64 샘플 1,000건을 함께 제공한다.
 
 ```text
 backend/test-data-injection/
 ├─ README.md
 ├─ inject_transactions.ps1
 └─ data/
-   └─ transactions_v5_1000.csv
+   └─ transactions_model80_1000.csv
 ```
 
 ```text
-transactions.csv 일부 행
+raw64 CSV 행
 → Backend POST /transactions
-→ 고객·계좌·거래·파생 피처 네 테이블에 54개 입력 정규화 저장
-→ Git 포함 fdshield-fraud-detector v5 /predict
+→ raw59를 고객·계좌·거래·파생 피처 테이블에 정규화 저장
+→ ML Serving POST /ml/predict (flat raw60)
+→ ML 공용 전처리 raw59 → model80
 → 사기 판정·확률·모델 이름·버전·지연시간 저장
-→ 사기 거래는 ACTIVE Rule Set으로 4개 유형 점수 계산
-→ 확정 라벨과 함께 PostgreSQL 저장
+→ 사기 판정 거래는 ACTIVE Rule Set으로 4개 유형 점수 계산
+→ CSV의 is_fraud를 확정 라벨로 저장
 ```
 
 ## 1. 준비 사항
 
 - Windows PowerShell
-- Docker Desktop 실행
-- `backend/dev`, `ml/main` 최신 코드
+- Docker Desktop
+- 같은 상위 폴더에 있는 최신 `backend`, `ml` 저장소
 - 포트 `5432`, `8000`, `8001` 사용 가능
 
-아래 명령은 두 저장소가 다음처럼 같은 상위 폴더에 있다고 가정한다.
+명령은 두 저장소의 상위 `RunningMachine5` 폴더에서 실행한다.
 
 ```text
 RunningMachine5/
@@ -38,36 +37,24 @@ RunningMachine5/
 └─ ml/
 ```
 
-먼저 PowerShell에서 `RunningMachine5` 폴더로 이동한다. 이후 명령은 모두 이 위치를
-기준으로 실행한다.
-
-실제 비밀값이 든 `.env`는 Git에 커밋하지 않는다.
-
-Backend 환경파일이 없을 때만 예시를 복사한다.
+환경 파일이 없을 때만 예시를 복사한다.
 
 ```powershell
 if (-not (Test-Path -LiteralPath '.\backend\.env')) {
     Copy-Item -LiteralPath '.\backend\.env.example' -Destination '.\backend\.env'
 }
-```
-
-`backend/.env`에 로컬 공용 테스트 토큰이 있어야 한다.
-
-```dotenv
-MLOPS_ADMIN_TOKEN=local-dev-mlops-token
-```
-
-이 값은 로컬 개발용이다. 운영 토큰으로 사용하거나 Git에 넣으면 안 된다.
-
-ML 환경파일이 없을 때만 예시를 복사한다.
-
-```powershell
 if (-not (Test-Path -LiteralPath '.\ml\.env')) {
     Copy-Item -LiteralPath '.\ml\.env.example' -Destination '.\ml\.env'
 }
 ```
 
-## 2. 고정 운영 v5 ML Serving 재빌드·기동
+`backend/.env`의 로컬 관리자 토큰을 확인한다. 실제 운영 토큰은 Git에 넣지 않는다.
+
+```dotenv
+MLOPS_ADMIN_TOKEN=local-dev-mlops-token
+```
+
+## 2. model80 ML Serving 재빌드·기동
 
 ```powershell
 Push-Location '.\ml'
@@ -75,40 +62,34 @@ docker compose --env-file .env -f compose.serving.yml up -d --build --wait
 Pop-Location
 ```
 
-ML 저장소에는 약 1.3MB의 `fdshield-fraud-detector` v5 native XGBoost 모델이 포함돼 있다.
-기본 `ML_PREDICTOR_MODE=local`은 이 모델을 사용하므로 MLflow 주소·계정·비밀번호가
-필요하지 않다. 사용자 실행용 Stub 모드는 지원하지 않는다.
-
-확인:
+기본 로컬 모드는 `models/fdshield-fraud-detector-v2`의 전달 XGBoost 모델을 사용하므로
+MLflow 주소나 계정이 필요하지 않다. 프로세스 상태는 다음 주소에서 확인한다.
 
 ```powershell
 Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health'
+Invoke-RestMethod -Uri 'http://127.0.0.1:8001/ready'
 ```
 
-정상이면 `status=ok`가 나온다. Health는 프로세스 상태만 확인하며, 실제 모델
-추론과 버전은 4절의 주입 스크립트가 별도로 preflight 검증한다.
+실제 모델명·버전·raw60 추론 계약은 주입 스크립트가 DB를 변경하기 전에 별도로
+검증한다.
 
 ## 3. Backend·DB 재빌드 및 migration
 
 ```powershell
 Push-Location '.\backend'
 
-# DB 볼륨은 유지하고 컨테이너만 기동한다.
 docker compose --env-file .env -f docker-compose.yml up -d db
 
-# 최신 Backend 이미지를 만든다.
 docker compose --env-file .env `
   -f docker-compose.yml `
   -f docker-compose.local.yml `
   build backend
 
-# 기존 로컬 DB에 미적용 migration만 순서대로 적용한다.
 docker compose --env-file .env `
   -f docker-compose.yml `
   -f docker-compose.local.yml `
   run --rm --no-deps backend alembic upgrade head
 
-# 새 이미지로 Backend 컨테이너를 교체하고 health를 기다린다.
 docker compose --env-file .env `
   -f docker-compose.yml `
   -f docker-compose.local.yml `
@@ -117,104 +98,92 @@ docker compose --env-file .env `
 Pop-Location
 ```
 
-확인:
-
 ```powershell
 Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health'
 ```
 
-## 4. transactions.csv 1,000건 주입
+기존 로컬 테스트 데이터를 비우려면 별도로 DB 볼륨을 초기화해야 한다. 아래 7절의
+일반 종료 명령은 볼륨을 지우지 않는다.
 
-`RunningMachine5`에서 다음 명령 하나만 실행한다.
+## 4. raw64 샘플 1,000건 주입
 
 ```powershell
 .\backend\test-data-injection\inject_transactions.ps1
 ```
 
-스크립트는 어떤 거래나 룰셋을 DB에 쓰기 전에 sibling ML 저장소의
-`ml/examples/local-model-predict-request.json`을 `POST /predict`로 직접 전송한다.
-응답의 모델이 `fdshield-fraud-detector:5`이고 실제 XGBoost contribution이
-91개인 경우에만 계속한다. smoke payload 파일이 없거나 응답 계약이 다르면
-DB를 변경하지 않고 즉시 실패한다.
+스크립트는 거래나 룰셋을 쓰기 전에 다음 계약을 검사한다.
 
-스크립트는 함께 커밋된 `backend/test-data-injection/data/transactions_v5_1000.csv`를
-사용한다. 이 파일은 생성형 원본 `transactions.csv`에서 다음 기준으로 미리 추출했다.
+- ML 예제 JSON이 `transaction_id + raw59`인 flat raw60인가
+- `POST /ml/predict`가 성공하는가
+- 모델이 기본값 `fdshield-fraud-detector-v2:1`인가
+- 공식 응답의 `predict_result`, `predict_proba`, 56개 SHAP 그룹이 유효한가
+- 주입 CSV가 정확한 raw64 헤더와 1,000개 행을 갖는가
+
+다른 로컬 모델 버전을 검증하려면 명시적으로 넘긴다.
+
+```powershell
+.\backend\test-data-injection\inject_transactions.ps1 `
+  -ExpectedModelName 'fdshield-fraud-detector-v2' `
+  -ExpectedModelVersion '2'
+```
+
+샘플은 ML 담당자의 `train1.csv`에서 다음처럼 층화 선택했다.
 
 | 구분 | 선택 건수 | CSV 기준 |
 |---|---:|---|
-| 정상 거래 | 900 | `Is_Fraud=0`인 앞쪽 900건 |
-| 이상 거래 | 100 | `Is_Fraud=1`인 앞쪽 100건 |
-| 합계 | 1,000 | ML Feature·라벨 유지, 직접 식별자 비식별화 |
+| 정상 거래 | 900 | `is_fraud=0`인 앞쪽 900건 |
+| 사기 라벨 거래 | 100 | `is_fraud=1`인 앞쪽 100건 |
+| 합계 | 1,000 | raw64 값·라벨 유지, 식별값만 비식별화 |
 
-원본 데이터의 사기 비율은 약 1.5%이므로 단순히 앞에서 1,000건만 자르면 이상 거래가
-약 15건뿐이다. 화면·API·룰엔진 테스트에 충분한 이상 거래를 포함하도록 정상과 이상
-라벨을 900:100으로 층화 선택했다. 팀원은 별도의 91MB 원본 CSV를 내려받을 필요가 없다.
-`Is_Fraud`는 확정 라벨 저장에만 사용하며 모델의 예측 확률 계산에는 전달하지 않는다.
+원본 사기 비율은 약 1.5%다. 1,000건을 단순 절단하면 사기 라벨이 약 15건뿐이므로
+화면·API·룰 점수 흐름을 충분히 확인할 수 있도록 이 로컬 샘플만 900:100으로 구성했다.
+이 분포는 운영 분포나 모델 성능을 대표하지 않는다.
 
-Git에 안전하게 공유할 수 있도록 거래·고객·계좌·수취계좌 식별자와 이름·식별번호,
-IP·MAC은 관계를 보존하는 `LOCAL_*` 값으로 비식별화했다. ML 추론 Feature 54개의 수치와
-범주, 거래 시각·금액·위치·위험 신호 및 `Is_Fraud` 라벨은 유지한다.
+거래·고객·출금계좌·수취계좌 ID, 고객명·식별번호, IP·MAC은 관계를 보존하는
+`LOCAL_*` 또는 문서용 주소로 바꿨다. 모델80 계산에 쓰이는 수치·범주·거래 시각·금액·
+거리·위험 신호와 `is_fraud`는 원본 값을 유지한다. `transaction_amount`는 양수이며
+`account_balance`는 원본처럼 음수가 될 수 있다.
 
-각 행은 다음 흐름으로 한 건씩 처리한다.
+처음 실행할 때 ACTIVE 룰셋이 없으면 기본 룰 4개를 생성·검증·활성화한다. 같은
+`transaction_id`가 이미 있으면 POST하지 않고 기존 결과를 조회하므로 재실행할 수 있다.
+ML preflight는 매번 실행한다.
 
-```text
-CSV 행 타입 변환
-→ POST /transactions
-→ 정규화 네 테이블에서 54개 Feature 재조립
-→ 고정 운영 v5 /predict
-→ 예측 메타데이터 저장
-→ 사기 판정이면 ACTIVE 룰셋 4개 유형 점수 저장
-```
+출력은 다음 내용을 요약한다.
 
-91개 XGBoost contribution은 실행 시작 전 ML Serving 직접 preflight에서 모델 계약을
-검증하는 데만 사용합니다. 최신 Backend 응답과 DB에는 거래별 SHAP을 저장하지 않습니다.
-
-처음 실행할 때 ACTIVE 룰셋이 없으면 코드에 포함된 최종 기본 룰 4개를 생성·검증·활성화한다.
-이미 같은 ID가 저장돼 있으면 중복 POST하지 않고 기존 결과를 조회하므로 재실행할 수 있다.
-이 경우에도 preflight `/predict`는 매번 실행하므로, 재사용하는 DB 결과뿐 아니라
-현재 8001번에 기동한 ML Serving이 정확한 v5인지도 검증한다.
-
-1,000개 거래를 표로 전부 출력하지 않고 다음 내용만 보여준다.
-
-- 선택한 정상·이상 거래 수
-- 새로 생성된 수와 이미 존재한 수
+- 정상·사기 라벨 선택 수
+- 새로 생성된 수와 기존 조회 수
 - ML 사기 판정 수와 룰 점수 저장 수
 - CSV 라벨과 ML 판정의 2×2 교차표
-- 사기확률이 높은 상위 10건과 적용 룰 유형
+- 사기확률 상위 10건과 적용 룰 유형
 
-판정 분포와 신규·재사용 건수는 현재 코드와 비어 있는 로컬 DB로 다시 실행한 결과가
-스크립트 끝에 출력됩니다. 같은 거래가 이미 있으면 `CreatedNow=0`,
-`AlreadyExisted=1000`이 될 수 있습니다. `LabelAgreement`와 2×2 교차표는 CSV 라벨 전달과
-예측 흐름을 눈으로 확인하기 위한 참고값이며 독립적인 운영 성능평가나 일반화 성능으로
-해석하지 않습니다.
+`LabelAgreement`와 교차표는 라벨 저장·예측 연결을 확인하는 참고값이다. 독립 검증셋
+성능이나 일반화 성능으로 해석하지 않는다. 모델 비교 지표는 MLflow를 원본으로 본다.
 
-모델 버전·학습 및 검증 지표·파라미터·태그와 후보·champion 성능 비교는 MLflow에서
-관리하며 이 로컬 거래 E2E 범위에는 포함하지 않습니다.
+## 5. CSV 타입 변환
 
-## 5. CSV 타입 변환이 필요한 이유
+PowerShell `Import-Csv`는 모든 값을 문자열로 읽는다. 스크립트는 의미를 바꾸지 않고
+다음 값만 JSON 타입으로 변환한다.
 
-PowerShell `Import-Csv`는 모든 값을 문자열로 읽는다. Backend의 `BinaryFlag`는 숫자 `0/1`만 허용하므로 문자열 `"0"`, `"1"`을 그대로 JSON으로 보내면 HTTP 422가 발생한다.
+- raw59의 bool 플래그 `0/1` → JSON boolean
+- `account_indicator_release_limit_excess` → JSON 숫자 `0/1`
+- `is_fraud` → JSON boolean
+- 비어 있는 OS·IP·MAC·선택 날짜 → JSON `null`
 
-스크립트는 CSV 값의 의미를 변경하지 않고 다음 타입 변환만 수행한다.
-
-- BinaryFlag 문자열 `0/1` → JSON 숫자 `0/1`
-- `Is_Fraud` 문자열 `0/1` → JSON boolean
-- 비어 있는 선택 날짜 → JSON `null`
-
-`Customer_personal_identifier`는 `테스트고객000001` 형태이며 서로 다른 고객에 같은
-이름이 존재하도록 구성해 동명이인 저장도 함께 검증한다. `Customer_identification_number`
-는 고객별 고유 `LOCAL-ID-*` 값이다. 두 값은 ML 추론 Feature 54개에는 포함되지 않는다.
+나머지 숫자 문자열과 `time_difference`는 Backend DTO가 검증·정규화한다. CSV의 알려진
+오타 `flag_deposit_more_than_tenmillion`은 입력 alias로만 허용되며 내부에서는
+`flag_deposit_more_than_ten_million`으로 통일된다.
 
 ## 6. 확인용 URL
 
 - Backend Swagger: <http://127.0.0.1:8000/docs>
 - Backend health: <http://127.0.0.1:8000/health>
 - ML Serving health: <http://127.0.0.1:8001/health>
+- ML Serving readiness: <http://127.0.0.1:8001/ready>
 - 최근 거래: <http://127.0.0.1:8000/transactions>
 
 ## 7. 종료와 재실행
 
-컨테이너만 중지하고 DB 볼륨은 유지한다.
+다음 명령은 컨테이너만 중지하고 PostgreSQL 볼륨은 유지한다.
 
 ```powershell
 Push-Location '.\backend'
@@ -226,17 +195,16 @@ docker compose --env-file .env -f compose.serving.yml stop ml-serving
 Pop-Location
 ```
 
-`docker compose down -v`는 로컬 PostgreSQL 볼륨을 삭제하므로 데이터 초기화가 목적이 아니면 사용하지 않는다.
+`docker compose down -v`는 로컬 PostgreSQL 볼륨을 삭제하므로 데이터 초기화가 목적일
+때만 사용한다.
 
 ## 8. 자주 발생하는 문제
 
-- `/mlops` 또는 `/rule-sets`가 503: `backend/.env`의 `MLOPS_ADMIN_TOKEN`을 확인하고 Backend를 재생성한다.
-- CSV POST가 422이고 `Input should be 0 or 1`: 문자열 BinaryFlag를 숫자로 변환하지 않은 요청이다.
-- 거래 POST가 409: 같은 CSV ID가 이미 저장돼 있다. 제공 스크립트는 기존 결과를 조회한다.
-- 사기인데 `rule_scores=null`: ACTIVE 룰셋이 없는지 확인한다.
-- Backend에서 ML 호출 실패: 고정 v5 ML Serving이 8001번에서 healthy인지 확인한다.
-- `ML Serving preflight payload를 찾을 수 없습니다`: Backend·ML 저장소가 같은 상위 폴더에 있고 ML 최신 코드인지 확인한다.
-- `ML Serving preflight /predict 실패`: health만이 아니라 v5 모델 로드와 54개 Feature 추론이 정상인지 ML Serving 로그를 확인한다.
-- `expected=fdshield-fraud-detector:5` 오류: ML 저장소 최신 코드로 다시 빌드한다.
-- 모델 기본정보와 후보·champion 성능 비교는
-  `/mlops/training/runs/{id}/model-details`에서 확인한다.
+- `/mlops` 또는 `/rule-sets`가 503: Backend 관리자 토큰을 확인하고 재생성한다.
+- CSV POST가 422: 응답 detail의 raw64 필드명·타입과 nullable 여부를 확인한다.
+- 거래 POST가 409: 동일 거래 ID 또는 고객·계좌 식별값 충돌이다. 제공 스크립트는
+  동일 거래 ID라면 기존 결과를 조회한다.
+- 사기 판정인데 `rule_scores=null`: ACTIVE 룰셋 유무를 확인한다.
+- `/ml/predict` preflight 실패: ML 컨테이너 로그와 raw60 예제 파일을 확인한다.
+- 예상 모델 버전 오류: 현재 로컬 manifest 버전을 확인한 뒤 스크립트 인자로 명시한다.
+- 모델 비교 결과: `/mlops/training/runs/{id}/model-details`에서 확인한다.

@@ -64,10 +64,10 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ### 실제 ML Serving 연동 확인
 
 ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 한 건씩 요청합니다.
-`raw_data`는 새 전처리가 요구하는 원본 Feature 54개를 모두 포함해야 합니다.
-Backend는 타입과 필수 컬럼을 검증한 뒤 54개 값을 `customers`, `accounts`,
+정식 요청은 `transaction_id + raw59 + 학습 메타데이터 4개`인 flat raw64-compatible
+JSON입니다. Backend는 타입과 필수 컬럼을 검증한 뒤 raw59를 `customers`, `accounts`,
 `transactions`, `derived_features` 네 정규화 테이블에 나눠 저장합니다. ML 호출과 거래
-조회 시에는 네 테이블을 다시 조인해 동일한 54개 `features`를 조립합니다. 별도의
+조회 시에는 네 테이블을 다시 조인해 동일한 raw59를 조립합니다. 별도의
 `transactions.raw_features` JSON 스냅샷 컬럼은 사용하지 않습니다.
 
 ```bash
@@ -77,20 +77,19 @@ curl -X POST http://localhost:8000/transactions \
 ```
 
 요청 예시는 [`examples/transaction-request.json`](examples/transaction-request.json)에
-있습니다. `Location`과 `Time Difference`는 필수이며, 이전 계약의
-`Time_difference`, `Transaction_Failure_Status`,
-`Customer_flag_terminal_malicious_behavior_4`는 허용하지 않습니다.
-`Location`은 ML 전처리와 동일하게 `지역명 2~4개 + 위도 + 경도` 형식이어야 하고,
-위도 33~39·경도 124~132 범위를 벗어나면 거래 저장 전에 `422`로 거부합니다.
+있습니다. 필드명은 ML 담당자의 snake_case 계약을 사용합니다. `channel`과
+`operating_system`은 대소문자 입력을 받아 내부 소문자로 정규화하며 OS·IP·MAC과 세 개의
+과거 날짜는 nullable입니다. `transaction_amount`는 양수이고 거래 후
+`account_balance`만 음수를 허용합니다. `location` 끝에 위도·경도가 있으면 검색 컬럼으로
+분리하고, 없는 일반 문자열도 허용합니다.
 
-거래 식별정보는 `transaction_id`, `customer_id`, 고객 식별 토큰, 출금·수취 계좌번호를
-함께 전달합니다. 최신 계약은 생년월일이 아니라 54개 Feature의 `Customer_Birthyear`를
-고객 출생연도로 저장합니다. CSV 컬럼명(`ID`, `Customer_ID` 등)으로 평평하게 전달하는
-형식과 위 예제처럼 `raw_data`를 분리한 형식을 모두 허용합니다. 같은 이름인
-`customer_personal_identifier`는 허용하지만 고객별 `customer_identification_number`는
-고유해야 합니다. 생성 데이터의 공통 Feature는 항상 일관되지 않을 수 있으므로 같은
-고객·출금계좌가 다시 들어오면 마지막으로 처리된 요청값으로 갱신합니다. 단, 이미 다른
-고객이 소유한 출금 계좌를 요청하거나 식별번호가 충돌하면 `409`로 거부합니다.
+거래 식별정보는 `transaction_id`, `customer_id`, `customer_identification_number`,
+출금·수취 계좌번호를 함께 전달합니다. 생년월일은 `customer_birth_date`로 저장합니다.
+프로그램 호출 편의를 위해 raw59만 `raw_features`에 중첩한 형식도 허용합니다. 같은
+`customer_name`은 허용하지만 고객별 `customer_identification_number`는 고유해야 합니다.
+생성 데이터의 공통 Feature는 항상 일관되지 않을 수 있으므로 같은 고객·출금계좌가 다시
+들어오면 마지막으로 처리된 요청값으로 갱신합니다. 단, 이미 다른 고객이 소유한 출금
+계좌를 요청하거나 식별번호가 충돌하면 `409`로 거부합니다.
 
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
 꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.
@@ -105,6 +104,14 @@ Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 �
 저장하고 응답합니다. 화면에서 필요한 상위 N개 선택과 정렬은 이 값을 사용하는
 클라이언트가 담당합니다. 정상 거래이거나 점수를 계산하지 못한 경우에는
 `rule_scores`가 `null`입니다.
+
+ML 추론, 실시간 룰 점수, 룰셋 테스트, 과거 거래 재현은 모두 동일한 raw60
+계약(`transaction_id` + snake_case Feature 59개)을 사용합니다. 룰 관리 화면에는
+이 중 이름·계좌번호·IP·MAC·위치·생년월일 같은 식별 원본을 노출하지 않고,
+생년월일은 거래 시점 연령인 `transaction_age`로만 제공합니다. 이전 대문자 표기
+Feature 이름은 신규 룰 조건식에서 지원하지 않습니다. 다만 운영 DB의 기존
+ACTIVE 룰셋을 새 기본 룰셋으로 교체하기 전까지 엔진 내부에서만 기존 이름을 한시
+해석하며, `/rule-features`에는 노출하지 않습니다.
 
 룰 수정 전 영향 확인은 DRAFT 룰셋에 대해
 `POST /rule-sets/{draft_rule_set_id}/replay`를 호출합니다. 현재 ACTIVE 룰셋과 DRAFT를
@@ -264,9 +271,8 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
    바꾸고 학습 이력을 `PRODUCTION`으로 확정합니다.
 
 핵심 요청 형태는 다음과 같습니다. 아래 `features`의 말줄임은 설명용 축약이며 실제
-요청에는
-[`examples/transaction-request.json`](examples/transaction-request.json)의 `raw_data`
-54개 필드를 넣습니다.
+승격 스모크 요청에는 [`examples/transaction-request.json`](examples/transaction-request.json)
+에서 `transaction_id`와 학습 메타데이터 4개를 제외한 raw59를 넣습니다.
 
 ```text
 POST /mlops/datasets
@@ -293,7 +299,7 @@ POST /mlops/training/runs/12/decision
 
 POST /mlops/serving/promotions
 {"training_run_id": 12, "transaction_id": "TX-SMOKE",
- "features": {...54개 전체 필드...}}
+ "features": {...raw59 전체 필드...}}
 
 POST /mlops/training/runs/12/deployment/complete
 {"operation_id": "<serving promotion 응답의 operation_id>"}
@@ -307,19 +313,19 @@ Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution �
 합니다. 0% 리비전 생성이 비동기로 실패한 `STAGED` 실행은 원인을 해결한 뒤
 `{"decision":"APPROVE","restage":true}`로 명시적으로 다시 staging합니다.
 
-운영 재학습 데이터는 생성형 원본 `transactions.csv` 하나로 고정합니다. 데이터셋
-버전의 `gcs_uri`를 `TRAINING_DATA_URI`로 전달하고 ML이 내부에서 54→91 전처리를
-수행합니다. 과거 전처리 `train.csv`와 보조 `transactions.csv` 조합은 Backend 관리
-API에서 지원하지 않습니다.
+운영 재학습 데이터는 ML 담당자의 raw64 CSV 하나로 고정합니다. 데이터셋 버전의
+`gcs_uri`를 `TRAINING_DATA_URI`로 전달하고 ML이 내부에서 raw59→model80 공용 전처리를
+수행합니다. 별도의 전처리 결과 CSV나 보조 CSV 조합은 Backend 관리 API에서 지원하지
+않습니다.
 학습·검증 분리 정책과 모델별 임계값은 Training Job이 결정하고 MLflow에 기록합니다.
 최신 Backend의 데이터셋 요청과 DB에는 `split_datetime`이 없습니다. 모델 버전, 후보·
 champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않고 MLflow를 원본으로
 조회합니다. alias와 Serving 트래픽 변경은 Backend 관리자 승인 API에서만 수행합니다.
 
 `POST /mlops/datasets/build`는 `transaction_labels`의 확정 이진 라벨을 기준으로
-동작합니다. 기준 CSV에 같은 `ID`가 있으면 `Is_Fraud`를 확정값으로 교체하고, 없는
+동작합니다. 기준 CSV에 같은 `transaction_id`가 있으면 `is_fraud`를 확정값으로 교체하고, 없는
 거래는 `customers`, 출금·수취 `accounts`, `transactions`, `derived_features`를 한 번에
-조인해 54개 Feature와 실제 식별 컬럼을 재조립한 새 행으로 추가합니다. 기준 객체는
+조인해 raw59와 학습 메타데이터를 재조립한 raw64 행으로 추가합니다. 기준 객체는
 수정하지 않으며 GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다.
 병합 결과의 행 수와 교체·추가 라벨 수는 API 응답에 포함됩니다.
 
@@ -353,9 +359,10 @@ Cloud Run Service는 요청이 없으면 자동 scale-to-zero 되므로 별도�
 
 ```text
 POST /transactions
-  -> 54개 입력을 고객·계좌·거래·파생 피처 네 테이블에 정규화 저장
-  -> 네 테이블에서 동일한 54개 ML Feature 재조립
-  -> ML Serving /predict 호출
+  -> raw59를 고객·계좌·거래·파생 피처 네 테이블에 정규화 저장
+  -> 네 테이블에서 동일한 raw59 재조립
+  -> ML Serving /ml/predict에 flat raw60 호출
+  -> ML 공용 전처리로 model80 생성·추론
   -> 사기 판정·확률·모델 이름·버전·지연시간 저장
   -> 사기 예측이면 활성 룰셋으로 최종 4개 유형 점수 계산·저장
   -> 거래와 최신 ML·룰 결과 응답
