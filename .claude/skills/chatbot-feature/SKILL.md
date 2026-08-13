@@ -42,7 +42,7 @@ PRD 맨 아래 **4. 부속 문서 색인**에 A.1~A.3 / B.1~B.6 / 스키마 3.x 
 | LangGraph 노드, 질문 진행, 평가/추출 호출 | `app/services/chatbot/` |
 | 임베딩, 검색, 질의 구성 | `app/services/rag/` |
 | 세션·메시지·답변·추출 영속화 | `app/repositories/` (신규: `chat_session.py` 등) |
-| SQLModel 테이블 | `app/data/model/agent.py` |
+| SQLModel 테이블 | `app/data/model/chatbot.py` |
 | DTO | `app/dto/chatbot.py` |
 | enum 코드 상수 | `app/domain/` (`fraud_type_codes.py` 패턴) |
 | 설정값 (타임아웃·재시도·URL) | `app/core/config.py` (env var, settings 클래스 없음) |
@@ -66,7 +66,8 @@ PRD 맨 아래 **4. 부속 문서 색인**에 A.1~A.3 / B.1~B.6 / 스키마 3.x 
 
 챗봇 영역은 대부분 비어 있거나 Fake다. 무엇을 걷어내고 시작하는지 알고 들어간다.
 
-- `agent_chat_sessions` / `agent_chat_messages` / `fraud_type_score_after_chat`은 테이블 정의와
+- `agent_chat_sessions` / `agent_chat_messages` / `fraud_type_score_after_chat`은
+  `app/data/model/chatbot.py`에 테이블 정의와
   마이그레이션만 있고 **참조하는 비즈니스 로직이 없다.** 챗봇 리포지토리도 없다.
 - `app/api/chat.py`: `POST /chat/ask` 하나뿐, 세션 개념 없음
 - `app/services/chatbot/`: `fake_embedder.py`, `fake_guide_retriever.py`,

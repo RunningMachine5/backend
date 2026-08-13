@@ -67,7 +67,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 ### 3.4 `agent_chat_sessions` — 컬럼 추가
 
 기존 컬럼(`chat_session_id`, `transaction_id`, `status`, `last_message_id`, `is_older`,
-`top_fraud_types`, `created_at`)은 그대로 두고 다음을 추가한다.
+`created_at`)은 그대로 두고 다음을 추가한다. 사용처가 없는 `top_fraud_types`는 삭제한다.
 
 | 컬럼 | 타입 | 설명 |
 | --- | --- | --- |
@@ -131,10 +131,13 @@ CHECK (verdict_skip_reason IS NULL
 CREATE INDEX ix_agent_chat_answers_session_step
     ON agent_chat_answers (chat_session_id, question_step);
 
--- "질문당 채택 답변은 정확히 하나" 규칙을 DB로 강제
+-- 질문당 채택 답변은 최대 하나
 CREATE UNIQUE INDEX uq_agent_chat_answers_adopted
     ON agent_chat_answers (chat_session_id, question_step) WHERE is_adopted;
 ```
+
+부분 유니크 인덱스는 채택 답변이 **둘 이상 생기지 않는 것**만 강제한다. 답변을 채택하는
+턴에서는 파이프라인이 반드시 하나를 `is_adopted = true`로 저장해 최소 한 개 규칙을 지킨다.
 
 `verdict_skip_reason`이 없으면 "재시도 초과로 평가 없이 pass"와 "평가 LLM 장애"가 똑같이
 `NULL`로 보여 구분할 수 없다. 로그는 지워지므로 컬럼으로 남긴다.
@@ -152,7 +155,7 @@ CREATE UNIQUE INDEX uq_agent_chat_answers_adopted
 | `code` | `varchar(64) NOT NULL` | enum 값 |
 | `evidence` | `text NOT NULL` | |
 | `evidence_verified` | `boolean NOT NULL` | 고객 답변 원문 대조 통과 여부 |
-| `source_answer_id` | `bigint NULL` FK → `agent_chat_answers.answer_id` | 어느 턴의 답변에서 나왔는지 |
+| `source_answer_id` | `bigint NULL` FK → `agent_chat_answers.answer_id`, `ON DELETE SET NULL` | 어느 턴의 답변에서 나왔는지 |
 | `extracted_at` | `timestamptz NOT NULL` | |
 
 ```sql
@@ -177,14 +180,14 @@ CHECK 없이 코드로 관리하는 것과 같은 선택이다.
 
 ### 3.7 `fraud_type_score_after_chat` — 구조 변경
 
-현재 대표 유형 하나만 저장하는 구조([app/data/model/agent.py:292-316](../../app/data/model/agent.py#L292-L316))를
+현재 대표 유형 하나만 저장하는 구조([app/data/model/chatbot.py](../../app/data/model/chatbot.py))를
 유형별 점수를 전부 남기는 구조로 바꾼다. `fraud_type_score_results.type_scores`가
 `dict[str, float]`로 전부 남기는 것과 대칭이 된다.
 
 | 컬럼 | 변경 | 설명 |
 | --- | --- | --- |
 | `transaction_id` | 유지 | PK |
-| `chat_session_id` | **추가** `varchar(64)` FK | 어느 세션의 결과인지 |
+| `chat_session_id` | **추가** `varchar(64)` FK, `ON DELETE CASCADE` | 어느 세션의 결과인지 |
 | `type_scores` | **추가** `jsonb NOT NULL DEFAULT '{}'` | 4개 유형별 누적 점수 전부 |
 | `primary_fraud_type` | 유지 (nullable) | CHECK `IN` 4종 `OR NULL` |
 | `primary_fraud_type_score` | 유지 | 최고점 유형의 점수 |
@@ -312,7 +315,7 @@ customer_email: str | None = Field(
 
 1. `app/domain/customer_action_codes.py`, `app/domain/fraud_circumstance_codes.py` —
    나머지가 전부 여기 의존한다.
-2. [app/data/model/agent.py](../../app/data/model/agent.py)에 `AgentChatAnswer`,
+2. [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 `AgentChatAnswer`,
    `AgentChatExtraction` 추가 + `AgentChatSession` / `FraudTypeScoreAfterChat` 수정.
 3. **[app/data/model/\_\_init\_\_.py](../../app/data/model/__init__.py)에 새 모델 import 추가.**
    빠뜨리면 autogenerate가 `DROP TABLE`을 낸다.

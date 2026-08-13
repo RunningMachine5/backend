@@ -32,7 +32,7 @@ SQLAlchemy, SQLModel, langchain-openai.
 ### 1.3 현재 구현 상태
 
 `agent_chat_sessions` / `agent_chat_messages` / `fraud_type_score_after_chat`은
-[app/data/model/agent.py](../../app/data/model/agent.py)에 테이블 정의와 마이그레이션이
+[app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 테이블 정의와 마이그레이션이
 이미 있으나, **비즈니스 로직에서 참조하는 코드는 없다.** 챗봇 리포지토리도 없고
 [app/api/chat.py](../../app/api/chat.py)는 세션 개념이 없는 `POST /chat/ask` 하나뿐이다.
 
@@ -340,7 +340,7 @@ response = assemble(fragments)
 챗봇이 처리할 수 없어 사람에게 넘겨야 하는 순간 — [2.3](#23-최초-알림-메시지와-버튼)의
 "상담사 연결" 버튼으로 `status`가 `HANDOFF_REQUESTED`로 바뀌는 순간 — 을 담당자가 어떻게
 알아채는지가 필요하다. 또한 `agent_cases`와 `agent_chat_sessions`는 둘 다 `transaction_id`에
-`UNIQUE` 제약만 있을 뿐([app/data/model/agent.py:53-60](../../app/data/model/agent.py#L53-L60))
+  `UNIQUE` 제약만 있을 뿐([app/data/model/agent.py](../../app/data/model/agent.py))
 서로를 가리키는 FK가 없어, 담당자 화면이 "이 상담 요청이 어느 조사 사건에 대응하는지"를
 얻으려면 매번 `transaction_id`로 조인해야 한다.
 
@@ -430,8 +430,6 @@ response = assemble(fragments)
   `Transaction_Amount: int = Field(gt=0)`가 살아 있어 음수 거래는 `POST /transactions`에서
   422로 걸린다. DB에는 CHECK가 없어 저장 자체는 가능하다. ML 계약을 바꿀지, 방향을 다른
   값에서 파생할지(`source_account.customer_id == transaction.customer_id`면 출금) 정해야 한다. -> ML 계약을 바꾼다 ML 계약의 ge 부분을 수정한다
-- **`agent_chat_sessions.top_fraud_types`가 미사용으로 남는다.** 유형 판별 질문이 없어졌고
-  내부 채점표가 4개 유형 전부를 채점하므로 이 컬럼을 읽는 곳이 없다. 삭제해야한다
 - **외부 조회(더치트·Safe Browsing) 관련**
   - 더치트는 공개 API가 아니라 제휴 기반이다. 조달 가능 여부를 먼저 확인하고,
     안 되면 대체 경로(경찰청 사이버안전국 링크 안내)를 잡아둬야 한다.
