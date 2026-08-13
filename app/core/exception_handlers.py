@@ -41,6 +41,26 @@ def _default_message(status_code: int) -> str:
         return "요청 처리 중 오류가 발생했습니다."
 
 
+def _http_exception_content(
+    status_code: int,
+    detail: Any,
+) -> tuple[str, Any | None]:
+    if isinstance(detail, str):
+        return detail, None
+
+    if isinstance(detail, dict):
+        raw_message = detail.get("message")
+        if isinstance(raw_message, str) and raw_message.strip():
+            details = {
+                key: value
+                for key, value in detail.items()
+                if key != "message"
+            }
+            return raw_message, details or None
+
+    return _default_message(status_code), detail
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
     async def http_exception_handler(
@@ -49,9 +69,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         del request
 
-        detail = exc.detail
-        message = detail if isinstance(detail, str) else _default_message(exc.status_code)
-        details = None if isinstance(detail, str) else detail
+        message, details = _http_exception_content(
+            exc.status_code,
+            exc.detail,
+        )
 
         return _build_error_response(
             status_code=exc.status_code,
