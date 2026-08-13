@@ -68,6 +68,24 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             return run.id
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_admin_auth_error_uses_common_response(self) -> None:
+        response = self.client.get("/mlops/training/runs")
+
+        self.assertEqual(response.status_code, 401, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": "HTTP_401",
+                    "message": "MLOps 관리 토큰이 올바르지 않습니다.",
+                    "details": None,
+                },
+            },
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_training_start_stores_execution_not_lro_operation_name(self) -> None:
         with Session(self.engine) as session:
             dataset = DatasetVersion(

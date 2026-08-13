@@ -310,7 +310,12 @@ class FraudRuleApiTest(unittest.TestCase):
         )
 
         self.assertEqual(duplicate.status_code, 409, duplicate.text)
-        self.assertIn(str(first["id"]), duplicate.json()["detail"])
+        body = duplicate.json()
+        self.assertFalse(body["success"])
+        self.assertIsNone(body["data"])
+        self.assertEqual(body["error"]["code"], "HTTP_409")
+        self.assertIn(str(first["id"]), body["error"]["message"])
+        self.assertIsNone(body["error"]["details"])
 
         discarded = self.client.delete(
             f"/rule-sets/{first['id']}",
