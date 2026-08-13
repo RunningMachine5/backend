@@ -68,10 +68,10 @@ class AgentCaseServiceTest(unittest.TestCase):
     def _seed_detection_result(self) -> None:
         self.session.add(
             Transaction(
-                transaction_id="TX-001",
+                id="TX-001",
                 customer_id="CUSTOMER-001",
-                source_account_id="ACCOUNT-001",
-                recipient_account_id=None,
+                source_account_number="ACCOUNT-001",
+                recipient_account_number=None,
                 transaction_datetime=datetime(2026, 8, 11, 10, 0),
                 transaction_amount=9_500_000,
                 channel="mobile",

@@ -22,7 +22,7 @@ class MLPredictionResult(SQLModel, table=True):
         ),
     )
     transaction_id: str = Field(
-        foreign_key="transactions.transaction_id",
+        foreign_key="transactions.id",
         ondelete="CASCADE",
         max_length=64,
         index=True,

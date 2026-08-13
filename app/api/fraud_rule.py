@@ -131,7 +131,7 @@ RULE_FEATURES = (
         "계좌 유형",
         "enum",
         _ENUM_OPERATORS,
-        allowed_values=["a", "b", "c", "d"],
+        allowed_values=["a", "b", "c", "d", "e"],
     ),
     _feature(
         "customer_flag_terminal_malicious_behavior_1",

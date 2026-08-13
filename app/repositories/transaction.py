@@ -24,7 +24,7 @@ from app.services.features.ml_feature_assembler import (
 
 
 def _account_id(account_number: str) -> str:
-    """CSV 계좌번호를 현재 ERD의 내부 account_id로 안정적으로 변환한다."""
+    """CSV 계좌번호를 accounts.id에 저장할 내부 식별자로 안정적으로 변환한다."""
 
     if len(account_number) <= 64:
         return account_number
@@ -89,12 +89,20 @@ class TransactionRepository:
         경우에는 호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
         """
 
-        derived = self.session.get(DerivedFeatures, transaction.transaction_id)
+        derived = self.session.get(DerivedFeatures, transaction.id)
         customer = self.session.get(Customer, transaction.customer_id)
-        source_account = self.session.get(Account, transaction.source_account_id)
+        source_account = self.session.exec(
+            select(Account).where(
+                Account.account_number == transaction.source_account_number
+            )
+        ).first()
         recipient_account = (
-            self.session.get(Account, transaction.recipient_account_id)
-            if transaction.recipient_account_id
+            self.session.exec(
+                select(Account).where(
+                    Account.account_number == transaction.recipient_account_number
+                )
+            ).first()
+            if transaction.recipient_account_number
             else None
         )
         if (
@@ -124,17 +132,17 @@ class TransactionRepository:
         # accounts.customer_id FK가 실패한다. 계좌 조회가 일으키는 autoflush보다
         # 고객 INSERT를 앞세운다.
         self.session.flush()
-        source_account_id = self._upsert_source_account(payload, features)
-        recipient_account_id = self._upsert_recipient_account(payload)
+        source_account_number = self._upsert_source_account(payload, features)
+        recipient_account_number = self._upsert_recipient_account(payload)
         # Transaction은 출금·수취 계좌 FK를 모두 참조한다. ORM relationship이
         # 없는 mapper들의 순서에 기대지 않고 계좌 INSERT/UPDATE를 먼저 확정한다.
         self.session.flush()
 
         transaction = Transaction(
-            transaction_id=payload.transaction_id,
-            customer_id=customer.customer_id,
-            source_account_id=source_account_id,
-            recipient_account_id=recipient_account_id,
+            id=payload.transaction_id,
+            customer_id=customer.id,
+            source_account_number=source_account_number,
+            recipient_account_number=recipient_account_number,
             ip_address=payload.ip_address,
             mac_address=payload.mac_address,
             **build_transaction_fields(features),
@@ -149,7 +157,7 @@ class TransactionRepository:
         self.session.flush()
         self.session.add(
             DerivedFeatures(
-                transaction_id=payload.transaction_id,
+                id=payload.transaction_id,
                 **build_derived_features_fields(features),
             )
         )
@@ -181,8 +189,8 @@ class TransactionRepository:
                     payload.customer_identification_number
                 )
             customer = Customer(
-                customer_id=payload.customer_id,
-                personal_identifier=payload.customer_personal_identifier,
+                id=payload.customer_id,
+                name=payload.customer_personal_identifier,
                 identification_number=payload.customer_identification_number,
                 **build_customer_fields(features),
             )
@@ -195,7 +203,7 @@ class TransactionRepository:
             )
 
         latest_customer_fields = {
-            "personal_identifier": payload.customer_personal_identifier,
+            "name": payload.customer_personal_identifier,
             **build_customer_fields(features),
         }
         for field_name, value in latest_customer_fields.items():
@@ -217,20 +225,25 @@ class TransactionRepository:
 
         source_account_id = _account_id(payload.source_account_number)
         account_fields = build_account_fields(features)
-        source_account = self.session.get(Account, source_account_id)
+        source_account = self.session.exec(
+            select(Account).where(
+                Account.account_number == payload.source_account_number
+            )
+        ).first()
         if source_account is None:
+            conflicting_account = self.session.get(Account, source_account_id)
+            if conflicting_account is not None:
+                raise AccountIdentifierConflictError(
+                    source_account_id,
+                    ["account_number"],
+                )
             source_account = Account(
-                account_id=source_account_id,
+                id=source_account_id,
                 customer_id=payload.customer_id,
                 account_number=payload.source_account_number,
                 **account_fields,
             )
         else:
-            if source_account.account_number != payload.source_account_number:
-                raise AccountIdentifierConflictError(
-                    source_account_id,
-                    ["account_number"],
-                )
             if source_account.customer_id is None:
                 source_account.customer_id = payload.customer_id
             elif source_account.customer_id != payload.customer_id:
@@ -244,7 +257,7 @@ class TransactionRepository:
                 setattr(source_account, field_name, value)
             source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
-        return source_account_id
+        return source_account.account_number
 
     def _upsert_recipient_account(
         self,
@@ -257,26 +270,31 @@ class TransactionRepository:
 
         recipient_account_id = _account_id(payload.recipient_account_number)
         suspend_status = payload.raw_features.recipient_account_suspend_status
-        recipient_account = self.session.get(Account, recipient_account_id)
+        recipient_account = self.session.exec(
+            select(Account).where(
+                Account.account_number == payload.recipient_account_number
+            )
+        ).first()
         if recipient_account is None:
+            conflicting_account = self.session.get(Account, recipient_account_id)
+            if conflicting_account is not None:
+                raise AccountIdentifierConflictError(
+                    recipient_account_id,
+                    ["account_number"],
+                )
             self.session.add(
                 Account(
-                    account_id=recipient_account_id,
+                    id=recipient_account_id,
                     customer_id=None,
                     account_number=payload.recipient_account_number,
                     suspend_status=suspend_status,
                 )
             )
         else:
-            if recipient_account.account_number != payload.recipient_account_number:
-                raise AccountIdentifierConflictError(
-                    recipient_account_id,
-                    ["account_number"],
-                )
             recipient_account.suspend_status = suspend_status
             recipient_account.updated_at = datetime.now(UTC)
             self.session.add(recipient_account)
-        return recipient_account_id
+        return payload.recipient_account_number
 
 
 class TransactionLabelRepository:
@@ -380,24 +398,25 @@ class PredictionResultRepository:
             .select_from(Transaction)
             .join(
                 MLPredictionResult,
-                MLPredictionResult.transaction_id == Transaction.transaction_id,
+                MLPredictionResult.transaction_id == Transaction.id,
             )
             .join(
                 ranked_predictions,
                 ranked_predictions.c.prediction_result_id == MLPredictionResult.id,
             )
-            .outerjoin(Customer, Customer.customer_id == Transaction.customer_id)
+            .outerjoin(Customer, Customer.id == Transaction.customer_id)
             .outerjoin(
                 source_account,
-                source_account.account_id == Transaction.source_account_id,
+                source_account.account_number == Transaction.source_account_number,
             )
             .outerjoin(
                 recipient_account,
-                recipient_account.account_id == Transaction.recipient_account_id,
+                recipient_account.account_number
+                == Transaction.recipient_account_number,
             )
             .outerjoin(
                 DerivedFeatures,
-                DerivedFeatures.transaction_id == Transaction.transaction_id,
+                DerivedFeatures.id == Transaction.id,
             )
             .where(
                 ranked_predictions.c.prediction_rank == 1,
@@ -405,7 +424,7 @@ class PredictionResultRepository:
             )
             .order_by(
                 Transaction.transaction_datetime.desc(),
-                Transaction.transaction_id.desc(),
+                Transaction.id.desc(),
             )
             .limit(limit + 1)
         )

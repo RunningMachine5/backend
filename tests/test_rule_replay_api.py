@@ -389,7 +389,7 @@ class FraudRuleReplayApiTest(unittest.TestCase):
             session.add_all(
                 [
                     _prediction(
-                        transaction.transaction_id,
+                        transaction.id,
                         is_fraud=True,
                         created_at=base + timedelta(hours=1, seconds=index),
                     )
@@ -426,11 +426,11 @@ class FraudRuleReplayApiTest(unittest.TestCase):
                 "TX-MISSING-DERIVED",
                 transaction_datetime=base,
             )
-            derived = session.get(DerivedFeatures, transaction.transaction_id)
+            derived = session.get(DerivedFeatures, transaction.id)
             session.delete(derived)
             session.add(
                 _prediction(
-                    transaction.transaction_id,
+                    transaction.id,
                     is_fraud=True,
                     created_at=base + timedelta(minutes=1),
                 )

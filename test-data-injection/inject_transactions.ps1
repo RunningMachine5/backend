@@ -198,6 +198,10 @@ $booleanFields = @(
 )
 $binaryIntegerFields = @("account_indicator_release_limit_excess")
 $nullableFields = @(
+    "account_initial_balance",
+    "account_balance",
+    "account_remaining_amount_daily_limit_exceeded",
+    "access_medium",
     "operating_system",
     "ip_address",
     "mac_address",
