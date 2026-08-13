@@ -41,6 +41,7 @@ from app.dto.fraud_rule import (
     RuleFeatureResponse,
     expression_to_json,
 )
+from app.services.rules import repository as rule_repository
 from app.services.rules.defaults import DEFAULT_RULE_SET
 from app.services.rules.engine import (
     RuleEngine,
@@ -48,10 +49,13 @@ from app.services.rules.engine import (
     RuleSetValidationError,
 )
 from app.services.rules.expression_evaluator import RuleExpressionError
-from app.services.rules.feature_builder import RuleFeatureError
-from app.services.rules import repository as rule_repository
-from app.services.rules.repository import rule_set_definition_from_database
+from app.services.rules.feature_builder import (
+    TRANSITION_LEGACY_DERIVED_FEATURES,
+    TRANSITION_LEGACY_RAW_ALIASES,
+    RuleFeatureError,
+)
 from app.services.rules.replay import replay_rule_sets
+from app.services.rules.repository import rule_set_definition_from_database
 
 router = APIRouter(
     tags=["fraud-rule-admin"],
@@ -99,40 +103,59 @@ def _feature(
 
 
 RULE_FEATURES = (
-    _feature("Customer_Birthyear", "고객 출생연도", "integer", _NUMERIC_OPERATORS),
     # 날짜는 파생 연령의 입력으로만 노출한다. JSON 문자열과 datetime을 직접
     # 비교하는 룰은 엔진에서 일관되게 평가할 수 없으므로 선택 연산자를 두지 않는다.
-    _feature("Transaction_Datetime", "거래일시", "datetime", []),
+    _feature("transaction_datetime", "거래일시", "datetime", []),
     _feature(
-        "Customer_loan_type",
+        "customer_loan_type",
         "대출 신청 유형",
         "enum",
         _ENUM_OPERATORS,
         allowed_values=["a", "b", "c", "d", "e"],
     ),
     _feature(
-        "Customer_flag_terminal_malicious_behavior_1",
+        "customer_gender",
+        "고객 성별",
+        "enum",
+        _ENUM_OPERATORS,
+        allowed_values=["male", "female"],
+    ),
+    _feature(
+        "customer_credit_rating",
+        "고객 신용등급",
+        "integer",
+        _NUMERIC_OPERATORS,
+    ),
+    _feature(
+        "account_account_type",
+        "계좌 유형",
+        "enum",
+        _ENUM_OPERATORS,
+        allowed_values=["a", "b", "c", "d"],
+    ),
+    _feature(
+        "customer_flag_terminal_malicious_behavior_1",
         "전화번호 조작 여부",
         "integer",
         _ENUM_OPERATORS,
         allowed_values=[0, 1],
     ),
     _feature(
-        "Customer_flag_terminal_malicious_behavior_2",
+        "customer_flag_terminal_malicious_behavior_2",
         "원격제어 여부",
         "integer",
         _ENUM_OPERATORS,
         allowed_values=[0, 1],
     ),
     _feature(
-        "Customer_flag_terminal_malicious_behavior_5",
+        "customer_flag_terminal_malicious_behavior_5",
         "신뢰할 수 없는 인증서 사용 여부",
         "integer",
         _ENUM_OPERATORS,
         allowed_values=[0, 1],
     ),
     _feature(
-        "Customer_rooting_jailbreak_indicator",
+        "customer_rooting_jailbreak_indicator",
         "루팅·탈옥 여부",
         "integer",
         _ENUM_OPERATORS,
@@ -140,7 +163,7 @@ RULE_FEATURES = (
     ),
     *(
         _feature(
-            f"Customer_flag_change_of_authentication_{number}",
+            f"customer_flag_change_of_authentication_{number}",
             f"인증정보 변경 플래그 {number}",
             "integer",
             _ENUM_OPERATORS,
@@ -149,35 +172,35 @@ RULE_FEATURES = (
         for number in range(1, 5)
     ),
     _feature(
-        "Account_indicator_Openbanking",
+        "account_indicator_openbanking",
         "오픈뱅킹 사용 여부",
         "integer",
         _ENUM_OPERATORS,
         allowed_values=[0, 1],
     ),
     _feature(
-        "Channel",
+        "channel",
         "거래 채널",
         "enum",
         _ENUM_OPERATORS,
-        allowed_values=["mobile", "internet", "ATM", "Others"],
+        allowed_values=["mobile", "internet", "atm", "others"],
     ),
     _feature(
-        "Operating_System",
+        "operating_system",
         "운영체제",
         "enum",
         _ENUM_OPERATORS,
-        allowed_values=["Android", "iOS", "Windows", "macOS", "Linux", "Others"],
+        allowed_values=["android", "ios", "windows", "macos", "linux", "others"],
     ),
     _feature(
-        "Account_release_suspension",
+        "account_release_suspention",
         "30일 이내 본인계좌 정지해제 여부",
         "integer",
         _ENUM_OPERATORS,
         allowed_values=[0, 1],
     ),
     _feature(
-        "Recipient_account_suspend_status",
+        "recipient_account_suspend_status",
         "수취계좌 거래중지 여부",
         "integer",
         _ENUM_OPERATORS,
@@ -192,31 +215,31 @@ RULE_FEATURES = (
             allowed_values=[0, 1],
         )
         for field, display_name in (
-            ("Customer_inquery_atm_limit", "ATM 한도 문의 여부"),
-            ("Customer_increase_atm_limit", "ATM 한도 증액 여부"),
+            ("customer_inquery_atm_limit", "ATM 한도 문의 여부"),
+            ("customer_increase_atm_limit", "ATM 한도 증액 여부"),
             (
-                "Customer_flag_terminal_malicious_behavior_3",
+                "customer_flag_terminal_malicious_behavior_3",
                 "단말 템퍼링 여부",
             ),
             (
-                "Customer_flag_terminal_malicious_behavior_6",
+                "customer_flag_terminal_malicious_behavior_6",
                 "키로깅 탐지 여부",
             ),
-            ("Customer_VPN_Indicator", "VPN 사용 여부"),
-            ("Customer_mobile_roaming_indicator", "모바일 로밍 여부"),
+            ("customer_vpn_indicator", "VPN 사용 여부"),
+            ("customer_mobile_roaming_indicator", "모바일 로밍 여부"),
             (
-                "Account_indicator_release_limit_excess",
+                "account_indicator_release_limit_excess",
                 "한도 초과 해제 여부",
             ),
-            ("Unused_account_status", "휴면계좌 여부"),
-            ("Another_Person_Account", "타인계좌 이체 여부"),
+            ("unused_account_status", "휴면계좌 여부"),
+            ("another_person_account", "타인계좌 이체 여부"),
             (
-                "Flag_deposit_more_than_tenMillion",
+                "flag_deposit_more_than_ten_million",
                 "최근 7일 1천만원 이상 입금 여부",
             ),
-            ("Unused_terminal_status", "미사용 단말 여부"),
+            ("unused_terminal_status", "미사용 단말 여부"),
             (
-                "First_time_iOS_by_vulnerable_user",
+                "first_time_ios_by_vulnerable_user",
                 "취약고객의 60세 이후 iOS 첫 사용 여부",
             ),
         )
@@ -224,56 +247,84 @@ RULE_FEATURES = (
     *(
         _feature(field, display_name, "integer", _NUMERIC_OPERATORS)
         for field, display_name in (
-            ("Transaction_num_connection_failure", "접속 실패 횟수"),
-            ("Transaction_Amount", "거래 금액"),
-            ("Account_initial_balance", "거래 전 초기 잔액"),
-            ("Account_balance", "거래 후 잔액"),
-            ("Account_amount_daily_limit", "일일 거래 한도"),
+            ("transaction_num_connection_failure", "접속 실패 횟수"),
+            ("transaction_amount", "거래 금액"),
+            ("account_initial_balance", "거래 전 초기 잔액"),
+            ("account_balance", "거래 후 잔액"),
+            ("account_amount_daily_limit", "일일 거래 한도"),
             (
-                "Account_remaining_amount_daily_limit_exceeded",
+                "account_remaining_amount_daily_limit_exceeded",
                 "일일 한도 잔여 금액",
             ),
-            ("Account_one_month_max_amount", "최근 한 달 최대 거래금액"),
+            ("account_one_month_max_amount", "최근 한 달 최대 거래금액"),
             (
-                "Transaction_history_with_the_account",
+                "transaction_history_with_the_account",
                 "수취계좌 과거 거래 횟수",
             ),
             (
-                "Number_of_transaction_with_the_account",
+                "number_of_transaction_with_the_account",
                 "수취계좌 단시간 거래 횟수",
             ),
         )
     ),
     _feature(
-        "Account_one_month_std_dev",
+        "account_one_month_std_dev",
         "최근 한 달 거래금액 표준편차",
         "number",
         _NUMERIC_OPERATORS,
     ),
-    _feature("Distance", "직전 거래와의 거리", "number", _NUMERIC_OPERATORS),
+    _feature("distance", "직전 거래와의 거리", "number", _NUMERIC_OPERATORS),
     _feature(
-        "Access_Medium",
+        "access_medium",
         "접근 매체",
         "enum",
         _ENUM_OPERATORS,
         allowed_values=list("abcdefgh"),
     ),
     _feature(
-        "Type_General_Automatic",
+        "type_general_automatic",
         "일반·자동 거래 구분",
         "enum",
         _ENUM_OPERATORS,
         allowed_values=["general", "automatic"],
     ),
-    _feature("Transaction_resumed_date", "거래 재개일", "datetime", []),
-    _feature("Time Difference", "직전 거래 후 경과시간", "duration", []),
+    _feature("customer_registration_datetime", "고객 등록일시", "datetime", []),
+    _feature("account_creation_datetime", "계좌 개설일시", "datetime", []),
+    _feature("last_atm_transaction_datetime", "최근 ATM 거래일시", "datetime", []),
+    _feature(
+        "last_bank_branch_transaction_datetime",
+        "최근 영업점 거래일시",
+        "datetime",
+        [],
+    ),
+    _feature(
+        "error_code",
+        "거래 오류코드",
+        "enum",
+        _ENUM_OPERATORS,
+        allowed_values=list("abcdef"),
+    ),
+    _feature(
+        "account_dawn_one_month_max_amount",
+        "최근 한 달 새벽 최대 거래금액",
+        "number",
+        _NUMERIC_OPERATORS,
+    ),
+    _feature(
+        "account_dawn_one_month_std_dev",
+        "최근 한 달 새벽 거래금액 표준편차",
+        "number",
+        _NUMERIC_OPERATORS,
+    ),
+    _feature("transaction_resumed_date", "거래 재개일", "datetime", []),
+    _feature("time_difference", "직전 거래 후 경과시간", "duration", []),
     _feature(
         "transaction_age",
         "거래 시점 연령",
         "integer",
         _NUMERIC_OPERATORS,
         derived=True,
-        source_fields=["Customer_Birthyear", "Transaction_Datetime"],
+        source_fields=["customer_birth_date", "transaction_datetime"],
     ),
     _feature(
         "authentication_change_count",
@@ -282,8 +333,7 @@ RULE_FEATURES = (
         _NUMERIC_OPERATORS,
         derived=True,
         source_fields=[
-            f"Customer_flag_change_of_authentication_{number}"
-            for number in range(1, 5)
+            f"customer_flag_change_of_authentication_{number}" for number in range(1, 5)
         ],
     ),
     _feature(
@@ -293,9 +343,9 @@ RULE_FEATURES = (
         _NUMERIC_OPERATORS,
         derived=True,
         source_fields=[
-            "Customer_inquery_atm_limit",
-            "Customer_increase_atm_limit",
-            "Account_indicator_release_limit_excess",
+            "customer_inquery_atm_limit",
+            "customer_increase_atm_limit",
+            "account_indicator_release_limit_excess",
         ],
     ),
     _feature(
@@ -305,10 +355,10 @@ RULE_FEATURES = (
         _NUMERIC_OPERATORS,
         derived=True,
         source_fields=[
-            "Customer_flag_terminal_malicious_behavior_3",
-            "Customer_flag_terminal_malicious_behavior_5",
-            "Customer_flag_terminal_malicious_behavior_6",
-            "Customer_rooting_jailbreak_indicator",
+            "customer_flag_terminal_malicious_behavior_3",
+            "customer_flag_terminal_malicious_behavior_5",
+            "customer_flag_terminal_malicious_behavior_6",
+            "customer_rooting_jailbreak_indicator",
         ],
     ),
     *(
@@ -325,179 +375,179 @@ RULE_FEATURES = (
                 "strong_auth_change",
                 "인증정보 변경 3개 이상",
                 [
-                    f"Customer_flag_change_of_authentication_{number}"
+                    f"customer_flag_change_of_authentication_{number}"
                     for number in range(1, 5)
                 ],
             ),
-            ("loan_related", "대출 관련 여부", ["Customer_loan_type"]),
+            ("loan_related", "대출 관련 여부", ["customer_loan_type"]),
             (
                 "all_limit_actions",
                 "한도 문의·증액·해제 3종 모두",
                 [
-                    "Customer_inquery_atm_limit",
-                    "Customer_increase_atm_limit",
-                    "Account_indicator_release_limit_excess",
+                    "customer_inquery_atm_limit",
+                    "customer_increase_atm_limit",
+                    "account_indicator_release_limit_excess",
                 ],
             ),
             (
                 "device_compromise_2plus",
                 "단말침해 신호 2개 이상",
                 [
-                    "Customer_flag_terminal_malicious_behavior_3",
-                    "Customer_flag_terminal_malicious_behavior_5",
-                    "Customer_flag_terminal_malicious_behavior_6",
-                    "Customer_rooting_jailbreak_indicator",
+                    "customer_flag_terminal_malicious_behavior_3",
+                    "customer_flag_terminal_malicious_behavior_5",
+                    "customer_flag_terminal_malicious_behavior_6",
+                    "customer_rooting_jailbreak_indicator",
                 ],
             ),
             (
                 "new_or_rare_recipient",
                 "신규·희소 수취인",
-                ["Transaction_history_with_the_account"],
+                ["transaction_history_with_the_account"],
             ),
             (
                 "recipient_transfer",
                 "신규·희소 수취인 타계좌 이체",
                 [
-                    "Transaction_history_with_the_account",
-                    "Another_Person_Account",
+                    "transaction_history_with_the_account",
+                    "another_person_account",
                 ],
             ),
             (
                 "rapid_repeat",
                 "단시간 반복 이체",
-                ["Number_of_transaction_with_the_account"],
+                ["number_of_transaction_with_the_account"],
             ),
             (
                 "amount_anomaly",
                 "월간 기준 금액 이상",
                 [
-                    "Transaction_Amount",
-                    "Account_one_month_max_amount",
-                    "Account_one_month_std_dev",
+                    "transaction_amount",
+                    "account_one_month_max_amount",
+                    "account_one_month_std_dev",
                 ],
             ),
             (
                 "balance_depletion",
                 "잔액 소진",
                 [
-                    "Transaction_Amount",
-                    "Account_initial_balance",
-                    "Account_balance",
+                    "transaction_amount",
+                    "account_initial_balance",
+                    "account_balance",
                 ],
             ),
             (
                 "daily_limit_pressure",
                 "일일 한도 근접",
                 [
-                    "Transaction_Amount",
-                    "Account_amount_daily_limit",
-                    "Account_remaining_amount_daily_limit_exceeded",
+                    "transaction_amount",
+                    "account_amount_daily_limit",
+                    "account_remaining_amount_daily_limit_exceeded",
                 ],
             ),
             (
                 "severe_amount_context",
                 "이상금액과 잔액·한도 압박 동시 충족",
                 [
-                    "Transaction_Amount",
-                    "Account_initial_balance",
-                    "Account_balance",
-                    "Account_amount_daily_limit",
-                    "Account_remaining_amount_daily_limit_exceeded",
-                    "Account_one_month_max_amount",
-                    "Account_one_month_std_dev",
+                    "transaction_amount",
+                    "account_initial_balance",
+                    "account_balance",
+                    "account_amount_daily_limit",
+                    "account_remaining_amount_daily_limit_exceeded",
+                    "account_one_month_max_amount",
+                    "account_one_month_std_dev",
                 ],
             ),
             (
                 "loan_escalation_context",
                 "대출 상승 맥락",
                 [
-                    "Customer_loan_type",
-                    "Customer_flag_terminal_malicious_behavior_1",
-                    "Customer_inquery_atm_limit",
-                    "Customer_increase_atm_limit",
-                    "Account_indicator_release_limit_excess",
-                    "Transaction_Amount",
-                    "Account_initial_balance",
-                    "Account_balance",
-                    "Account_amount_daily_limit",
-                    "Account_remaining_amount_daily_limit_exceeded",
-                    "Account_one_month_max_amount",
-                    "Account_one_month_std_dev",
+                    "customer_loan_type",
+                    "customer_flag_terminal_malicious_behavior_1",
+                    "customer_inquery_atm_limit",
+                    "customer_increase_atm_limit",
+                    "account_indicator_release_limit_excess",
+                    "transaction_amount",
+                    "account_initial_balance",
+                    "account_balance",
+                    "account_amount_daily_limit",
+                    "account_remaining_amount_daily_limit_exceeded",
+                    "account_one_month_max_amount",
+                    "account_one_month_std_dev",
                 ],
             ),
             (
                 "impossible_travel",
                 "불가능 이동",
-                ["Distance", "Time Difference"],
+                ["distance", "time_difference"],
             ),
             (
                 "recently_resumed",
                 "휴면계좌의 최근 거래 재개",
                 [
-                    "Unused_account_status",
-                    "Transaction_Datetime",
-                    "Transaction_resumed_date",
+                    "unused_account_status",
+                    "transaction_datetime",
+                    "transaction_resumed_date",
                 ],
             ),
             (
                 "phone_number_manipulation",
                 "전화번호 조작",
-                ["Customer_flag_terminal_malicious_behavior_1"],
+                ["customer_flag_terminal_malicious_behavior_1"],
             ),
             (
                 "remote_control",
                 "원격제어",
-                ["Customer_flag_terminal_malicious_behavior_2"],
+                ["customer_flag_terminal_malicious_behavior_2"],
             ),
             (
                 "vulnerable_mobile",
                 "고령자 모바일·취약 iOS 환경",
                 [
-                    "Customer_Birthyear",
-                    "Transaction_Datetime",
-                    "Channel",
-                    "Operating_System",
-                    "First_time_iOS_by_vulnerable_user",
+                    "customer_birth_date",
+                    "transaction_datetime",
+                    "channel",
+                    "operating_system",
+                    "first_time_ios_by_vulnerable_user",
                 ],
             ),
             (
                 "account_suspension_released",
                 "본인계좌 최근 정지해제",
-                ["Account_release_suspension"],
+                ["account_release_suspention"],
             ),
             (
                 "recipient_account_suspended",
                 "수취계좌 거래중지",
-                ["Recipient_account_suspend_status"],
+                ["recipient_account_suspend_status"],
             ),
             (
                 "suspension_pair",
                 "정지해제·수취정지 동시 충족",
                 [
-                    "Account_release_suspension",
-                    "Recipient_account_suspend_status",
+                    "account_release_suspention",
+                    "recipient_account_suspend_status",
                 ],
             ),
             (
                 "suspension_release_only",
                 "정지해제만 충족",
                 [
-                    "Account_release_suspension",
-                    "Recipient_account_suspend_status",
+                    "account_release_suspention",
+                    "recipient_account_suspend_status",
                 ],
             ),
             (
                 "recipient_suspended_only",
                 "수취정지만 충족",
                 [
-                    "Account_release_suspension",
-                    "Recipient_account_suspend_status",
+                    "account_release_suspention",
+                    "recipient_account_suspend_status",
                 ],
             ),
             (
                 "vpn_or_roaming",
                 "VPN 또는 로밍",
-                ["Customer_VPN_Indicator", "Customer_mobile_roaming_indicator"],
+                ["customer_vpn_indicator", "customer_mobile_roaming_indicator"],
             ),
         )
     ),
@@ -574,7 +624,9 @@ def _rule_response(session: Session, rule: FraudRule) -> FraudRuleResponse:
     )
 
 
-def _rule_set_response(session: Session, rule_set: FraudRuleSet) -> FraudRuleSetResponse:
+def _rule_set_response(
+    session: Session, rule_set: FraudRuleSet
+) -> FraudRuleSetResponse:
     return FraudRuleSetResponse(
         id=rule_set.id,
         version=rule_set.version,
@@ -643,6 +695,16 @@ def _expression_type_issues(
     field = expression.get("field")
     feature = _FEATURE_BY_FIELD.get(field)
     if feature is None:
+        if field in TRANSITION_LEGACY_RAW_ALIASES or field in (
+            TRANSITION_LEGACY_DERIVED_FEATURES
+        ):
+            yield FraudRuleValidationIssue(
+                path=f"{path}.field",
+                message=(
+                    f"{field}은 기존 ACTIVE 룰 평가 전용 이름입니다. "
+                    "새 룰에는 raw60 snake_case 필드를 사용해야 합니다."
+                ),
+            )
         return
     allowed = {item.value for item in feature.operators}
     if operator not in allowed:
@@ -845,9 +907,7 @@ def create_draft_rule_set(
         .order_by(FraudRuleSet.version.desc())
     ).first()
     if existing_draft is not None:
-        raise _conflict(
-            f"이미 수정 중인 DRAFT 룰셋이 있습니다: {existing_draft.id}"
-        )
+        raise _conflict(f"이미 수정 중인 DRAFT 룰셋이 있습니다: {existing_draft.id}")
 
     source: FraudRuleSet | None
     if payload is not None and payload.source_rule_set_id is not None:
@@ -1044,9 +1104,7 @@ def test_rule_set(
         ) from exc
 
     display_names = {
-        rule.type_code: rule.display_name
-        for rule in definition.rules
-        if rule.enabled
+        rule.type_code: rule.display_name for rule in definition.rules if rule.enabled
     }
     return FraudRuleTestResponse(
         rule_set_version=rule_set.version,
@@ -1185,9 +1243,7 @@ def activate_rule_set(
     session: SessionDep,
 ) -> FraudRuleSetResponse:
     statement = (
-        select(FraudRuleSet)
-        .where(FraudRuleSet.id == rule_set_id)
-        .with_for_update()
+        select(FraudRuleSet).where(FraudRuleSet.id == rule_set_id).with_for_update()
     )
     rule_set = session.exec(statement).first()
     if rule_set is None:
