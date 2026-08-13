@@ -1,9 +1,9 @@
 # 프론트에 반환할 통합 응답 DTO
+
 from enum import Enum
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
-
 
 T = TypeVar("T")
 
@@ -48,16 +48,17 @@ class MLView(BaseModel):
 # 유사 사례 결과를 담는 DTO
 class SimilarCaseView(BaseModel):
     similar_case_id: str
-    similarity_rank: int = Field(ge=1, le=3) # 이런 값도 있나?
+    similarity_rank: int = Field(ge=1, le=3) # 유사한 사례 상위 3개 보여준다는 뜻
     similarity_score: float = Field(ge=0, le=1)
     similarity_reason: str
 
 # 덕현님 에이전트가 반환하는 결과를 담는 DTO
 class CaseAgentView(BaseModel):
     execution_status: str # 실행 상태
-    failure_reason: str | None = None # 뭐에 실패한 거임?
+    failure_reason: str | None = None # 에이전트 실행 실패 이유
     risk_score: int | None = Field(default=None, ge=0, le=100) # 위험 점수
     risk_grade: str | None = None # 위험 등급
+    best_similar_case_id: str | None = None
 
     # 다른 Agent의 상세 구조가 변경될 수 있어 일단 dict로 받는다.
     rule_result: dict[str, Any] | None = None
@@ -66,25 +67,17 @@ class CaseAgentView(BaseModel):
         default_factory=list
     )
     response_result: dict[str, Any] | None = None
-    generation_metadata: dict[str, Any] = Field(
-        default_factory=dict
-    )
 
-    created_at: str | None = None
-    completed_at: str | None = None
-
-
+# 채팅 부분(이거 거의 그대로 감)
 class ChatMessageView(BaseModel):
     message_id: str
-    sender_type: str # 왜 이런 식으로 저장하지?
+    sender_type: str # 채팅 메시지를 보낸 주체
     message_text: str
     sent_at: str
-
-
 class ChatView(BaseModel):
     chat_session_id: str | None = None
-    session_status: str | None = None # 이게 뭐임
-    started_at: str | None = None
+    session_status: str | None = None # 
+    started_at: str | None = None 
     closed_at: str | None = None
     messages: list[ChatMessageView] = Field(default_factory=list)
 
@@ -99,7 +92,7 @@ class CaseDetailResponse(BaseModel):
     chat: SectionResult[ChatView]
     review: SectionResult[dict[str, Any]]
 
-# 유사 사례 뜻하는 거임?
+# 위험 점수와 위험 등급, 사기 유형 등의 거래 정보
 class CaseListItemResponse(BaseModel):
     case_id: str
     transaction_id: str
@@ -119,3 +112,54 @@ class DashboardSummaryResponse(BaseModel):
     completed_case_count: int = Field(ge=0)
     email_required_count: int = Field(ge=0)
     prevented_amount: int = Field(ge=0)
+
+# 대시보드 기간 설정 값
+class DashboardOverviewPeriod(BaseModel):
+    period_start: str
+    period_end: str
+
+# 대시보드 최상단 카드 값
+class DashboardOverviewSummary(BaseModel):
+    total_transaction_count: int # 총 거래 건수
+    suspicious_transaction_count: int # 사기 거래 건수
+    priority_review_count: int # 우선 대응 필요한 건수
+    suspicious_amount: int # 사기 의심 사건 총 피해 금액
+    rule_analysis_completed_count: int # 룰 분석 완료 건수
+
+# 우선순위 검토 대상 그래프
+class PriorityTrendPoint(BaseModel):
+    date: str
+    very_high_count: int
+    high_count: int
+    total_count: int
+
+# 의심 거래 건수/액수 그래프
+class SuspiciousTrendPoint(BaseModel):
+    date: str
+    suspicious_count: int
+    suspicious_amount: int
+
+# 위험등급별 건수/액수 그래프
+class DistributionItem(BaseModel):
+    label: str
+    count: int
+    amount: int
+
+# 대시보드 에이전트 분석 그래프
+class DashboardAgentInsight(BaseModel):
+    insight_id: str
+    title: str
+    summary: str
+    chart_spec: dict
+    created_at: str
+
+
+# 대시보드 그래프 
+class DashboardOverviewResponse(BaseModel):
+    period: DashboardOverviewPeriod
+    summary: DashboardOverviewSummary
+    priority_trend: list[PriorityTrendPoint]
+    suspicious_trend: list[SuspiciousTrendPoint]
+    risk_grade_distribution: list[DistributionItem]
+    channel_distribution: list[DistributionItem]
+    agent_insight: DashboardAgentInsight | None = None
