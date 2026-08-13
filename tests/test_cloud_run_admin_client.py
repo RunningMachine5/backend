@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from unittest.mock import Mock, patch
 
 import httpx
@@ -52,6 +53,80 @@ def current_service() -> dict:
                 "type": TRAFFIC_REVISION,
                 "revision": "serving-00001-old",
                 "percent": 100,
+            }
+        ],
+    }
+
+
+def cd_prepared_service(model_version: str = "17") -> dict:
+    service = deepcopy(current_service())
+    revision = "serving-00002-candidate"
+    container = service["template"]["containers"][0]
+    container["image"] = f"registry/serving@sha256:{'a' * 64}"
+    container["env"] = [
+        {"name": "ML_PREDICTOR_MODE", "value": "mlflow"},
+        {"name": "ML_MODEL_NAME", "value": "fraud-model"},
+        {"name": "ML_MODEL_VERSION", "value": model_version},
+        {
+            "name": "MLFLOW_TRACKING_PASSWORD",
+            "valueSource": {
+                "secretKeyRef": {"secret": "mlflow", "version": "latest"}
+            },
+        },
+    ]
+    service.update(
+        {
+            "etag": "etag-candidate",
+            "latestCreatedRevision": revision,
+            "latestReadyRevision": revision,
+            "trafficStatuses": [
+                {
+                    "type": TRAFFIC_REVISION,
+                    "revision": "serving-00001-old",
+                    "percent": 100,
+                },
+                {
+                    "type": TRAFFIC_REVISION,
+                    "revision": revision,
+                    "percent": 0,
+                    "tag": f"model-v{model_version}",
+                    "uri": f"https://model-v{model_version}---serving.run.app",
+                },
+            ],
+        }
+    )
+    return service
+
+
+def serving_revision(
+    name: str,
+    model_version: str,
+    *,
+    ready: bool = True,
+) -> dict:
+    return {
+        "name": (
+            "projects/test/locations/region/services/serving/"
+            f"revisions/{name}"
+        ),
+        "reconciling": not ready,
+        "conditions": [
+            {
+                "type": "Ready",
+                "state": (
+                    "CONDITION_SUCCEEDED" if ready else "CONDITION_PENDING"
+                ),
+            }
+        ],
+        "containers": [
+            {
+                "name": "serving",
+                "image": f"registry/serving@sha256:{'a' * 64}",
+                "env": [
+                    {"name": "ML_PREDICTOR_MODE", "value": "mlflow"},
+                    {"name": "ML_MODEL_NAME", "value": "fraud-model"},
+                    {"name": "ML_MODEL_VERSION", "value": model_version},
+                ],
             }
         ],
     }
@@ -242,6 +317,164 @@ class CloudRunAdminClientTest(unittest.TestCase):
         self.assertEqual(payload["traffic"][1]["tag"], "model-v17")
 
     @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_reuses_cd_prepared_ready_zero_traffic_revision(
+        self,
+        request: Mock,
+    ) -> None:
+        request.return_value = api_response(cd_prepared_service())
+        client = self.make_client(serving_container="serving")
+
+        result = client.stage_model_revision("17")
+
+        self.assertTrue(result["reused"])
+        self.assertIsNone(result["operation"])
+        self.assertEqual(result["tag"], "model-v17")
+        self.assertEqual(result["revision"], "serving-00002-candidate")
+        self.assertEqual(
+            result["previousTraffic"],
+            [
+                {
+                    "type": TRAFFIC_REVISION,
+                    "revision": "serving-00001-old",
+                    "percent": 100,
+                }
+            ],
+        )
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[0], "GET")
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_accepts_omitted_zero_percent_from_cloud_run_v2(
+        self,
+        request: Mock,
+    ) -> None:
+        service = cd_prepared_service()
+        service["trafficStatuses"][1].pop("percent")
+        request.return_value = api_response(service)
+        client = self.make_client(serving_container="serving")
+
+        result = client.stage_model_revision("17")
+
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["revision"], "serving-00002-candidate")
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_rejects_duplicate_model_tag(self, request: Mock) -> None:
+        service = cd_prepared_service()
+        duplicate = deepcopy(service["trafficStatuses"][1])
+        duplicate["revision"] = "serving-00003-duplicate"
+        service["trafficStatuses"].append(duplicate)
+        request.return_value = api_response(service)
+        client = self.make_client(serving_container="serving")
+
+        with self.assertRaisesRegex(CloudRunAdminError, "중복"):
+            client.stage_model_revision("17")
+
+        self.assertEqual(request.call_count, 1)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_requires_cd_prepared_tag(self, request: Mock) -> None:
+        request.return_value = api_response(current_service())
+        client = self.make_client(serving_container="serving")
+
+        with self.assertRaisesRegex(CloudRunAdminError, "ML Serving CD"):
+            client.stage_model_revision("17")
+
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[0], "GET")
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_rejects_cd_revision_with_mismatched_model_config(
+        self,
+        request: Mock,
+    ) -> None:
+        service = cd_prepared_service()
+        env = service["template"]["containers"][0]["env"]
+        next(item for item in env if item["name"] == "ML_MODEL_VERSION")["value"] = "99"
+        request.return_value = api_response(service)
+        client = self.make_client(serving_container="serving")
+
+        with self.assertRaisesRegex(CloudRunAdminError, "모델 설정"):
+            client.stage_model_revision("17")
+
+        self.assertEqual(request.call_count, 1)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_rejects_cd_revision_while_service_is_reconciling(
+        self,
+        request: Mock,
+    ) -> None:
+        service = cd_prepared_service()
+        service["reconciling"] = True
+        request.return_value = api_response(service)
+        client = self.make_client(serving_container="serving")
+
+        with self.assertRaisesRegex(CloudRunAdminError, "준비 중"):
+            client.stage_model_revision("17")
+
+        self.assertEqual(request.call_count, 1)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_requires_latest_ready_revision_and_preserved_live_traffic(
+        self,
+        request: Mock,
+    ) -> None:
+        client = self.make_client(serving_container="serving")
+        cases = (
+            ("stale", "가장 최근"),
+            ("not-ready", "Ready"),
+            ("candidate-live", "운영 트래픽"),
+        )
+
+        for case, expected_message in cases:
+            with self.subTest(case=case):
+                service = cd_prepared_service()
+                if case == "stale":
+                    service["latestCreatedRevision"] = "serving-00003-other"
+                    service["latestReadyRevision"] = "serving-00003-other"
+                elif case == "not-ready":
+                    service["latestReadyRevision"] = "serving-00001-old"
+                else:
+                    service["trafficStatuses"][0]["revision"] = (
+                        "serving-00002-candidate"
+                    )
+                request.reset_mock()
+                request.return_value = api_response(service)
+
+                with self.assertRaisesRegex(CloudRunAdminError, expected_message):
+                    client.stage_model_revision("17")
+
+                self.assertEqual(request.call_count, 1)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_stage_rejects_unpinned_image_or_nonzero_candidate_traffic(
+        self,
+        request: Mock,
+    ) -> None:
+        client = self.make_client(serving_container="serving")
+
+        for field, expected_message in (
+            ("image", "digest"),
+            ("traffic", "0%"),
+        ):
+            with self.subTest(field=field):
+                service = cd_prepared_service()
+                if field == "image":
+                    service["template"]["containers"][0]["image"] = (
+                        "registry/serving:latest"
+                    )
+                else:
+                    service["trafficStatuses"][0]["percent"] = 99
+                    service["trafficStatuses"][1]["percent"] = 1
+                request.reset_mock()
+                request.return_value = api_response(service)
+
+                with self.assertRaisesRegex(CloudRunAdminError, expected_message):
+                    client.stage_model_revision("17")
+
+                self.assertEqual(request.call_count, 1)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
     def test_promote_resolves_latest_tag_then_smoke_tests_and_moves_traffic(
         self,
         request: Mock,
@@ -275,6 +508,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         )
         request.side_effect = [
             api_response(service),
+            api_response(serving_revision("serving-00002-new", "17")),
             api_response(
                 {"name": "projects/test/locations/region/operations/promote-op"}
             ),
@@ -301,7 +535,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
             "https://model-v17---serving.run.app",
             "https://serving.run.app",
         )
-        patch_payload = request.call_args_list[1].kwargs["json"]
+        patch_payload = request.call_args_list[2].kwargs["json"]
         self.assertEqual(
             patch_payload["traffic"],
             [
@@ -309,6 +543,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
                     "type": TRAFFIC_REVISION,
                     "revision": "serving-00002-new",
                     "percent": 100,
+                    "tag": "model-v17",
                 }
             ],
         )
@@ -377,7 +612,10 @@ class CloudRunAdminClientTest(unittest.TestCase):
                 ],
             }
         )
-        request.return_value = api_response(service)
+        request.side_effect = [
+            api_response(service),
+            api_response(serving_revision("serving-00017-new", "17")),
+        ]
         client = self.make_client()
 
         result = client.get_model_deployment_status("17")
@@ -385,6 +623,35 @@ class CloudRunAdminClientTest(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["revision"], "serving-00017-new")
         self.assertEqual(result["trafficPercent"], 100)
+        self.assertEqual(
+            request.call_args_list[1].args[1],
+            (
+                "https://run.googleapis.com/v2/projects/test/locations/region/"
+                "services/serving/revisions/serving-00017-new"
+            ),
+        )
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_promote_revalidates_concrete_candidate_contract_before_smoke(
+        self,
+        request: Mock,
+    ) -> None:
+        service = cd_prepared_service()
+        candidate = serving_revision("serving-00002-candidate", "17")
+        candidate["containers"][0]["image"] = "registry/serving:latest"
+        request.side_effect = [api_response(service), api_response(candidate)]
+        smoke_factory = Mock()
+        client = self.make_client(smoke_client_factory=smoke_factory)
+
+        with self.assertRaisesRegex(CloudRunAdminError, "digest"):
+            client.promote_model_revision(
+                model_version="17",
+                transaction_id="TX-SMOKE",
+                features={},
+            )
+
+        smoke_factory.assert_not_called()
+        self.assertEqual(request.call_count, 2)
 
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_deployment_status_rejects_wrong_revision_model_env(
@@ -405,13 +672,103 @@ class CloudRunAdminClientTest(unittest.TestCase):
                 ],
             }
         )
-        request.return_value = api_response(service)
+        request.side_effect = [
+            api_response(service),
+            api_response(serving_revision("serving-00017-new", "1")),
+        ]
         client = self.make_client()
 
         result = client.get_model_deployment_status("17")
 
         self.assertFalse(result["ready"])
         self.assertIn("모델 버전", result["reason"])
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_deployment_status_uses_live_revision_when_newer_zero_traffic_exists(
+        self,
+        request: Mock,
+    ) -> None:
+        service = cd_prepared_service(model_version="18")
+        # v18 is the latest Ready candidate, but the approved v17 revision still
+        # owns all traffic. Completion for v17 must inspect that concrete revision.
+        service["trafficStatuses"][0]["revision"] = "serving-00017-live"
+        service["trafficStatuses"][0]["percent"] = 100
+        request.side_effect = [
+            api_response(service),
+            api_response(serving_revision("serving-00017-live", "17")),
+        ]
+        client = self.make_client()
+
+        result = client.get_model_deployment_status("17")
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["revision"], "serving-00017-live")
+        self.assertEqual(result["revisionModelVersion"], "17")
+        self.assertEqual(request.call_count, 2)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_deployment_status_rejects_invalid_live_revision_contract(
+        self,
+        request: Mock,
+    ) -> None:
+        client = self.make_client()
+        service = current_service()
+        service["trafficStatuses"] = [
+            {
+                "type": TRAFFIC_REVISION,
+                "revision": "serving-00017-live",
+                "percent": 100,
+            }
+        ]
+
+        for case, expected_message in (
+            ("image", "digest"),
+            ("threshold", "임계값"),
+            ("mode", "mlflow"),
+            ("name", "모델 이름"),
+            ("ready", "Ready"),
+        ):
+            with self.subTest(case=case):
+                revision = serving_revision("serving-00017-live", "17")
+                container = revision["containers"][0]
+                env = container["env"]
+                if case == "image":
+                    container["image"] = "registry/serving:latest"
+                elif case == "threshold":
+                    env.append({"name": "ML_FRAUD_THRESHOLD", "value": "0.5"})
+                elif case == "mode":
+                    env[0]["value"] = "fake"
+                elif case == "name":
+                    env[1]["value"] = "other-model"
+                else:
+                    revision = serving_revision(
+                        "serving-00017-live",
+                        "17",
+                        ready=False,
+                    )
+                request.reset_mock()
+                request.side_effect = [
+                    api_response(deepcopy(service)),
+                    api_response(revision),
+                ]
+
+                result = client.get_model_deployment_status("17")
+
+                self.assertFalse(result["ready"])
+                self.assertIn(expected_message, result["reason"])
+
+    def test_revision_resource_rejects_path_injection(self) -> None:
+        client = self.make_client()
+        with self.assertRaisesRegex(CloudRunAdminError, "revision 이름"):
+            client._revision_resource("../services/other")
+
+    def test_deployment_tag_accepts_only_positive_ascii_version(self) -> None:
+        client = self.make_client()
+        self.assertEqual(client._deployment_tag("17"), "model-v17")
+        for invalid in ("0", "01", "-1", "１７", "1.0"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(CloudRunAdminError, "ASCII"):
+                    client._deployment_tag(invalid)
 
     def test_operation_id_rejects_resource_path_injection(self) -> None:
         client = self.make_client()
