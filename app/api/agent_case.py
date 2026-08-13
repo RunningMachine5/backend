@@ -19,6 +19,7 @@ from app.dto.agent import (
     SimilarCaseResultDTO,
 )
 from app.repositories.agent_case import AgentCaseRepository
+from app.repositories.agent_email import AgentEmailRepository
 from app.repositories.agent_guide import AgentGuideRepository
 from app.repositories.agent_investigation import AgentInvestigationRepository
 from app.repositories.transaction import PredictionResultRepository
@@ -29,6 +30,7 @@ from app.services.agent.case_service import (
 from app.services.agent.guide_embedder import OpenAIGuideEmbedder
 from app.services.agent.guide_search import GuideSearchService
 from app.services.agent.response_policy import get_default_policy_repository
+from app.services.agent.email_sender import FraudAlertEmailService
 from app.services.agent.response_plan_generator import RagResponsePlanGenerator
 from app.services.agent.similar_case_investigator import (
     DatabaseSimilarCaseTools,
@@ -89,6 +91,9 @@ def get_agent_workflow(session: SessionDep) -> AgentWorkflow:
         guide_search_service=guide_search,
         investigator=investigator,
         response_plan_generator=RagResponsePlanGenerator(),
+        email_notifier=FraudAlertEmailService.from_env(
+            AgentEmailRepository(session)
+        ),
     )
 
 
