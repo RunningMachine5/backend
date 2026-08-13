@@ -238,6 +238,14 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(response.investigation_result.investigation_status, InvestigationStatus.NOT_REQUIRED)
         self.assertEqual(response.response_result.applied_fraud_type, "ACCOUNT_TAKEOVER")
         self.assertEqual(case_service.complete_calls, 1)
+        self.assertGreaterEqual(response.generation_metadata["total_latency_ms"], 0)
+        self.assertEqual(response.generation_metadata["investigation_latency_ms"], 0)
+        self.assertEqual(response.generation_metadata["react_llm_call_count"], 0)
+        self.assertEqual(response.generation_metadata["api_attempt_count"], 0)
+        self.assertEqual(response.generation_metadata["retry_count"], 0)
+        self.assertEqual(response.generation_metadata["tool_call_count"], 0)
+        self.assertFalse(response.generation_metadata["fallback_used"])
+        self.assertIsNone(response.generation_metadata["fallback_reason"])
 
     def test_ambiguous_case_uses_investigator_recommendation(self) -> None:
         investigator = FakeInvestigator("MESSENGER_PHISHING")

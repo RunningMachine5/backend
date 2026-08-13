@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Protocol, TypedDict
 
@@ -46,6 +47,8 @@ class AgentGraphState(TypedDict, total=False):
     response_plan: ResponsePlanDTO
     final_response: AgentResponseDTO
     failure_reason: str
+    workflow_started_at: float
+    investigation_metrics: dict[str, object]
 
 
 class AmbiguousTypeInvestigator(Protocol):
@@ -59,6 +62,7 @@ class AmbiguousTypeInvestigator(Protocol):
         confidence: TypeConfidenceResult,
         risk_score: int,
         risk_grade: str,
+        metrics: dict[str, object] | None = None,
     ) -> InvestigationResultDTO: ...
 
 
@@ -85,9 +89,10 @@ class RuleFirstFallbackInvestigator:
         confidence: TypeConfidenceResult,
         risk_score: int,
         risk_grade: str,
+        metrics: dict[str, object] | None = None,
     ) -> InvestigationResultDTO:
         del case_id, rule_result, risk_score, risk_grade
-        return InvestigationResultDTO(
+        result = InvestigationResultDTO(
             classification_status=ClassificationStatus.AMBIGUOUS,
             score_margin=confidence.score_margin,
             investigation_status=InvestigationStatus.INSUFFICIENT_EVIDENCE,
@@ -99,6 +104,19 @@ class RuleFirstFallbackInvestigator:
             common_evidence_codes=[],
             confirmed_case_count=0,
         )
+        if metrics is not None:
+            metrics.update(
+                {
+                    "investigation_latency_ms": 0,
+                    "react_llm_call_count": 0,
+                    "api_attempt_count": 0,
+                    "retry_count": 0,
+                    "tool_call_count": 0,
+                    "fallback_used": True,
+                    "fallback_reason": result.recommendation_reason,
+                }
+            )
+        return result
 
 
 class PolicyResponsePlanGenerator:
@@ -172,7 +190,13 @@ class AgentWorkflow:
     def run_state(self, agent_input: AgentInputDTO) -> AgentGraphState:
         """이메일 명령을 포함한 전체 실행 State가 필요한 연결 계층에서 사용한다."""
 
-        return self.graph.invoke({"agent_input": agent_input})
+        return self.graph.invoke(
+            {
+                "agent_input": agent_input,
+                "workflow_started_at": time.perf_counter(),
+                "investigation_metrics": {},
+            }
+        )
 
     def _build_graph(self):
         graph = StateGraph(AgentGraphState)
@@ -264,12 +288,14 @@ class AgentWorkflow:
     def _investigate_type(self, state: AgentGraphState) -> dict[str, object]:
         agent_input = state["agent_input"]
         confidence = state["type_confidence"]
+        metrics: dict[str, object] = {}
         result = self.investigator.investigate(
             case_id=state["case_id"],
             rule_result=state["rule_result"],
             confidence=confidence,
             risk_score=agent_input.risk_score,
             risk_grade=agent_input.risk_grade.value,
+            metrics=metrics,
         )
         candidate_types = {confidence.top_type_code, confidence.second_type_code}
         applied_type = (
@@ -281,6 +307,7 @@ class AgentWorkflow:
         return {
             "investigation_result": result,
             "applied_fraud_type": applied_type,
+            "investigation_metrics": metrics,
         }
 
     @staticmethod
@@ -328,6 +355,19 @@ class AgentWorkflow:
         }
 
     def _complete_case(self, state: AgentGraphState) -> dict[str, object]:
+        metrics = {
+            "total_latency_ms": round(
+                (time.perf_counter() - state["workflow_started_at"]) * 1000
+            ),
+            "investigation_latency_ms": 0,
+            "react_llm_call_count": 0,
+            "api_attempt_count": 0,
+            "retry_count": 0,
+            "tool_call_count": 0,
+            "fallback_used": False,
+            "fallback_reason": None,
+            **state.get("investigation_metrics", {}),
+        }
         response = self.case_service.complete_case(
             state["case_id"],
             investigation_result=state["investigation_result"],
@@ -339,6 +379,7 @@ class AgentWorkflow:
                     "type_confidence"
                 ].classification_status.value,
                 "retrieved_guide_count": len(state["retrieved_guides"]),
+                **metrics,
             },
         )
         return {"final_response": response}
@@ -350,7 +391,20 @@ class AgentWorkflow:
         response = self.case_service.fail_case(
             case_id,
             failure_reason=state.get("failure_reason", "Agent 실행에 실패했다."),
-            generation_metadata={"workflow_version": "1.0"},
+            generation_metadata={
+                "workflow_version": "1.0",
+                "total_latency_ms": round(
+                    (time.perf_counter() - state["workflow_started_at"]) * 1000
+                ),
+                "investigation_latency_ms": 0,
+                "react_llm_call_count": 0,
+                "api_attempt_count": 0,
+                "retry_count": 0,
+                "tool_call_count": 0,
+                "fallback_used": True,
+                "fallback_reason": state.get("failure_reason"),
+                **state.get("investigation_metrics", {}),
+            },
         )
         return {"final_response": response}
 
