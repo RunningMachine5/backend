@@ -8,14 +8,14 @@ class Account(SQLModel, table=True):
     """내부·외부 계좌 식별 정보와 현재 한도·정지 상태.
 
     수취 계좌처럼 외부에서 처음 관측되는 계좌는 한도·잔액을 알 수 없으므로
-    해당 컬럼을 NULL로 남긴다. 룰 평가가 읽는 값은 항상 출금 계좌 쪽이며,
-    출금 계좌는 거래 요청의 raw59 Feature로 전부 채워진다.
+    해당 컬럼을 NULL로 남긴다. 출금 계좌도 원천 데이터가 제공하지 않은 값은
+    NULL을 허용한다.
     """
 
     __tablename__ = "accounts"
     __table_args__ = (
         CheckConstraint(
-            "account_type IS NULL OR account_type IN ('a', 'b', 'c', 'd')",
+            "account_type IS NULL OR account_type IN ('a', 'b', 'c', 'd', 'e')",
             name="ck_accounts_account_type",
         ),
         CheckConstraint(
@@ -28,10 +28,10 @@ class Account(SQLModel, table=True):
         ),
     )
 
-    account_id: str = Field(primary_key=True, max_length=64)
+    id: str = Field(primary_key=True, max_length=64)
     customer_id: str | None = Field(
         default=None,
-        foreign_key="customers.customer_id",
+        foreign_key="customers.id",
         ondelete="SET NULL",
         max_length=64,
         index=True,
