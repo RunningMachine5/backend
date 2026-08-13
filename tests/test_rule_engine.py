@@ -79,15 +79,15 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Customer_flag_terminal_malicious_behavior_1": 1,
-                "Customer_loan_type": "b",
-                "Customer_inquery_atm_limit": 1,
-                "Customer_increase_atm_limit": 1,
-                "Account_indicator_release_limit_excess": 1,
-                "Transaction_Amount": 9_000_000,
-                "Transaction_history_with_the_account": 1,
-                "Another_Person_Account": 1,
-                "Customer_flag_terminal_malicious_behavior_2": 1,
+                "customer_flag_terminal_malicious_behavior_1": 1,
+                "customer_loan_type": "b",
+                "customer_inquery_atm_limit": 1,
+                "customer_increase_atm_limit": 1,
+                "account_indicator_release_limit_excess": 1,
+                "transaction_amount": 9_000_000,
+                "transaction_history_with_the_account": 1,
+                "another_person_account": 1,
+                "customer_flag_terminal_malicious_behavior_2": 1,
             }
         )
 
@@ -111,13 +111,13 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Customer_loan_type": "b",
-                "Customer_inquery_atm_limit": 1,
-                "Transaction_Amount": 301,
-                "Account_one_month_max_amount": 300,
-                "Account_one_month_std_dev": 100,
-                "Transaction_history_with_the_account": 1,
-                "Another_Person_Account": 1,
+                "customer_loan_type": "b",
+                "customer_inquery_atm_limit": 1,
+                "transaction_amount": 301,
+                "account_one_month_max_amount": 300,
+                "account_one_month_std_dev": 100,
+                "transaction_history_with_the_account": 1,
+                "another_person_account": 1,
             }
         )
 
@@ -130,17 +130,17 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Customer_Birthyear": 1960,
-                "Channel": "mobile",
-                "Operating_System": "Android",
-                "Customer_flag_terminal_malicious_behavior_2": 1,
-                "Account_indicator_Openbanking": 1,
-                "Customer_flag_change_of_authentication_1": 1,
-                "Customer_flag_change_of_authentication_2": 1,
-                "Customer_flag_change_of_authentication_3": 1,
-                "Transaction_history_with_the_account": 1,
-                "Another_Person_Account": 1,
-                "Number_of_transaction_with_the_account": 3,
+                "customer_birth_date": "1960-01-01T00:00:00+09:00",
+                "channel": "mobile",
+                "operating_system": "android",
+                "customer_flag_terminal_malicious_behavior_2": 1,
+                "account_indicator_openbanking": 1,
+                "customer_flag_change_of_authentication_1": 1,
+                "customer_flag_change_of_authentication_2": 1,
+                "customer_flag_change_of_authentication_3": 1,
+                "transaction_history_with_the_account": 1,
+                "another_person_account": 1,
+                "number_of_transaction_with_the_account": 3,
             }
         )
 
@@ -153,12 +153,12 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Customer_Birthyear": 1960,
-                "Channel": "mobile",
-                "Account_indicator_Openbanking": 1,
-                "Customer_flag_change_of_authentication_1": 1,
-                "Customer_flag_change_of_authentication_2": 1,
-                "Customer_flag_change_of_authentication_3": 1,
+                "customer_birth_date": "1960-01-01T00:00:00+09:00",
+                "channel": "mobile",
+                "account_indicator_openbanking": 1,
+                "customer_flag_change_of_authentication_1": 1,
+                "customer_flag_change_of_authentication_2": 1,
+                "customer_flag_change_of_authentication_3": 1,
             }
         )
 
@@ -171,17 +171,17 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Unused_terminal_status": 1,
-                "Customer_flag_terminal_malicious_behavior_3": 1,
-                "Customer_flag_terminal_malicious_behavior_5": 1,
-                "Customer_flag_terminal_malicious_behavior_2": 1,
-                "Customer_flag_change_of_authentication_1": 1,
-                "Customer_flag_change_of_authentication_2": 1,
-                "Customer_flag_change_of_authentication_3": 1,
-                "Distance": 100,
-                "Time Difference": "0 days 02:00:00",
-                "Customer_VPN_Indicator": 1,
-                "Transaction_num_connection_failure": 3,
+                "unused_terminal_status": 1,
+                "customer_flag_terminal_malicious_behavior_3": 1,
+                "customer_flag_terminal_malicious_behavior_5": 1,
+                "customer_flag_terminal_malicious_behavior_2": 1,
+                "customer_flag_change_of_authentication_1": 1,
+                "customer_flag_change_of_authentication_2": 1,
+                "customer_flag_change_of_authentication_3": 1,
+                "distance": 100,
+                "time_difference": "0 days 02:00:00",
+                "customer_vpn_indicator": 1,
+                "transaction_num_connection_failure": 3,
             }
         )
 
@@ -194,11 +194,11 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Unused_terminal_status": 1,
-                "Customer_flag_change_of_authentication_1": 1,
-                "Customer_flag_change_of_authentication_2": 1,
-                "Customer_flag_change_of_authentication_3": 1,
-                "Customer_VPN_Indicator": 1,
+                "unused_terminal_status": 1,
+                "customer_flag_change_of_authentication_1": 1,
+                "customer_flag_change_of_authentication_2": 1,
+                "customer_flag_change_of_authentication_3": 1,
+                "customer_vpn_indicator": 1,
             }
         )
 
@@ -211,12 +211,12 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Account_release_suspension": 1,
-                "Recipient_account_suspend_status": 1,
-                "Unused_account_status": 1,
-                "Transaction_resumed_date": "2026-07-20T14:30:00+09:00",
-                "Flag_deposit_more_than_tenMillion": 1,
-                "Number_of_transaction_with_the_account": 3,
+                "account_release_suspention": 1,
+                "recipient_account_suspend_status": 1,
+                "unused_account_status": 1,
+                "transaction_resumed_date": "2026-07-20T14:30:00+09:00",
+                "flag_deposit_more_than_ten_million": 1,
+                "number_of_transaction_with_the_account": 3,
             }
         )
 
@@ -243,12 +243,12 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "Customer_flag_terminal_malicious_behavior_2": 1,
-                "Customer_flag_terminal_malicious_behavior_3": 1,
-                "Customer_flag_terminal_malicious_behavior_5": 1,
-                "Customer_flag_change_of_authentication_1": 1,
-                "Customer_flag_change_of_authentication_2": 1,
-                "Customer_flag_change_of_authentication_3": 1,
+                "customer_flag_terminal_malicious_behavior_2": 1,
+                "customer_flag_terminal_malicious_behavior_3": 1,
+                "customer_flag_terminal_malicious_behavior_5": 1,
+                "customer_flag_change_of_authentication_1": 1,
+                "customer_flag_change_of_authentication_2": 1,
+                "customer_flag_change_of_authentication_3": 1,
             }
         )
 
@@ -266,7 +266,7 @@ class RuleEngineTest(unittest.TestCase):
                     component_key="open_banking_signal",
                     name="오픈뱅킹 신호",
                     condition_expression={
-                        "field": "Account_indicator_Openbanking",
+                        "field": "account_indicator_openbanking",
                         "operator": "EQ",
                         "value": 1,
                     },
@@ -279,7 +279,7 @@ class RuleEngineTest(unittest.TestCase):
             rules=(*DEFAULT_RULE_SET.rules, new_rule),
         )
         raw_data = valid_rule_raw_data()
-        raw_data["Account_indicator_Openbanking"] = 1
+        raw_data["account_indicator_openbanking"] = 1
 
         result = self.engine.score(raw_data, custom_rule_set)
 

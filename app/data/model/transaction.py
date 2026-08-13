@@ -33,7 +33,7 @@ class Transaction(SQLModel, table=True):
         ),
         Index("ix_transactions_transaction_datetime", "transaction_datetime"),
         CheckConstraint(
-            "channel IN ('mobile', 'internet', 'ATM', 'Others')",
+            "channel IN ('mobile', 'internet', 'atm', 'others')",
             name="ck_transactions_channel",
         ),
         CheckConstraint(
@@ -43,10 +43,6 @@ class Transaction(SQLModel, table=True):
         CheckConstraint(
             "access_medium IN ('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')",
             name="ck_transactions_access_medium",
-        ),
-        CheckConstraint(
-            "error_code IN ('a', 'b', 'c', 'd', 'e', 'f')",
-            name="ck_transactions_error_code",
         ),
         CheckConstraint(
             "location_lat IS NULL OR location_lat BETWEEN -90 AND 90",
@@ -59,6 +55,18 @@ class Transaction(SQLModel, table=True):
         CheckConstraint(
             "num_connection_failure >= 0",
             name="ck_transactions_num_connection_failure",
+        ),
+        CheckConstraint(
+            "transaction_amount > 0",
+            name="ck_transactions_transaction_amount_positive",
+        ),
+        CheckConstraint(
+            "initial_balance >= 0",
+            name="ck_transactions_initial_balance_nonnegative",
+        ),
+        CheckConstraint(
+            "remaining_amount_daily_limit_exceeded >= 0",
+            name="ck_transactions_remaining_daily_limit_nonnegative",
         ),
     )
 
@@ -84,17 +92,14 @@ class Transaction(SQLModel, table=True):
     transaction_datetime: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False)
     )
-    # ERD 주석은 출금을 음수로 적지만, ML 54개 입력 계약은 양수만 허용한다
-    # (MLTransactionFeatures.Transaction_Amount: gt=0). 계약을 따라 양수로 둔다.
+    # ML raw64의 transaction_amount는 출금액의 절댓값이므로 항상 양수다.
     transaction_amount: int = Field(sa_type=BigInteger)
 
     channel: str = Field(max_length=32)
     type_general_automatic: str = Field(max_length=16)
     access_medium: str = Field(max_length=8)
-    error_code: str = Field(max_length=8)
-    num_connection_failure: int = Field(
-        sa_column=Column(SmallInteger, nullable=False)
-    )
+    error_code: str = Field(max_length=64)
+    num_connection_failure: int = Field(sa_column=Column(SmallInteger, nullable=False))
     another_person_account: bool
 
     # 거래 시점 계좌 상태 스냅샷
@@ -103,7 +108,7 @@ class Transaction(SQLModel, table=True):
     remaining_amount_daily_limit_exceeded: int = Field(sa_type=BigInteger)
 
     # 단말·접속 환경
-    operating_system: str = Field(max_length=32)
+    operating_system: str | None = Field(default=None, max_length=32)
     ip_address: str | None = Field(
         default=None,
         sa_column=Column(INET_COLUMN, nullable=True),
