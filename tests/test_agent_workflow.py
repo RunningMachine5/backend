@@ -215,6 +215,17 @@ class FakeInvestigator:
         )
 
 
+class FakeEmailNotifier:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.commands = []
+
+    def send(self, command) -> None:
+        self.commands.append(command)
+        if self.error is not None:
+            raise self.error
+
+
 class AgentWorkflowTest(unittest.TestCase):
     def test_confident_case_skips_investigation_and_completes(self) -> None:
         investigator = FakeInvestigator("MESSENGER_PHISHING")
@@ -299,6 +310,23 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(response.execution_status, AgentExecutionStatus.FAILED)
         self.assertEqual(response.failure_reason, "검색 실패")
         self.assertEqual(case_service.fail_calls, 1)
+
+    def test_email_failure_does_not_stop_response_plan_generation(self) -> None:
+        email_notifier = FakeEmailNotifier(error=RuntimeError("SMTP 실패"))
+        case_service = FakeCaseService(self._rule_result(0.80, 0.40))
+        workflow = AgentWorkflow(
+            case_service=case_service,  # type: ignore[arg-type]
+            policy_repository=FakePolicyRepository(),
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            email_notifier=email_notifier,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(len(email_notifier.commands), 1)
+        self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
+        self.assertIsNotNone(response.response_result)
+        self.assertEqual(case_service.complete_calls, 1)
 
     @staticmethod
     def _input() -> AgentInputDTO:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Protocol, TypedDict
@@ -21,6 +22,7 @@ from app.dto.agent import (
 from app.dto.agent_guide import GuideSearchRequestDTO, RetrievedGuideChunkDTO
 from app.services.agent.case_service import AgentCaseService
 from app.services.agent.email_command_builder import build_fraud_alert_email_command
+from app.services.agent.email_sender import NoOpFraudAlertEmailService
 from app.services.agent.guide_search import GuideSearchService
 from app.services.agent.response_plan_generator import PolicyResponsePlanGenerator
 from app.services.agent.type_confidence import TypeConfidenceResult
@@ -71,6 +73,12 @@ class ResponsePlanGenerator(Protocol):
         policy: ResponsePolicy,
         guides: list[RetrievedGuideChunkDTO],
     ) -> ResponsePlanDTO: ...
+
+
+class FraudAlertEmailNotifier(Protocol):
+    """생성된 이상거래 이메일 명령을 고객 안내 서비스에 전달한다."""
+
+    def send(self, command: FraudAlertEmailCommand) -> None: ...
 
 
 class RuleFirstFallbackInvestigator:
@@ -125,6 +133,7 @@ class AgentWorkflow:
         guide_search_service: GuideSearchService,
         investigator: AmbiguousTypeInvestigator | None = None,
         response_plan_generator: ResponsePlanGenerator | None = None,
+        email_notifier: FraudAlertEmailNotifier | None = None,
     ) -> None:
         self.case_service = case_service
         self.policy_repository = policy_repository
@@ -133,6 +142,7 @@ class AgentWorkflow:
         self.response_plan_generator = (
             response_plan_generator or PolicyResponsePlanGenerator()
         )
+        self.email_notifier = email_notifier or NoOpFraudAlertEmailService()
         self.graph = self._build_graph()
 
     def run(self, agent_input: AgentInputDTO) -> AgentResponseDTO:
@@ -158,6 +168,7 @@ class AgentWorkflow:
         graph.add_node("use_rule_type", self._safe(self._use_rule_type))
         graph.add_node("investigate_type", self._safe(self._investigate_type))
         graph.add_node("build_email_command", self._safe(self._build_email_command))
+        graph.add_node("send_alert_email", self._send_alert_email)
         graph.add_node("load_policy", self._safe(self._load_policy))
         graph.add_node("search_guides", self._safe(self._search_guides))
         graph.add_node("generate_plan", self._safe(self._generate_plan))
@@ -177,7 +188,8 @@ class AgentWorkflow:
         )
         self._add_failure_route(graph, "use_rule_type", "build_email_command")
         self._add_failure_route(graph, "investigate_type", "build_email_command")
-        self._add_failure_route(graph, "build_email_command", "load_policy")
+        self._add_failure_route(graph, "build_email_command", "send_alert_email")
+        graph.add_edge("send_alert_email", "load_policy")
         self._add_failure_route(graph, "load_policy", "search_guides")
         self._add_failure_route(graph, "search_guides", "generate_plan")
         self._add_failure_route(graph, "generate_plan", "complete_case")
@@ -273,6 +285,18 @@ class AgentWorkflow:
                 investigation_result=state["investigation_result"],
             )
         }
+
+    def _send_alert_email(self, state: AgentGraphState) -> dict[str, object]:
+        """발송 장애가 뒤의 정책·RAG 흐름을 중단시키지 않도록 분리한다."""
+
+        try:
+            self.email_notifier.send(state["email_command"])
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "이상거래 안내 이메일 발송 실패: %s",
+                error,
+            )
+        return {}
 
     def _load_policy(self, state: AgentGraphState) -> dict[str, object]:
         policy = self.policy_repository.get_response_policy(
@@ -376,6 +400,7 @@ __all__ = [
     "AgentGraphState",
     "AgentWorkflow",
     "AmbiguousTypeInvestigator",
+    "FraudAlertEmailNotifier",
     "PolicyResponsePlanGenerator",
     "ResponsePlanGenerator",
     "RuleFirstFallbackInvestigator",
