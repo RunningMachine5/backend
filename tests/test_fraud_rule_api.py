@@ -99,6 +99,12 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertIn("amount_anomaly", fields)
         self.assertIn("impossible_travel", fields)
         self.assertNotIn("card_context_proxy", fields)
+        account_type = next(
+            feature
+            for feature in response.json()
+            if feature["field"] == "account_account_type"
+        )
+        self.assertEqual(account_type["allowed_values"], ["a", "b", "c", "d", "e"])
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_rule_set_test_returns_all_default_rule_scores(self) -> None:

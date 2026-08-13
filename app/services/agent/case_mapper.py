@@ -96,7 +96,7 @@ def build_agent_input_dto(
 ) -> AgentInputDTO:
     """동일 거래의 Rule 결과와 위험등급을 Agent 실행 입력으로 묶는다."""
 
-    if transaction.transaction_id != score_result.transaction_id:
+    if transaction.id != score_result.transaction_id:
         raise ValueError("거래와 Rule 결과의 transaction_id가 일치하지 않는다.")
     if score_result.id is None:
         raise ValueError("저장되지 않은 Rule 결과는 Agent 입력으로 사용할 수 없다.")
@@ -109,7 +109,7 @@ def build_agent_input_dto(
         risk_grade if isinstance(risk_grade, RiskGrade) else RiskGrade(risk_grade)
     )
     return AgentInputDTO(
-        transaction_id=transaction.transaction_id,
+        transaction_id=transaction.id,
         fraud_type_score_result_id=score_result.id,
         risk_score=risk_score,
         risk_grade=normalized_grade,

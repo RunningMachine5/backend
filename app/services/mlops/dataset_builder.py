@@ -224,25 +224,26 @@ class LabeledDatasetBuilder:
             )
             .join(
                 TransactionLabel,
-                TransactionLabel.transaction_id == Transaction.transaction_id,
+                TransactionLabel.transaction_id == Transaction.id,
             )
-            .join(Customer, Customer.customer_id == Transaction.customer_id)
+            .join(Customer, Customer.id == Transaction.customer_id)
             .join(
                 source_account,
-                source_account.account_id == Transaction.source_account_id,
+                source_account.account_number == Transaction.source_account_number,
             )
             .outerjoin(
                 recipient_account,
-                recipient_account.account_id == Transaction.recipient_account_id,
+                recipient_account.account_number
+                == Transaction.recipient_account_number,
             )
             .outerjoin(
                 DerivedFeatures,
-                DerivedFeatures.transaction_id == Transaction.transaction_id,
+                DerivedFeatures.id == Transaction.id,
             )
-            .order_by(TransactionLabel.labeled_at, Transaction.transaction_id)
+            .order_by(TransactionLabel.labeled_at, Transaction.id)
         ).all()
         return {
-            transaction.transaction_id: ConfirmedTransaction(
+            transaction.id: ConfirmedTransaction(
                 transaction=transaction,
                 label=label,
                 customer=customer,
@@ -320,7 +321,7 @@ class LabeledDatasetBuilder:
         except ValidationError as exc:
             raise DatasetBuildError(
                 "확정 라벨 거래의 원본 Feature가 학습 계약과 맞지 않습니다: "
-                f"{transaction.transaction_id}"
+                f"{transaction.id}"
             ) from exc
 
         row: dict[str, object] = {name: "" for name in fieldnames}
@@ -336,13 +337,13 @@ class LabeledDatasetBuilder:
             )
 
         balance_drain_ratio: float | str = ""
-        if transaction.initial_balance > 0:
+        if transaction.initial_balance is not None and transaction.initial_balance > 0:
             balance_drain_ratio = (
                 transaction.transaction_amount / transaction.initial_balance
             )
         row.update(
             {
-                TRAINING_TRANSACTION_ID_COLUMN: transaction.transaction_id,
+                TRAINING_TRANSACTION_ID_COLUMN: transaction.id,
                 TRAINING_IDENTIFICATION_COLUMN: (
                     confirmed.customer.identification_number
                 ),

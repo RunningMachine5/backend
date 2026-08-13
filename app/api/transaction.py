@@ -58,10 +58,12 @@ def _transaction_response(
             # SQLAlchemy가 commit 뒤 객체를 expire하면 SQLModel.model_dump()가
             # 빈 dict를 반환할 수 있다. 응답 계약의 필드를 명시적으로 읽어
             # 세션 상태와 관계없이 같은 응답을 만든다.
-            "transaction_id": transaction.transaction_id,
+            "transaction_id": transaction.id,
             "customer_id": transaction.customer_id,
-            "source_account_id": transaction.source_account_id,
-            "recipient_account_id": transaction.recipient_account_id,
+            # 외부 응답 필드명은 기존 클라이언트 호환을 위해 유지하지만,
+            # 값은 새 거래 FK인 계좌번호를 사용한다.
+            "source_account_id": transaction.source_account_number,
+            "recipient_account_id": transaction.recipient_account_number,
             "transaction_datetime": transaction.transaction_datetime,
             "transaction_amount": transaction.transaction_amount,
             "channel": transaction.channel,
@@ -138,7 +140,7 @@ def create_transaction(
         result.prediction_result,
         result.score_result,
         TransactionLabelRepository(session).get(
-            result.transaction.transaction_id
+            result.transaction.id
         ),
         prediction_status=result.prediction_status,
         ml_features=result.ml_features,
@@ -149,7 +151,7 @@ def create_transaction(
 def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
     stmt = select(Transaction).order_by(Transaction.created_at.desc()).limit(20)
     transactions = list(session.exec(stmt).all())
-    transaction_ids = [item.transaction_id for item in transactions]
+    transaction_ids = [item.id for item in transactions]
     if not transaction_ids:
         return []
 
@@ -185,9 +187,9 @@ def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
     return [
         _transaction_response(
             tx,
-            prediction_by_transaction_id.get(tx.transaction_id),
-            score_by_transaction_id.get(tx.transaction_id),
-            label_by_transaction_id.get(tx.transaction_id),
+            prediction_by_transaction_id.get(tx.id),
+            score_by_transaction_id.get(tx.id),
+            label_by_transaction_id.get(tx.id),
             ml_features=_dumped_features(repository, tx),
         )
         for tx in transactions
@@ -226,7 +228,7 @@ def get_transaction(
     session: SessionDep,
 ) -> TransactionResponseDTO:
     transaction = session.exec(
-        select(Transaction).where(Transaction.transaction_id == transaction_id)
+        select(Transaction).where(Transaction.id == transaction_id)
     ).first()
     if transaction is None:
         raise HTTPException(

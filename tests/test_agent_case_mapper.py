@@ -97,7 +97,7 @@ class AgentCaseMapperTest(unittest.TestCase):
             )
 
     def test_agent_input_requires_same_transaction(self) -> None:
-        transaction = Transaction.model_construct(transaction_id="TX-OTHER")
+        transaction = Transaction.model_construct(id="TX-OTHER")
 
         with self.assertRaisesRegex(ValueError, "transaction_id"):
             build_agent_input_dto(
@@ -108,7 +108,7 @@ class AgentCaseMapperTest(unittest.TestCase):
             )
 
     def test_agent_input_validates_risk_score_boundaries(self) -> None:
-        transaction = Transaction.model_construct(transaction_id="TX-001")
+        transaction = Transaction.model_construct(id="TX-001")
 
         for risk_score in (0, 100):
             dto = build_agent_input_dto(

@@ -189,6 +189,100 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             self.assertEqual(prediction.model_version, "1")
             self.assertGreaterEqual(prediction.latency_ms, 0)
 
+    def test_ml_owner_nullable_fields_and_account_type_e_round_trip(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-NULLABLE"),
+            "account_account_type": "e",
+            "account_initial_balance": None,
+            "account_balance": None,
+            "account_remaining_amount_daily_limit_exceeded": None,
+            "access_medium": None,
+            "error_code": "E1234567",
+        }
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["transaction_id"], "TX-API-NULLABLE")
+        self.assertEqual(body["source_account_id"], row["account_account_number"])
+        self.assertEqual(
+            body["recipient_account_id"],
+            row["recipient_account_number"],
+        )
+        self.assertIsNone(body["raw_features"]["account_initial_balance"])
+        self.assertIsNone(body["raw_features"]["account_balance"])
+        self.assertIsNone(
+            body["raw_features"][
+                "account_remaining_amount_daily_limit_exceeded"
+            ]
+        )
+        self.assertIsNone(body["raw_features"]["access_medium"])
+        self.assertEqual(self.ml_client.last_features, body["raw_features"])
+        self.assertEqual(len(body["raw_features"]), 59)
+
+        with Session(self.engine) as session:
+            transaction = session.get(Transaction, "TX-API-NULLABLE")
+            self.assertIsNotNone(transaction)
+            assert transaction is not None
+            self.assertIsNone(transaction.initial_balance)
+            self.assertIsNone(transaction.balance)
+            self.assertIsNone(
+                transaction.remaining_amount_daily_limit_exceeded
+            )
+            self.assertIsNone(transaction.access_medium)
+            assembled = TransactionRepository(session).load_ml_features(transaction)
+            self.assertIsNotNone(assembled)
+            assert assembled is not None
+            self.assertEqual(
+                assembled.model_dump(mode="json", by_alias=True),
+                body["raw_features"],
+            )
+
+    def test_train1_blank_nullable_fields_are_normalized_to_null(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-BLANK-NULLABLE"),
+            "account_initial_balance": "",
+            "account_balance": "   ",
+            "account_remaining_amount_daily_limit_exceeded": "",
+            "access_medium": " ",
+        }
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 201, response.text)
+        raw_features = response.json()["raw_features"]
+        self.assertIsNone(raw_features["account_initial_balance"])
+        self.assertIsNone(raw_features["account_balance"])
+        self.assertIsNone(
+            raw_features["account_remaining_amount_daily_limit_exceeded"]
+        )
+        self.assertIsNone(raw_features["access_medium"])
+        self.assertEqual(self.ml_client.last_features, raw_features)
+
+    def test_error_code_longer_than_eight_characters_returns_422(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-ERROR-CODE"),
+            "error_code": "123456789",
+        }
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("error_code", response.text)
+        self.assertEqual(self.ml_client.calls, 0)
+
+    def test_empty_error_code_is_allowed_by_ml_owner_contract(self) -> None:
+        row = {
+            **valid_transaction_row("TX-API-EMPTY-ERROR-CODE"),
+            "error_code": "",
+        }
+
+        response = self.client.post("/transactions", json=row)
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["raw_features"]["error_code"], "")
+
     def test_train1_single_digit_hours_are_normalized(self) -> None:
         row = valid_transaction_row("TX-API-SINGLE-HOUR")
         row["customer_registration_datetime"] = "2012-12-04 4:41"
@@ -422,7 +516,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             customers = session.exec(select(Customer)).all()
             self.assertEqual(len(customers), 2)
             self.assertEqual(
-                {customer.personal_identifier for customer in customers},
+                {customer.name for customer in customers},
                 {shared_name},
             )
 

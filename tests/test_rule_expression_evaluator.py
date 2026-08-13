@@ -74,6 +74,30 @@ class RuleExpressionEvaluatorTest(unittest.TestCase):
             )
         )
 
+    def test_nullable_feature_does_not_fail_ordering_comparison(self) -> None:
+        context = {"account_balance": None}
+
+        self.assertFalse(
+            self.evaluator.evaluate(
+                {
+                    "field": "account_balance",
+                    "operator": "LT",
+                    "value": 0,
+                },
+                context,
+            )
+        )
+        self.assertFalse(
+            self.evaluator.evaluate(
+                {
+                    "field": "account_balance",
+                    "operator": "NE",
+                    "value": 0,
+                },
+                context,
+            )
+        )
+
     def test_rejects_unknown_field_and_operator(self) -> None:
         with self.assertRaisesRegex(RuleExpressionError, "허용되지 않은 룰 피처"):
             self.evaluator.validate(

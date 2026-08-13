@@ -212,7 +212,7 @@ def _assembly_error(
         missing.append("derived_features")
     return FeatureAssemblyError(
         "raw60 Feature 조립에 필요한 행이 없습니다: "
-        f"{transaction.transaction_id} ({', '.join(missing)})"
+        f"{transaction.id} ({', '.join(missing)})"
     )
 
 
@@ -261,7 +261,7 @@ def _score_transaction(
         RuleFeatureError,
     ) as exc:
         return _RuleReplayTransaction(
-            transaction_id=transaction.transaction_id,
+            transaction_id=transaction.id,
             transaction_datetime=transaction.transaction_datetime,
             active_type_scores={},
             draft_type_scores={},
@@ -289,7 +289,7 @@ def _score_transaction(
         for type_code in type_codes
     }
     return _RuleReplayTransaction(
-        transaction_id=transaction.transaction_id,
+        transaction_id=transaction.id,
         transaction_datetime=transaction.transaction_datetime,
         active_type_scores=active_scores,
         draft_type_scores=draft_scores,

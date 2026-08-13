@@ -116,6 +116,12 @@ class RuleExpressionEvaluator:
         actual = context[field]
         expected = expression["value"]
 
+        # 룰 DTO는 비교값 null과 IS NULL 연산자를 지원하지 않는다. 따라서
+        # 결측값은 NE를 포함한 어떤 조건에도 매칭시키지 않는다. 그렇지 않으면
+        # `account_balance NE 0` 같은 사용자 룰이 결측 행을 잘못 적중시킨다.
+        if actual is None:
+            return False
+
         try:
             if operator == "EQ":
                 return actual == expected

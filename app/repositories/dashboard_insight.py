@@ -39,16 +39,16 @@ class DashboardInsightRepository:
             .join(
                 FraudTypeScoreResult,
                 FraudTypeScoreResult.transaction_id
-                == Transaction.transaction_id,
+                == Transaction.id,
             )
             .outerjoin(
                 AgentCase,
-                AgentCase.transaction_id == Transaction.transaction_id,
+                AgentCase.transaction_id == Transaction.id,
             )
             .outerjoin(
                 DerivedFeatures,
-                DerivedFeatures.transaction_id
-                == Transaction.transaction_id,
+                DerivedFeatures.id
+                == Transaction.id,
             )
             .where(
                 Transaction.transaction_datetime >= period_start,
@@ -58,7 +58,7 @@ class DashboardInsightRepository:
             )
             .order_by(
                 Transaction.transaction_datetime,
-                Transaction.transaction_id,
+                Transaction.id,
             )
         )
 
@@ -145,7 +145,7 @@ class DashboardInsightRepository:
                         derived.unused_account_status
                     ),
                     "large_deposit": (
-                        derived.flag_deposit_more_than_tenmillion
+                        derived.flag_deposit_more_than_tenMillion
                     ),
                     "new_recipient": (
                         derived.number_of_transaction_with_the_account
@@ -168,9 +168,9 @@ class DashboardInsightRepository:
         return DashboardInsightSourceRecord(
             case_id = (agent_case.case_id
                        if agent_case is not None
-                       else transaction.transaction_id
+                       else transaction.id
             ),
-            account_number=transaction.source_account_id,
+            account_number=transaction.source_account_number,
             transaction_time=transaction.transaction_datetime,
             transaction_amount = transaction.transaction_amount,
 

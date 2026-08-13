@@ -2,7 +2,7 @@ import unittest
 
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from app.data.model.account import Account
 from app.data.model.customer import Customer
@@ -97,7 +97,11 @@ class TransactionRepositoryTest(unittest.TestCase):
             second_assembled.model_dump(mode="json", by_alias=True),
             second_payload.raw_features.model_dump(mode="json", by_alias=True),
         )
-        account = self.session.get(Account, first_transaction.source_account_id)
+        account = self.session.exec(
+            select(Account).where(
+                Account.account_number == first_transaction.source_account_number
+            )
+        ).one()
         self.assertIsNotNone(account)
         self.assertEqual(account.current_balance, -3_000_000)
         self.assertEqual(account.remaining_daily_limit, 4_000_000)

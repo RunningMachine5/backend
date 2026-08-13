@@ -62,15 +62,16 @@ class MLTransactionFeatures(BaseModel):
     customer_increase_atm_limit: bool
 
     account_account_number: str = Field(min_length=1, max_length=255)
-    account_account_type: Literal["a", "b", "c", "d"]
+    account_account_type: Literal["a", "b", "c", "d", "e"]
     account_creation_datetime: datetime
-    account_initial_balance: int = Field(ge=0)
+    # 키는 raw59 계약에 항상 포함하되, 원천 데이터가 제공하지 않으면 null이다.
+    account_initial_balance: int | None = Field(ge=0)
     # train1.csv에서 음수 3,481건이 존재하는 거래 후 잔액이다.
-    account_balance: int
+    account_balance: int | None
     account_indicator_release_limit_excess: BinaryFlag
     account_amount_daily_limit: int = Field(ge=0)
     account_indicator_openbanking: bool
-    account_remaining_amount_daily_limit_exceeded: int = Field(ge=0)
+    account_remaining_amount_daily_limit_exceeded: int | None = Field(ge=0)
     # ML 담당자 계약의 철자를 그대로 유지한다.
     account_release_suspention: bool
     account_one_month_max_amount: int = Field(ge=0)
@@ -83,11 +84,11 @@ class MLTransactionFeatures(BaseModel):
     transaction_amount: int = Field(gt=0)
     channel: str
     operating_system: str | None
-    error_code: str = Field(min_length=1, max_length=64)
+    error_code: str = Field(max_length=8)
     type_general_automatic: Literal["general", "automatic"]
     ip_address: str | None
     mac_address: str | None
-    access_medium: Literal["a", "b", "c", "d", "e", "f", "g", "h"]
+    access_medium: Literal["a", "b", "c", "d", "e", "f", "g", "h"] | None
     location: str = Field(min_length=1)
     recipient_account_number: str = Field(min_length=1, max_length=255)
     transaction_num_connection_failure: int = Field(ge=0)
@@ -168,6 +169,21 @@ class MLTransactionFeatures(BaseModel):
                 f"operating_system must be one of {sorted(OPERATING_SYSTEMS)}"
             )
         return normalized
+
+    @field_validator(
+        "account_initial_balance",
+        "account_balance",
+        "account_remaining_amount_daily_limit_exceeded",
+        "access_medium",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_train1_value(cls, value: object) -> object | None:
+        """CSV 빈칸을 JSON null과 같은 결측값으로 정규화한다."""
+
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
 
     @field_validator("ip_address", mode="before")
     @classmethod
