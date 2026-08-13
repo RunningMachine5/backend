@@ -14,7 +14,7 @@ from app.repositories.dashboard_insight import (
 )
 
 router = APIRouter(
-    prefix="/api/v1/dashboard/insights",
+    prefix="/api/dashboard/insights",
     tags=["dashboard-insights"],
 )
 
