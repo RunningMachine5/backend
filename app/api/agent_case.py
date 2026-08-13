@@ -29,6 +29,7 @@ from app.services.agent.case_service import (
 from app.services.agent.guide_embedder import OpenAIGuideEmbedder
 from app.services.agent.guide_search import GuideSearchService
 from app.services.agent.response_policy import get_default_policy_repository
+from app.services.agent.response_plan_generator import RagResponsePlanGenerator
 from app.services.agent.similar_case_investigator import (
     DatabaseSimilarCaseTools,
     LimitedSimilarCaseInvestigator,
@@ -87,6 +88,7 @@ def get_agent_workflow(session: SessionDep) -> AgentWorkflow:
         policy_repository=get_default_policy_repository(),
         guide_search_service=guide_search,
         investigator=investigator,
+        response_plan_generator=RagResponsePlanGenerator(),
     )
 
 
