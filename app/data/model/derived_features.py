@@ -23,7 +23,7 @@ class DerivedFeatures(SQLModel, table=True):
 
     id: str = Field(
         primary_key=True,
-        foreign_key="transactions.transaction_id",
+        foreign_key="transactions.id",
         ondelete="CASCADE",
         max_length=64,
     )
@@ -42,14 +42,16 @@ class DerivedFeatures(SQLModel, table=True):
         sa_column=Column(Float, nullable=False)
     )
 
-    # TXN 7일
+    # 기존 거래 전체
     unused_terminal_status: bool
     unused_account_status: bool
-    flag_deposit_more_than_tenmillion: bool
+    transaction_history_with_the_account: int
+
+    # TXN 7일
+    flag_deposit_more_than_tenMillion: bool
 
     # TXN 3시간 / 누적
     number_of_transaction_with_the_account: int
-    transaction_history_with_the_account: int
 
     # TXN 채널 이력
     last_atm_transaction_datetime: datetime | None = Field(

@@ -23,7 +23,7 @@ class Account(SQLModel, table=True):
     id: str = Field(primary_key=True, max_length=64)
     customer_id: str | None = Field(
         default=None,
-        foreign_key="customers.customer_id",
+        foreign_key="customers.id",
         ondelete="SET NULL",
         max_length=64,
         index=True,

@@ -64,21 +64,21 @@ class Transaction(SQLModel, table=True):
 
     id: str = Field(primary_key=True, max_length=64)
     customer_id: str = Field(
-        foreign_key="customers.customer_id",
+        foreign_key="customers.id",
         ondelete="RESTRICT",
         max_length=64,
     )
     source_account_number: str = Field(
         foreign_key="accounts.account_number",
         ondelete="RESTRICT",
-        max_length=64,
+        max_length=255,
         index=True,
     )
     recipient_account_number: str | None = Field(
         default=None,
         foreign_key="accounts.account_number",
         ondelete="SET NULL",
-        max_length=64,
+        max_length=255,
         index=True,
     )
     transaction_datetime: datetime = Field(
@@ -90,7 +90,7 @@ class Transaction(SQLModel, table=True):
 
     channel: str = Field(max_length=32)
     type_general_automatic: str = Field(max_length=16)
-    access_medium: str = Field(max_length=8)
+    access_medium: str | None = Field(max_length=8)
     error_code: str = Field(max_length=8)
     num_connection_failure: int = Field(
         sa_column=Column(SmallInteger, nullable=False)
@@ -103,7 +103,7 @@ class Transaction(SQLModel, table=True):
     remaining_amount_daily_limit_exceeded: int = Field(sa_type=BigInteger, nullable=True)
 
     # 단말·접속 환경
-    operating_system: str = Field(max_length=32)
+    operating_system: str | None = Field(max_length=32)
     ip_address: str | None = Field(
         default=None,
         sa_column=Column(INET_COLUMN, nullable=True),

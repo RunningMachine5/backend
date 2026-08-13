@@ -25,8 +25,8 @@ class CustomerEventType(str, Enum):
     AUTH_4 = "PRIVACY_MODIFICATION"
     ATM_LIMIT_INQUIRY = "ATM_LIMIT_INQUIRY"
     ATM_LIMIT_INCREASE = "ATM_LIMIT_INCREASE"
+    SUSPENSION_START = "SUSPENSION_START"
     SUSPENSION_RELEASE = "SUSPENSION_RELEASE"
-
 
 class CustomerEvent(SQLModel, table=True):
     """인증 변경·ATM 한도 조정·정지 해제 등 고객 단위 사건 한 건."""
@@ -61,15 +61,15 @@ class CustomerEvent(SQLModel, table=True):
         ),
     )
     customer_id: str = Field(
-        foreign_key="customers.customer_id",
+        foreign_key="customers.id",
         ondelete="CASCADE",
         max_length=64,
     )
-    account_id: str | None = Field(
+    account_number: str | None = Field(
         default=None,
-        foreign_key="accounts.account_id",
+        foreign_key="accounts.account_number",
         ondelete="SET NULL",
-        max_length=64,
+        max_length=255,
         index=True,
     )
     event_type: str = Field(max_length=32)
