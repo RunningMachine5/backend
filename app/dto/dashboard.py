@@ -58,6 +58,7 @@ class CaseAgentView(BaseModel):
     failure_reason: str | None = None # 에이전트 실행 실패 이유
     risk_score: int | None = Field(default=None, ge=0, le=100) # 위험 점수
     risk_grade: str | None = None # 위험 등급
+    best_similar_case_id: str | None = None
 
     # 다른 Agent의 상세 구조가 변경될 수 있어 일단 dict로 받는다.
     rule_result: dict[str, Any] | None = None
@@ -66,12 +67,6 @@ class CaseAgentView(BaseModel):
         default_factory=list
     )
     response_result: dict[str, Any] | None = None
-    generation_metadata: dict[str, Any] = Field(
-        default_factory=dict
-    )
-
-    created_at: str | None = None
-    completed_at: str | None = None
 
 # 채팅 부분(이거 거의 그대로 감)
 class ChatMessageView(BaseModel):
