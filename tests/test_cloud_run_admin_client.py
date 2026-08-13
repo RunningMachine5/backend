@@ -89,7 +89,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         self.assertTrue(call.args[1].endswith("/jobs/training:run"))
         env = call.kwargs["json"]["overrides"]["containerOverrides"][0]["env"]
         env_by_name = {item["name"]: item["value"] for item in env}
-        self.assertEqual(env_by_name["TRAINING_MODE"], "train")
         self.assertEqual(
             env_by_name["TRAINING_DATA_URI"],
             "gs://bucket/transactions.csv",
@@ -283,8 +282,8 @@ class CloudRunAdminClientTest(unittest.TestCase):
         smoke_client = Mock()
         smoke_client.predict.return_value = MLPredictionResponse(
             transaction_id="TX-SMOKE",
-            is_fraud=False,
-            fraud_probability=0.1,
+            predict_result=0,
+            predict_proba=0.1,
             model_name="fraud-model",
             model_version="17",
         )

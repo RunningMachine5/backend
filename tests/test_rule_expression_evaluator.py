@@ -51,12 +51,12 @@ class RuleExpressionEvaluatorTest(unittest.TestCase):
         )
 
     def test_supports_in_and_comparison_operators(self) -> None:
-        context = {"Customer_loan_type": "c", "transaction_age": 65}
+        context = {"customer_loan_type": "c", "transaction_age": 65}
 
         self.assertTrue(
             self.evaluator.evaluate(
                 {
-                    "field": "Customer_loan_type",
+                    "field": "customer_loan_type",
                     "operator": "IN",
                     "value": ["b", "c", "d", "e"],
                 },

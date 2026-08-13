@@ -3,15 +3,15 @@
 
 Table customers {
   customer_id varchar(64) [pk]
-  birthyear smallint [not null]
+  birth_date date [not null]
   gender varchar(16) [not null, note: "CHECK IN ('male','female')"]
   personal_identifier varchar(255) [not null]
   identification_number varchar(255) [not null, unique]
   registration_datetime timestamptz [not null]
   credit_rating smallint [not null, note: "CHECK BETWEEN 1 AND 9"]
   loan_type varchar(8) [not null, note: "CHECK IN ('a','b','c','d','e')"]
-  email varchar(255) [not null]
-  phone_number varchar(32) [not null]
+  email varchar(255)
+  phone_number varchar(32)
   created_at timestamptz [not null]
   updated_at timestamptz [not null]
 }
@@ -53,17 +53,17 @@ Table transactions {
   source_account_id varchar(64) [not null, ref: > accounts.account_id, note: "ON DELETE RESTRICT"]
   recipient_account_id varchar(64) [ref: > accounts.account_id, note: "ON DELETE SET NULL"]
   transaction_datetime timestamptz [not null]
-  transaction_amount bigint [not null]
-  channel varchar(32) [not null, note: "CHECK IN ('mobile','internet','ATM','Others')"]
+  transaction_amount bigint [not null, note: "CHECK > 0"]
+  channel varchar(32) [not null, note: "CHECK IN ('mobile','internet','atm','others')"]
   type_general_automatic varchar(16) [not null, note: "CHECK IN ('general','automatic')"]
   access_medium varchar(8) [not null, note: "CHECK IN ('a'..'h')"]
-  error_code varchar(8) [not null, note: "CHECK IN ('a'..'f')"]
+  error_code varchar(64) [not null, note: "raw60 자유형 오류 코드"]
   num_connection_failure smallint [not null, note: "CHECK >= 0"]
   another_person_account boolean [not null]
-  initial_balance bigint [not null]
+  initial_balance bigint [not null, note: "CHECK >= 0"]
   balance bigint [not null]
-  remaining_amount_daily_limit_exceeded bigint [not null]
-  operating_system varchar(32) [not null]
+  remaining_amount_daily_limit_exceeded bigint [not null, note: "CHECK >= 0"]
+  operating_system varchar(32)
   ip_address inet
   mac_address macaddr
   location text [not null]

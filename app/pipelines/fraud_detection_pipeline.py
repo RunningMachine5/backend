@@ -86,7 +86,7 @@ class FraudDetectionResult:
     prediction_status: str
     prediction_result: MLPredictionResult | None
     score_result: FraudTypeScoreResult | None
-    # 평탄화된 컬럼을 다시 조회하지 않도록 요청에서 받은 54개 Feature를 넘긴다.
+    # 정규화 컬럼을 다시 조회하지 않도록 요청에서 받은 raw59 Feature를 넘긴다.
     ml_features: dict[str, Any]
 
 
