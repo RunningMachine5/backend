@@ -226,15 +226,30 @@ app/domain/fraud_circumstance_codes.py
 `FRAUD_CIRCUMSTANCE_SCORES`가 [내부 채점표](scoring.md#채점표)를 그대로 담는다.
 정황 하나가 여러 유형에 점수를 주므로 `Mapping[정황코드, Mapping[사기유형코드, 점수]]`
 구조이며, 이 안에 정황 → 사기유형 관계가 포함되어 별도 매핑이 필요 없다.
-검색 질의 매핑 예:
+검색 질의는 코드 문자열 대신 아래 한국어 문구를 사용한다. 행동 설명보다 검색 의도를
+분명히 하기 위해 모든 문구에 피해 대응 맥락을 포함한다.
 
-```python
-CUSTOMER_ACTION_SEARCH_QUERIES: Mapping[str, str] = {
-    PHISHING_LINK_OPENED: "상대방이 보낸 의심스러운 링크를 열거나 눌렀을 때 대응 방법",
-    SUSPICIOUS_APP_INSTALLED: "상대방이 안내한 앱이나 APK를 설치했을 때 대응 방법",
-    # ... 19종 전체
-}
-```
+| `customer_action` | `CUSTOMER_ACTION_SEARCH_QUERIES` |
+| --- | --- |
+| `detected_transaction_initiated` | 의심 거래를 직접 입력하고 실행했을 때 대응 방법 |
+| `detected_transaction_approved` | 다른 사람이 준비한 의심 거래를 인증하거나 승인했을 때 대응 방법 |
+| `cash_delivered_after_withdrawal` | 현금을 출금해 다른 사람에게 직접 전달했을 때 대응 방법 |
+| `received_funds_forwarded` | 입금받은 돈을 다른 계좌나 사람에게 다시 송금했을 때 대응 방법 |
+| `received_funds_withdrawn` | 입금받은 돈을 현금으로 출금했을 때 대응 방법 |
+| `goods_or_asset_delivered_for_payment` | 입금 대가로 물품·금·외화 등 자산을 전달했을 때 대응 방법 |
+| `bank_account_rented_or_transferred` | 본인 명의 계좌를 다른 사람에게 대여하거나 양도했을 때 대응 방법 |
+| `account_access_or_payment_instrument_shared` | 금융계정 접근정보·통장·카드·OTP 기기를 전달했을 때 대응 방법 |
+| `phishing_link_opened` | 상대방이 보낸 의심스러운 링크를 열거나 눌렀을 때 대응 방법 |
+| `financial_credentials_entered_or_shared` | 금융서비스 아이디·비밀번호·PIN을 입력하거나 전달했을 때 대응 방법 |
+| `otp_or_authentication_code_shared` | OTP·문자·ARS 인증번호를 입력하거나 전달했을 때 대응 방법 |
+| `identity_document_shared` | 신분증 사진·사본·위임장을 전달했을 때 대응 방법 |
+| `card_information_shared` | 카드번호·유효기간·CVC·카드 비밀번호를 전달했을 때 대응 방법 |
+| `suspicious_app_installed` | 상대방이 안내한 앱이나 APK를 설치했을 때 대응 방법 |
+| `remote_control_or_security_permission_granted` | 원격제어·접근성·기기관리자 권한을 허용했을 때 대응 방법 |
+| `loan_taken_for_transaction` | 의심 거래 자금을 마련하려고 대출을 실행했을 때 대응 방법 |
+| `account_opened_for_other_party` | 상대방 요청으로 계좌를 개설하거나 사용하게 했을 때 대응 방법 |
+| `open_banking_or_external_finance_linked` | 상대방 요청으로 오픈뱅킹이나 외부 금융서비스를 연결했을 때 대응 방법 |
+| `crypto_purchased_or_transferred` | 의심 거래와 관련해 가상자산을 구매하거나 외부 지갑으로 전송했을 때 대응 방법 |
 
 프롬프트의 "허용된 enum 이외의 값은 생성하지 않습니다" 같은 규칙은 LLM에 대한 요청일 뿐
 강제가 아니다. 모델이 이를 어길 가능성은 항상 있으므로 **구조화 출력 스키마와 DB 저장은
