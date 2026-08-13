@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -36,14 +36,48 @@ CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 CSV_DATETIME_COLUMNS = frozenset(
     {
-        "Customer_registration_datetime",
-        "Account_creation_datetime",
-        "Transaction_Datetime",
-        "Last_atm_transaction_datetime",
-        "Last_bank_branch_transaction_datetime",
-        "Transaction_resumed_date",
+        "customer_birth_date",
+        "customer_registration_datetime",
+        "account_creation_datetime",
+        "transaction_datetime",
+        "last_atm_transaction_datetime",
+        "last_bank_branch_transaction_datetime",
+        "transaction_resumed_date",
     }
 )
+CSV_DURATION_COLUMNS = frozenset({"time_difference"})
+
+TRAINING_TRANSACTION_ID_COLUMN = "transaction_id"
+TRAINING_IDENTIFICATION_COLUMN = "customer_identification_number"
+TRAINING_CUSTOMER_ID_COLUMN = "customer_id"
+TRAINING_BALANCE_DRAIN_RATIO_COLUMN = "balance_drain_ratio"
+TRAINING_LABEL_COLUMN = "is_fraud"
+TRAINING_FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
+TRAINING_FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
+
+# ML 담당자가 전달한 train1.csv는 raw59에 식별/메타데이터 4개와 라벨을
+# 정해진 위치에 끼운 raw64 계약이다. 실제 파일의 known typo 한 개도 헤더
+# 호환을 위해 그대로 출력하고 ML loader가 canonical 이름으로 정규화한다.
+TRAINING_CSV_COLUMNS = (
+    TRAINING_TRANSACTION_ID_COLUMN,
+    *RAW_TRANSACTION_FEATURE_COLUMNS[:3],
+    TRAINING_IDENTIFICATION_COLUMN,
+    *(
+        TRAINING_FLAG_DEPOSIT_ALIAS
+        if column == TRAINING_FLAG_DEPOSIT_CANONICAL
+        else column
+        for column in RAW_TRANSACTION_FEATURE_COLUMNS[3:]
+    ),
+    TRAINING_CUSTOMER_ID_COLUMN,
+    TRAINING_BALANCE_DRAIN_RATIO_COLUMN,
+    TRAINING_LABEL_COLUMN,
+)
+if len(TRAINING_CSV_COLUMNS) != 64:  # pragma: no cover - import invariant
+    raise RuntimeError("TRAINING_CSV_COLUMNS must contain exactly 64 columns.")
+if len(TRAINING_CSV_COLUMNS) != len(  # pragma: no cover - import invariant
+    set(TRAINING_CSV_COLUMNS)
+):
+    raise RuntimeError("TRAINING_CSV_COLUMNS must not contain duplicates.")
 
 
 class DatasetBuildError(RuntimeError):
@@ -223,21 +257,20 @@ class LabeledDatasetBuilder:
     def _validate_header(fieldnames: list[str] | None) -> list[str]:
         if not fieldnames:
             raise DatasetBuildError("기존 학습 CSV에 헤더가 없습니다.")
-        required = {
-            "ID",
-            "Customer_ID",
-            "Customer_personal_identifier",
-            "Customer_identification_number",
-            "Account_account_number",
-            "IP_Address",
-            "MAC_Address",
-            "Recipient_Account_Number",
-            "Is_Fraud",
-            *RAW_TRANSACTION_FEATURE_COLUMNS,
-        }
-        missing = sorted(required - set(fieldnames))
-        if missing:
-            raise DatasetBuildError(f"기존 학습 CSV에 필수 컬럼이 없습니다: {missing}")
+        provided = tuple(fieldnames)
+        if provided != TRAINING_CSV_COLUMNS:
+            expected = set(TRAINING_CSV_COLUMNS)
+            actual = set(provided)
+            missing = sorted(expected - actual)
+            unknown = sorted(actual - expected)
+            duplicates = sorted(
+                {column for column in provided if provided.count(column) > 1}
+            )
+            raise DatasetBuildError(
+                "기존 학습 CSV가 train1 raw64 헤더 계약과 다릅니다: "
+                f"missing={missing}, unknown={unknown}, "
+                f"duplicates={duplicates}, order_matches=False"
+            )
         return fieldnames
 
     @staticmethod
@@ -246,6 +279,25 @@ class LabeledDatasetBuilder:
 
         if value is None:
             return ""
+        if isinstance(value, bool):
+            return int(value)
+        if field_name in CSV_DURATION_COLUMNS:
+            if not isinstance(value, timedelta):
+                raise DatasetBuildError(
+                    f"확정 라벨 거래의 {field_name} 값이 timedelta가 아닙니다."
+                )
+            total_seconds = value.total_seconds()
+            if total_seconds < 0:
+                raise DatasetBuildError(
+                    f"확정 라벨 거래의 {field_name} 값이 음수입니다."
+                )
+            days, remainder = divmod(total_seconds, 24 * 60 * 60)
+            hours, remainder = divmod(remainder, 60 * 60)
+            minutes, seconds = divmod(remainder, 60)
+            return (
+                f"{int(days)} days {int(hours):02d}:{int(minutes):02d}:"
+                f"{seconds:09.6f}"
+            ).rstrip("0").rstrip(".")
         if field_name not in CSV_DATETIME_COLUMNS:
             return value
         if not isinstance(value, datetime):
@@ -264,7 +316,7 @@ class LabeledDatasetBuilder:
     ) -> dict[str, object]:
         transaction = confirmed.transaction
         try:
-            features = assembled.model_dump(mode="python", by_alias=True)
+            features = assembled.model_dump(mode="python", by_alias=False)
         except ValidationError as exc:
             raise DatasetBuildError(
                 "확정 라벨 거래의 원본 Feature가 학습 계약과 맞지 않습니다: "
@@ -272,42 +324,33 @@ class LabeledDatasetBuilder:
             ) from exc
 
         row: dict[str, object] = {name: "" for name in fieldnames}
+        for field_name, value in features.items():
+            output_name = (
+                TRAINING_FLAG_DEPOSIT_ALIAS
+                if field_name == TRAINING_FLAG_DEPOSIT_CANONICAL
+                else field_name
+            )
+            row[output_name] = LabeledDatasetBuilder._csv_feature_value(
+                field_name,
+                value,
+            )
+
+        balance_drain_ratio: float | str = ""
+        if transaction.initial_balance > 0:
+            balance_drain_ratio = (
+                transaction.transaction_amount / transaction.initial_balance
+            )
         row.update(
             {
-                field_name: LabeledDatasetBuilder._csv_feature_value(
-                    field_name,
-                    value,
-                )
-                for field_name, value in features.items()
-            }
-        )
-        row.update(
-            {
-                "ID": transaction.transaction_id,
-                "Customer_ID": transaction.customer_id,
-                "Customer_personal_identifier": (
-                    confirmed.customer.personal_identifier
-                ),
-                "Customer_identification_number": (
+                TRAINING_TRANSACTION_ID_COLUMN: transaction.transaction_id,
+                TRAINING_IDENTIFICATION_COLUMN: (
                     confirmed.customer.identification_number
                 ),
-                "Account_account_number": (confirmed.source_account.account_number),
-                "IP_Address": (
-                    str(transaction.ip_address)
-                    if transaction.ip_address is not None
-                    else ""
+                TRAINING_CUSTOMER_ID_COLUMN: transaction.customer_id,
+                TRAINING_BALANCE_DRAIN_RATIO_COLUMN: balance_drain_ratio,
+                TRAINING_LABEL_COLUMN: int(
+                    confirmed.label.confirmed_is_fraud
                 ),
-                "MAC_Address": (
-                    str(transaction.mac_address)
-                    if transaction.mac_address is not None
-                    else ""
-                ),
-                "Recipient_Account_Number": (
-                    confirmed.recipient_account.account_number
-                    if confirmed.recipient_account is not None
-                    else ""
-                ),
-                "Is_Fraud": int(confirmed.label.confirmed_is_fraud),
             }
         )
         return row
@@ -349,21 +392,27 @@ class LabeledDatasetBuilder:
                 writer.writeheader()
 
                 for row in reader:
-                    transaction_id = (row.get("ID") or "").strip()
+                    transaction_id = (
+                        row.get(TRAINING_TRANSACTION_ID_COLUMN) or ""
+                    ).strip()
                     if not transaction_id:
                         raise DatasetBuildError(
-                            "기존 학습 CSV에 ID가 비어 있는 행이 있습니다."
+                            "기존 학습 CSV에 transaction_id가 비어 있는 행이 "
+                            "있습니다."
                         )
                     if transaction_id in seen_transaction_ids:
                         raise DatasetBuildError(
-                            f"기존 학습 CSV에 중복 ID가 있습니다: {transaction_id}"
+                            "기존 학습 CSV에 중복 transaction_id가 있습니다: "
+                            f"{transaction_id}"
                         )
                     seen_transaction_ids.add(transaction_id)
                     source_row_count += 1
 
                     labeled = confirmed.pop(transaction_id, None)
                     if labeled is not None:
-                        row["Is_Fraud"] = str(int(labeled.label.confirmed_is_fraud))
+                        row[TRAINING_LABEL_COLUMN] = str(
+                            int(labeled.label.confirmed_is_fraud)
+                        )
                         replaced_label_count += 1
                     writer.writerow(row)
 
@@ -378,6 +427,7 @@ class LabeledDatasetBuilder:
                         assembled = assemble_ml_features(
                             customer=labeled.customer,
                             source_account=labeled.source_account,
+                            recipient_account=labeled.recipient_account,
                             transaction=labeled.transaction,
                             derived=labeled.derived,
                         )
@@ -419,6 +469,7 @@ LabeledDatasetBuilderDep = Annotated[
 
 
 __all__ = [
+    "TRAINING_CSV_COLUMNS",
     "ConfirmedTransaction",
     "DatasetBuildError",
     "DatasetBuildResult",

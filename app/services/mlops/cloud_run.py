@@ -242,7 +242,6 @@ class CloudRunAdminClient:
         """기존 Cloud Run Job을 환경변수 override와 함께 한 번 실행한다."""
 
         env = [
-            {"name": "TRAINING_MODE", "value": "train"},
             {"name": "MODEL_MIN_PR_AUC", "value": str(min_pr_auc)},
             {"name": "MODEL_MIN_RECALL", "value": str(min_recall)},
             {"name": "MLFLOW_REGISTERED_MODEL_NAME", "value": self.model_name},
