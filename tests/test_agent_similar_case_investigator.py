@@ -1,5 +1,4 @@
 import unittest
-import json
 from types import SimpleNamespace
 
 from app.domain.agent_status import (
@@ -19,6 +18,7 @@ from app.dto.agent_investigation import (
 )
 from app.services.agent.similar_case_investigator import (
     DatabaseSimilarCaseTools,
+    InvestigationActionOutput,
     LimitedSimilarCaseInvestigator,
     OpenAIInvestigationActionSelector,
 )
@@ -131,34 +131,25 @@ class DatabaseSimilarCaseToolsTest(unittest.TestCase):
         self.assertEqual(detail.confirmed_fraud_type, "ACCOUNT_TAKEOVER")
 
 
-class FakeChatCompletions:
+class FakeStructuredLLM:
     def __init__(self) -> None:
-        self.request = None
+        self.messages = None
 
-    def create(self, **kwargs):
-        self.request = kwargs
-        content = json.dumps(
-            {
-                "action": "INSPECT_CASE",
-                "case_id": "CASE-PAST",
-                "recommended_fraud_type": None,
-                "reason": "공통 Rule 근거와 유사도가 높다.",
-            }
-        )
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+    def invoke(self, messages):
+        self.messages = messages
+        return InvestigationActionOutput(
+            action=InvestigationAction.INSPECT_CASE,
+            case_id="CASE-PAST",
+            recommended_fraud_type=None,
+            reason="공통 Rule 근거와 유사도가 높다.",
         )
 
 
 class OpenAIInvestigationActionSelectorTest(unittest.TestCase):
     def test_structured_llm_response_maps_to_action_dto(self) -> None:
-        completions = FakeChatCompletions()
-        client = SimpleNamespace(
-            chat=SimpleNamespace(completions=completions)
-        )
+        structured_llm = FakeStructuredLLM()
         selector = OpenAIInvestigationActionSelector(
-            client=client,
-            model="test-model",
+            structured_llm=structured_llm,
         )
 
         action = selector.select_action(
@@ -176,10 +167,7 @@ class OpenAIInvestigationActionSelectorTest(unittest.TestCase):
 
         self.assertEqual(action.action, InvestigationAction.INSPECT_CASE)
         self.assertEqual(action.case_id, "CASE-PAST")
-        self.assertEqual(
-            completions.request["response_format"]["type"],
-            "json_schema",
-        )
+        self.assertEqual(structured_llm.messages[0]["role"], "system")
 
 
 class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):

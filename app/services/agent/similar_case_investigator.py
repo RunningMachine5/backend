@@ -8,8 +8,9 @@ import time
 from collections import Counter, defaultdict
 from typing import Any, Protocol, TypedDict
 
-from openai import OpenAI
+from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, ConfigDict
 
 from app.domain.agent_status import ClassificationStatus, InvestigationStatus
 from app.dto.agent import (
@@ -63,23 +64,39 @@ class InvestigationActionSelector(Protocol):
     ) -> InvestigationActionDTO: ...
 
 
+class InvestigationActionOutput(BaseModel):
+    """LLM이 반환하는 다음 조사 행동의 구조화 출력."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: InvestigationAction
+    case_id: str | None
+    recommended_fraud_type: str | None
+    reason: str
+
+
 class OpenAIInvestigationActionSelector:
     """OpenAI 구조화 출력으로 허용된 조사 행동만 선택한다."""
 
     def __init__(
         self,
         *,
-        client: Any | None = None,
+        structured_llm: Any | None = None,
         model: str | None = None,
     ) -> None:
-        self.client = client or OpenAI(
+        self.structured_llm = structured_llm or ChatOpenAI(
+            model=model
+            or os.getenv(
+                "AGENT_INVESTIGATION_MODEL",
+                os.getenv("OPENAI_MODEL", "gpt-5"),
+            ),
             api_key=os.getenv("OPENAI_API_KEY"),
             timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
             max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
-        )
-        self.model = model or os.getenv(
-            "AGENT_INVESTIGATION_MODEL",
-            os.getenv("OPENAI_MODEL", "gpt-5"),
+        ).with_structured_output(
+            InvestigationActionOutput,
+            method="json_schema",
+            strict=True,
         )
 
     def select_action(
@@ -109,37 +126,8 @@ class OpenAIInvestigationActionSelector:
             ],
             "remaining_detail_calls": remaining_detail_calls,
         }
-        response = self.client.chat.completions.create(
-            model=self.model,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "investigation_action",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": [action.value for action in InvestigationAction],
-                            },
-                            "case_id": {"type": ["string", "null"]},
-                            "recommended_fraud_type": {
-                                "type": ["string", "null"]
-                            },
-                            "reason": {"type": "string"},
-                        },
-                        "required": [
-                            "action",
-                            "case_id",
-                            "recommended_fraud_type",
-                            "reason",
-                        ],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            messages=[
+        result = self.structured_llm.invoke(
+            [
                 {
                     "role": "system",
                     "content": (
@@ -154,15 +142,13 @@ class OpenAIInvestigationActionSelector:
                     "role": "user",
                     "content": json.dumps(payload, ensure_ascii=False),
                 },
-            ],
+            ]
         )
-        content = response.choices[0].message.content or "{}"
-        data = json.loads(content)
         return InvestigationActionDTO(
-            action=InvestigationAction(data["action"]),
-            case_id=data["case_id"],
-            recommended_fraud_type=data["recommended_fraud_type"],
-            reason=data["reason"],
+            action=result.action,
+            case_id=result.case_id,
+            recommended_fraud_type=result.recommended_fraud_type,
+            reason=result.reason,
         )
 
 
@@ -563,6 +549,7 @@ def _group_evidence(
 
 __all__ = [
     "DatabaseSimilarCaseTools",
+    "InvestigationActionOutput",
     "InvestigationGraphState",
     "InvestigationActionSelector",
     "LimitedSimilarCaseInvestigator",
