@@ -122,6 +122,16 @@ class AgentCaseService:
         agent_case = self._require_case(case_id)
         return self._to_response(agent_case)
 
+    def get_case_by_transaction(self, transaction_id: str) -> AgentResponseDTO:
+        """거래 식별자에 연결된 Agent 사건을 조회한다."""
+
+        agent_case = self.repository.find_case_by_transaction(transaction_id)
+        if agent_case is None:
+            raise AgentCaseNotFoundError(
+                f"거래에 연결된 Agent 사건을 찾을 수 없다: {transaction_id}"
+            )
+        return self._to_response(agent_case)
+
     def complete_case(
         self,
         case_id: str,

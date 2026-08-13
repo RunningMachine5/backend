@@ -8,26 +8,21 @@ from typing import Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.domain.agent_status import (
-    ClassificationStatus,
-    InformationStatus,
-    InvestigationStatus,
-)
+from app.domain.agent_status import ClassificationStatus, InvestigationStatus
 from app.domain.response_policy import PolicyRepository, ResponsePolicy
 from app.dto.agent import (
     AgentInputDTO,
     AgentResponseDTO,
-    ChecklistItemDTO,
     FraudAlertEmailCommand,
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
-    RecommendedActionDTO,
     ResponsePlanDTO,
 )
 from app.dto.agent_guide import GuideSearchRequestDTO, RetrievedGuideChunkDTO
 from app.services.agent.case_service import AgentCaseService
 from app.services.agent.email_command_builder import build_fraud_alert_email_command
 from app.services.agent.guide_search import GuideSearchService
+from app.services.agent.response_plan_generator import PolicyResponsePlanGenerator
 from app.services.agent.type_confidence import TypeConfidenceResult
 
 
@@ -117,47 +112,6 @@ class RuleFirstFallbackInvestigator:
                 }
             )
         return result
-
-
-class PolicyResponsePlanGenerator:
-    """LLM 연결 전에도 내부 정책을 빠짐없이 반환하는 기본 생성기이다."""
-
-    def generate(
-        self,
-        *,
-        fraud_type: str,
-        policy: ResponsePolicy,
-        guides: list[RetrievedGuideChunkDTO],
-    ) -> ResponsePlanDTO:
-        return ResponsePlanDTO(
-            applied_fraud_type=fraud_type,
-            information_status=(
-                InformationStatus.SUFFICIENT
-                if guides
-                else InformationStatus.PARTIAL
-            ),
-            summary=f"{fraud_type} 유형의 {policy.risk_grade} 위험 사건 대응 계획이다.",
-            recommended_actions=[
-                RecommendedActionDTO(
-                    priority=action.priority,
-                    action_code=action.action_code,
-                    action=action.action,
-                    reason=action.reason,
-                    required=action.required,
-                    procedure_steps=[],
-                    cautions=[],
-                )
-                for action in policy.actions
-            ],
-            checklist=[
-                ChecklistItemDTO(
-                    item_code=item.item_code,
-                    label=item.label,
-                    required=item.required,
-                )
-                for item in policy.checklist
-            ],
-        )
 
 
 class AgentWorkflow:
