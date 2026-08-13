@@ -12,11 +12,11 @@ class MLServingClientAuthTest(unittest.TestCase):
         response = Mock()
         response.json.return_value = {
             "transaction_id": transaction_id,
-            "is_fraud": False,
-            "fraud_probability": 0.1,
-            "shap": {"Transaction_Amount": 0.05},
-            "model_name": "fdshield-fraud-detector",
-            "model_version": "5",
+            "predict_result": 0,
+            "predict_proba": 0.1,
+            "shap_values": {"transaction_amount": 0.05},
+            "model_name": "fdshield-fraud-detector-v2",
+            "model_version": "1",
         }
         return response
 
@@ -28,6 +28,14 @@ class MLServingClientAuthTest(unittest.TestCase):
         client.predict(transaction_id="TX_LOCAL", features={"amount": 1000})
 
         self.assertEqual(post.call_args.kwargs["headers"], {})
+        self.assertEqual(
+            post.call_args.args[0],
+            "http://localhost:8001/ml/predict",
+        )
+        self.assertEqual(
+            post.call_args.kwargs["json"],
+            {"transaction_id": "TX_LOCAL", "amount": 1000},
+        )
 
     @patch("app.services.ml_serving.client.httpx.post")
     def test_google_mode_sends_cached_provider_token(self, post: Mock) -> None:
@@ -76,7 +84,7 @@ class MLServingClientAuthTest(unittest.TestCase):
     def test_retryable_server_error_is_retried(self, post: Mock) -> None:
         failed = httpx.Response(
             503,
-            request=httpx.Request("POST", "http://localhost:8001/predict"),
+            request=httpx.Request("POST", "http://localhost:8001/ml/predict"),
         )
         post.side_effect = [failed, self._response("TX_503")]
         client = MLServingClient(
@@ -94,7 +102,7 @@ class MLServingClientAuthTest(unittest.TestCase):
     def test_bad_request_is_not_retried(self, post: Mock) -> None:
         post.return_value = httpx.Response(
             400,
-            request=httpx.Request("POST", "http://localhost:8001/predict"),
+            request=httpx.Request("POST", "http://localhost:8001/ml/predict"),
         )
         client = MLServingClient(
             base_url="http://localhost:8001",

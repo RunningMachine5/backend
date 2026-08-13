@@ -198,6 +198,7 @@ def _assembly_error(
     transaction: Transaction,
     customer: Customer | None,
     source_account: Account | None,
+    recipient_account: Account | None,
     derived: DerivedFeatures | None,
 ) -> FeatureAssemblyError:
     missing: list[str] = []
@@ -205,10 +206,12 @@ def _assembly_error(
         missing.append("customer")
     if source_account is None:
         missing.append("source_account")
+    if recipient_account is None:
+        missing.append("recipient_account")
     if derived is None:
         missing.append("derived_features")
     return FeatureAssemblyError(
-        "54개 Feature 조립에 필요한 행이 없습니다: "
+        "raw60 Feature 조립에 필요한 행이 없습니다: "
         f"{transaction.transaction_id} ({', '.join(missing)})"
     )
 
@@ -219,28 +222,34 @@ def _score_transaction(
     transaction: Transaction,
     customer: Customer | None,
     source_account: Account | None,
+    recipient_account: Account | None,
     derived: DerivedFeatures | None,
     active_definition: RuleSetDefinition,
     draft_definition: RuleSetDefinition,
     type_codes: list[str],
 ) -> _RuleReplayTransaction:
     try:
-        if customer is None or source_account is None or derived is None:
+        if (
+            customer is None
+            or source_account is None
+            or recipient_account is None
+            or derived is None
+        ):
             raise _assembly_error(
                 transaction=transaction,
                 customer=customer,
                 source_account=source_account,
+                recipient_account=recipient_account,
                 derived=derived,
             )
         features = assemble_ml_features(
             customer=customer,
             source_account=source_account,
+            recipient_account=recipient_account,
             transaction=transaction,
             derived=derived,
         )
-        context = engine.feature_builder.build(
-            features.model_dump(mode="json", by_alias=True)
-        )
+        context = engine.feature_builder.build(features)
         # 두 룰셋은 반드시 위에서 한 번 만든 동일 컨텍스트를 평가한다.
         active_result = engine.score_validated_context(context, active_definition)
         draft_result = engine.score_validated_context(context, draft_definition)
@@ -455,12 +464,13 @@ def replay_rule_sets(
             transaction=transaction,
             customer=customer,
             source_account=source_account,
+            recipient_account=recipient_account,
             derived=derived,
             active_definition=active_definition,
             draft_definition=draft_definition,
             type_codes=type_codes,
         )
-        for transaction, customer, source_account, derived in selected
+        for transaction, customer, source_account, recipient_account, derived in selected
     ]
     successful = [result for result in results if result.error is None]
     errors = [result for result in results if result.error is not None]

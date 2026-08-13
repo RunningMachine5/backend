@@ -56,7 +56,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             session.commit()
             session.refresh(dataset)
             run = TrainingRun(
-                model_key="fdshield-fraud-detector",
+                model_key="fdshield-fraud-detector-v2",
                 dataset_version_id=dataset.id,
                 status=status,
                 mlflow_run_id=mlflow_run_id,
@@ -327,11 +327,11 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.json()["training_run"]["status"], "STAGED")
         self.assertEqual(response.json()["model_version"], "17")
         self.mlflow.resolve_model_version.assert_called_once_with(
-            "fdshield-fraud-detector", "candidate-run"
+            "fdshield-fraud-detector-v2", "candidate-run"
         )
         self.cloud_run.create_model_revision.assert_called_once_with("17")
         self.mlflow.set_model_version_tags.assert_called_once_with(
-            "fdshield-fraud-detector",
+            "fdshield-fraud-detector-v2",
             "17",
             {
                 "backend_decision": "APPROVE",
@@ -450,7 +450,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(completed.status_code, 200)
         self.assertEqual(completed.json()["training_run"]["status"], "PRODUCTION")
         self.mlflow.set_model_alias.assert_called_once_with(
-            "fdshield-fraud-detector", "champion", "17"
+            "fdshield-fraud-detector-v2", "champion", "17"
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
@@ -501,7 +501,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.json()["training_run"]["status"], "PRODUCTION")
         self.cloud_run.get_operation.assert_not_called()
         self.mlflow.set_model_alias.assert_called_once_with(
-            "fdshield-fraud-detector", "champion", "17"
+            "fdshield-fraud-detector-v2", "champion", "17"
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
@@ -550,7 +550,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.mlflow.get_model_details.return_value = {
             "source": "MLFLOW",
             "run_id": "candidate-run",
-            "model_name": "fdshield-fraud-detector",
+            "model_name": "fdshield-fraud-detector-v2",
             "model_version": "17",
             "artifact_uri": "mlflow-artifacts:/1/candidate-run/artifacts",
             "model_comparison_artifact_path": "metadata/model-comparison.json",
@@ -576,7 +576,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             "metadata/model-comparison.json",
         )
         self.mlflow.get_model_details.assert_called_once_with(
-            "fdshield-fraud-detector", "candidate-run"
+            "fdshield-fraud-detector-v2", "candidate-run"
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")

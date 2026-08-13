@@ -15,9 +15,9 @@ Backend는 하나의 대표 유형을 확정하지 않는다. `CLASSIFIED`, `UNC
 
 ```mermaid
 flowchart TD
-    A["POST /transactions<br/>54개 원본 Feature 입력"] --> B["입력 검증"]
+    A["POST /transactions<br/>raw60 입력"] --> B["입력 검증"]
     B --> C["원본 거래 DB 저장"]
-    C --> D["ML Serving /predict 호출"]
+    C --> D["ML Serving /ml/predict 호출"]
 
     D -->|"호출 실패"| E["prediction_status = FAILED<br/>룰 점수 미생성"]
     D -->|"정상 판정"| F["prediction_status = COMPLETED<br/>rule_scores = null"]
@@ -44,9 +44,9 @@ flowchart TD
 
 실제 실행은 `app/api/transaction.py`의 `POST /transactions`에서 시작한다.
 
-1. 거래 ID와 54개 원본 Feature를 받는다.
+1. 거래 ID와 모델 입력 원본 59개로 구성된 raw60을 받는다.
 2. 원본 거래를 `transactions` 테이블에 먼저 저장한다.
-3. ML Serving의 `/predict`를 동기로 호출한다.
+3. ML Serving의 `/ml/predict`를 동기로 호출한다.
 4. ML 예측 결과를 거래 행에 저장한다.
 5. `is_fraud=true`일 때만 활성 룰셋을 읽고 점수를 계산한다.
 6. 모든 유형 점수를 `fraud_type_score_results`에 저장한다.
@@ -74,8 +74,8 @@ ML 사기 판정 + 룰 점수 계산 성공
 
 ## 3. 입력 데이터 계약
 
-입력 DTO는 `app/dto/ml_prediction.py`에 있다. 거래 요청은 정확히 54개의 ML 원본
-Feature를 받는다.
+입력 DTO는 `app/dto/ml_prediction.py`에 있다. 거래 요청은 `transaction_id`와
+정확히 59개의 ML 원본 Feature로 구성된 raw60을 받는다.
 
 - 필수값 누락 시 `422`
 - 정의하지 않은 컬럼 입력 시 `422`
@@ -83,25 +83,19 @@ Feature를 받는다.
 - Backend에서는 One-hot Encoding을 수행하지 않음
 - 검증한 원본값을 ML Serving과 룰 엔진에 전달
 
-룰 엔진은 이 중 43개 원본 Feature를 사용하고 27개 최종 파생 신호를 추가로 만든다.
-나머지 원본 Feature는 ML에는 전달되지만 현재 룰 점수에는 사용하지 않는다.
-
-ML·Generator의 기존 오타 필드도 호환한다.
-
-```text
-룰 내부 표준명: Account_release_suspension
-ML 전송 호환명: Account_release_suspention
-```
+룰 엔진은 식별·민감정보 7개를 제외한 안전한 원본 52개와 27개 파생 신호를
+사용한다. 기존 ACTIVE 룰의 CamelCase 이름은 실행 전환 기간에만 내부 alias로
+지원하며 신규 DRAFT는 snake_case만 허용한다.
 
 ## 4. 룰용 파생 신호
 
 `app/services/rules/feature_builder.py`가 원본값을 검증하고 파생 신호를 계산한다.
 
 ```text
-ML 원본 입력: 54개
-룰이 사용하는 원본: 43개
+ML 원본 입력: 59개
+룰이 사용하는 원본: 52개
 룰 파생 신호: 27개
-최종 룰 사용 가능 Feature: 70개
+최종 룰 사용 가능 Feature: 79개
 ```
 
 주요 파생 신호는 다음과 같다.
@@ -420,7 +414,7 @@ GET /rule-sets?rule_set_status=DRAFT로 수정 중인 DRAFT 확인
 → PUT으로 유지할 4개 유형의 component·가중치를 8/8 최종안에 맞게 수정
 → DELETE로 CARD_FRAUD 룰 제거
 → 유효성 검증
-→ 실제 54개 샘플로 모든 유형 점수 확인
+→ 실제 raw60 샘플로 모든 유형 점수 확인
 → 최신 ML 양성 거래를 최대 1,000건 리플레이해 ACTIVE 대비 영향 확인
 → 활성화
 → 기존 ACTIVE는 ARCHIVED
@@ -439,8 +433,8 @@ transaction_id DESC` 순서로 기본·최대 1,000건 선택한다. 동일한 �
 
 ```text
 ML 최신 양성 거래
-→ Transaction + Customer + 출금 Account + DerivedFeatures 일괄 조회
-→ assemble_ml_features로 거래별 54개 Feature 복원
+→ Transaction + Customer + 출금·수취 Account + DerivedFeatures 일괄 조회
+→ assemble_ml_features로 거래별 raw59 Feature 복원
 → 동일 Rule Context에 ACTIVE·DRAFT 적용
 → 점수·근거·구성요소 유입/이탈 영향 요약
 ```
