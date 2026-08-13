@@ -42,7 +42,7 @@ CLOUD_RUN_ADMIN_TIMEOUT_SECONDS = float(
 )
 MLOPS_MODEL_NAME = os.getenv(
     "MLOPS_MODEL_NAME",
-    "fdshield-fraud-detector",
+    "fdshield-fraud-detector-v2",
 ).strip()
 MLOPS_MODEL_ALIAS = os.getenv("MLOPS_MODEL_ALIAS", "champion").strip()
 

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from threading import Lock
 from time import sleep
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import Depends
@@ -27,14 +27,26 @@ RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 class MLPredictionResponse(BaseModel):
-    """ML Serving이 반환하는 이진 분류 응답."""
+    """ML 담당자의 정식 ``/ml/predict`` 응답."""
 
     transaction_id: str
-    is_fraud: bool
-    fraud_probability: float = Field(ge=0.0, le=1.0)
-    shap: dict[str, float] = Field(default_factory=dict)
+    predict_result: Literal[0, 1]
+    predict_proba: float = Field(ge=0.0, le=1.0)
+    shap_values: dict[str, float] = Field(default_factory=dict)
     model_name: str
     model_version: str
+
+    @property
+    def is_fraud(self) -> bool:
+        return bool(self.predict_result)
+
+    @property
+    def fraud_probability(self) -> float:
+        return self.predict_proba
+
+    @property
+    def shap(self) -> dict[str, float]:
+        return self.shap_values
 
 
 class MLServingError(RuntimeError):
@@ -78,7 +90,7 @@ def _google_id_token_provider(audience: str) -> GoogleIDTokenProvider:
 
 
 class MLServingClient:
-    """Backend와 ML Serving 사이의 동기 `/predict` 호출을 담당한다."""
+    """Backend와 ML Serving 사이의 정식 동기 ``/ml/predict`` 호출."""
 
     def __init__(
         self,
@@ -129,8 +141,8 @@ class MLServingClient:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 response = httpx.post(
-                    f"{self.base_url}/predict",
-                    json={"transaction_id": transaction_id, "features": features},
+                    f"{self.base_url}/ml/predict",
+                    json={"transaction_id": transaction_id, **features},
                     headers=self._authorization_headers(),
                     timeout=self.timeout_seconds,
                 )

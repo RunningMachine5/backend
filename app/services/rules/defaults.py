@@ -24,7 +24,7 @@ def _or(*conditions: dict[str, Any]) -> dict[str, Any]:
 
 
 DEFAULT_RULE_SET = RuleSetDefinition(
-    version="2026-08-08-final",
+    version="2026-08-13-raw60",
     rules=(
         FraudRuleDefinition(
             type_code="VOICE_PHISHING",
@@ -102,7 +102,7 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     name="오픈뱅킹과 반복이체 동시 충족",
                     condition_expression=_and(
                         _condition(
-                            "Account_indicator_Openbanking",
+                            "account_indicator_openbanking",
                             "EQ",
                             1,
                         ),
@@ -153,7 +153,7 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     component_key="unused_terminal_with_device_compromise",
                     name="미사용 단말과 단말침해 2개 이상",
                     condition_expression=_and(
-                        _condition("Unused_terminal_status", "EQ", 1),
+                        _condition("unused_terminal_status", "EQ", 1),
                         _condition("device_compromise_2plus", "EQ", True),
                     ),
                     weight=0.25,
@@ -213,7 +213,7 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     component_key="connection_failures",
                     name="접속 실패 3회 이상",
                     condition_expression=_condition(
-                        "Transaction_num_connection_failure",
+                        "transaction_num_connection_failure",
                         "GTE",
                         3,
                     ),
@@ -243,7 +243,7 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                         _or(
                             _condition("recently_resumed", "EQ", True),
                             _condition(
-                                "Flag_deposit_more_than_tenMillion",
+                                "flag_deposit_more_than_ten_million",
                                 "EQ",
                                 1,
                             ),
@@ -259,7 +259,7 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                         _or(
                             _condition("recently_resumed", "EQ", True),
                             _condition(
-                                "Flag_deposit_more_than_tenMillion",
+                                "flag_deposit_more_than_ten_million",
                                 "EQ",
                                 1,
                             ),
@@ -273,7 +273,7 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     condition_expression=_and(
                         _condition("recently_resumed", "EQ", True),
                         _condition(
-                            "Flag_deposit_more_than_tenMillion",
+                            "flag_deposit_more_than_ten_million",
                             "EQ",
                             1,
                         ),
@@ -285,7 +285,7 @@ DEFAULT_RULE_SET = RuleSetDefinition(
                     name="고액입금과 반복이체 동시 충족",
                     condition_expression=_and(
                         _condition(
-                            "Flag_deposit_more_than_tenMillion",
+                            "flag_deposit_more_than_ten_million",
                             "EQ",
                             1,
                         ),
