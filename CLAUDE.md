@@ -60,7 +60,7 @@ This applies to work touching:
 - `app/services/{chatbot,rag}/`
 - `app/pipelines/customer_chatbot_pipeline.py`
 - `app/api/chat.py`
-- the `agent_chat_*` / `fraud_type_score_after_chat` tables in `app/data/model/chatbot.py`
+- the `chat_*` / `fraud_type_score_after_chat` tables in `app/data/model/chatbot.py`
 - `docs/customer-chatbot/`
 
 The design lives in `docs/customer-chatbot/`, with `README.md` as the entry point (flow and

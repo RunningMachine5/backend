@@ -39,20 +39,20 @@ class ChatSenderType(str, Enum):
     SYSTEM = "SYSTEM" # 뭐 오류메시지등
 
 
-class AgentChatSession(SQLModel, table=True):
+class ChatSession(SQLModel, table=True):
     """거래 한 건에 대한 고객 상담 세션."""
 
-    __tablename__ = "agent_chat_sessions"
+    __tablename__ = "chat_sessions"
     __table_args__ = (
         UniqueConstraint(
             "transaction_id", # 거래 한 건에 대하여 고객 상담은 하나다
-            name="uq_agent_chat_sessions_transaction_id",
+            name="uq_chat_sessions_transaction_id",
         ),
-        Index("ix_agent_chat_sessions_status", "status"),
+        Index("ix_chat_sessions_status", "status"),
         CheckConstraint(
             "status IN "
             "('URL_SENT', 'IN_PROGRESS', 'HANDOFF_REQUESTED', 'DONE', 'FAILED')",
-            name="ck_agent_chat_sessions_status",
+            name="ck_chat_sessions_status",
         ),
     )
 
@@ -70,10 +70,10 @@ class AgentChatSession(SQLModel, table=True):
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
             ForeignKey(
-                "agent_chat_messages.message_id",
+                "chat_messages.message_id",
                 ondelete="SET NULL", # cascade 아님
                 use_alter=True,
-                name="fk_agent_chat_sessions_last_message_id",
+                name="fk_chat_sessions_last_message_id",
             ),
             nullable=True,
         ),
@@ -111,19 +111,19 @@ class AgentChatSession(SQLModel, table=True):
     )
 
 
-class AgentChatMessage(SQLModel, table=True):#
+class ChatMessage(SQLModel, table=True):
     """상담 세션에 쌓이는 개별 메시지."""
 
-    __tablename__ = "agent_chat_messages"
+    __tablename__ = "chat_messages"
     __table_args__ = (
         Index(
-            "ix_agent_chat_messages_session_sent_at",
+            "ix_chat_messages_session_sent_at",
             "chat_session_id",
             "sent_at",
         ),
         CheckConstraint(
             "sender_type IN ('AI', 'HUMAN', 'SYSTEM')",
-            name="ck_agent_chat_messages_sender_type",
+            name="ck_chat_messages_sender_type",
         ),
     )
 
@@ -138,7 +138,7 @@ class AgentChatMessage(SQLModel, table=True):#
 
     # 어떤 세션에 속한 메시지인지
     chat_session_id: str = Field(
-        foreign_key="agent_chat_sessions.chat_session_id",
+        foreign_key="chat_sessions.chat_session_id",
         ondelete="CASCADE",
         max_length=64,
     )
@@ -153,28 +153,28 @@ class AgentChatMessage(SQLModel, table=True):#
     )
 
 
-class AgentChatAnswer(SQLModel, table=True):
+class ChatAnswer(SQLModel, table=True):
     """질문별 고객 답변의 시도 횟수와 평가 결과를 기록한다."""
 
-    __tablename__ = "agent_chat_answers"
+    __tablename__ = "chat_answers"
     __table_args__ = (
         UniqueConstraint(
             "chat_session_id",
             "question_step",
             "attempt_no",
-            name="uq_agent_chat_answers_session_step_attempt",
+            name="uq_chat_answers_session_step_attempt",
         ),
         UniqueConstraint(
             "message_id",
-            name="uq_agent_chat_answers_message_id",
+            name="uq_chat_answers_message_id",
         ),
         Index(
-            "ix_agent_chat_answers_session_step",
+            "ix_chat_answers_session_step",
             "chat_session_id",
             "question_step",
         ),
         Index(
-            "uq_agent_chat_answers_adopted",
+            "uq_chat_answers_adopted",
             "chat_session_id",
             "question_step",
             unique=True,
@@ -183,17 +183,17 @@ class AgentChatAnswer(SQLModel, table=True):
         ),
         CheckConstraint(
             "attempt_no BETWEEN 1 AND 3",
-            name="ck_agent_chat_answers_attempt_no",
+            name="ck_chat_answers_attempt_no",
         ),
         CheckConstraint(
             "quality_verdict IS NULL OR quality_verdict IN "
             "('SUFFICIENT', 'TOO_VAGUE', 'NON_ANSWER', 'REFUSAL', 'WANT_END')",
-            name="ck_agent_chat_answers_quality_verdict",
+            name="ck_chat_answers_quality_verdict",
         ),
         CheckConstraint(
             "verdict_skip_reason IS NULL OR verdict_skip_reason IN "
             "('MAX_RETRY_EXCEEDED', 'EVALUATOR_FAILED')",
-            name="ck_agent_chat_answers_verdict_skip_reason",
+            name="ck_chat_answers_verdict_skip_reason",
         ),
     )
 
@@ -206,7 +206,7 @@ class AgentChatAnswer(SQLModel, table=True):
         ),
     )
     chat_session_id: str = Field(
-        foreign_key="agent_chat_sessions.chat_session_id",
+        foreign_key="chat_sessions.chat_session_id",
         ondelete="CASCADE",
         max_length=64,
     )
@@ -218,7 +218,7 @@ class AgentChatAnswer(SQLModel, table=True):
     message_id: int = Field(
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
-            ForeignKey("agent_chat_messages.message_id", ondelete="CASCADE"),
+            ForeignKey("chat_messages.message_id", ondelete="CASCADE"),
             nullable=False,
         ),
     )
@@ -241,15 +241,15 @@ class AgentChatAnswer(SQLModel, table=True):
     )
 
 
-class AgentChatCustomerAction(SQLModel, table=True):
+class ChatCustomerAction(SQLModel, table=True):
     """고객 답변에서 추출한 고객 행동을 저장한다."""
 
-    __tablename__ = "agent_chat_customer_actions"
+    __tablename__ = "chat_customer_actions"
     __table_args__ = (
         UniqueConstraint(
             "chat_session_id",
             "action_code",
-            name="uq_agent_chat_customer_actions_session_code",
+            name="uq_chat_customer_actions_session_code",
         ),
     )
 
@@ -262,7 +262,7 @@ class AgentChatCustomerAction(SQLModel, table=True):
         ),
     )
     chat_session_id: str = Field(
-        foreign_key="agent_chat_sessions.chat_session_id",
+        foreign_key="chat_sessions.chat_session_id",
         ondelete="CASCADE",
         max_length=64,
     )
@@ -278,7 +278,7 @@ class AgentChatCustomerAction(SQLModel, table=True):
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
             ForeignKey(
-                "agent_chat_answers.answer_id",
+                "chat_answers.answer_id",
                 ondelete="SET NULL",
             ),
             nullable=True,
@@ -290,15 +290,15 @@ class AgentChatCustomerAction(SQLModel, table=True):
     )
 
 
-class AgentChatFraudCircumstance(SQLModel, table=True):
+class ChatFraudCircumstance(SQLModel, table=True):
     """고객 답변에서 추출한 사기 정황을 저장한다."""
 
-    __tablename__ = "agent_chat_fraud_circumstances"
+    __tablename__ = "chat_fraud_circumstances"
     __table_args__ = (
         UniqueConstraint(
             "chat_session_id",
             "circumstance_code",
-            name="uq_agent_chat_fraud_circumstances_session_code",
+            name="uq_chat_fraud_circumstances_session_code",
         ),
     )
 
@@ -312,7 +312,7 @@ class AgentChatFraudCircumstance(SQLModel, table=True):
         ),
     )
     chat_session_id: str = Field(
-        foreign_key="agent_chat_sessions.chat_session_id",
+        foreign_key="chat_sessions.chat_session_id",
         ondelete="CASCADE",
         max_length=64,
     )
@@ -328,7 +328,7 @@ class AgentChatFraudCircumstance(SQLModel, table=True):
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
             ForeignKey(
-                "agent_chat_answers.answer_id",
+                "chat_answers.answer_id",
                 ondelete="SET NULL",
             ),
             nullable=True,
@@ -352,7 +352,7 @@ class FraudTypeScoreAfterChat(SQLModel, table=True):
         max_length=64,
     )
     chat_session_id: str = Field(
-        foreign_key="agent_chat_sessions.chat_session_id",
+        foreign_key="chat_sessions.chat_session_id",
         ondelete="CASCADE",
         max_length=64,
     )

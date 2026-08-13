@@ -1,6 +1,6 @@
 ---
 name: chatbot-feature
-description: Implement or modify the customer-response chatbot — chat sessions, the question flow, customer_action/fraud_circumstance extraction, RAG guide answers, fraud-type scoring, and handoff to a human agent. Use when work touches app/services/{chatbot,rag}/, app/pipelines/customer_chatbot_pipeline.py, app/api/chat.py, the agent_chat_* tables, or docs/customer-chatbot/.
+description: Implement or modify the customer-response chatbot — chat sessions, the question flow, customer_action/fraud_circumstance extraction, RAG guide answers, fraud-type scoring, and handoff to a human agent. Use when work touches app/services/{chatbot,rag}/, app/pipelines/customer_chatbot_pipeline.py, app/api/chat.py, the chat_* tables, or docs/customer-chatbot/.
 ---
 
 # 고객 대응 챗봇 기능 구현
@@ -66,7 +66,7 @@ PRD 맨 아래 **4. 부속 문서 색인**에 A.1~A.3 / B.1~B.6 / 스키마 3.x 
 
 챗봇 영역은 대부분 비어 있거나 Fake다. 무엇을 걷어내고 시작하는지 알고 들어간다.
 
-- `agent_chat_sessions` / `agent_chat_messages` / `fraud_type_score_after_chat`은
+- `chat_sessions` / `chat_messages` / `fraud_type_score_after_chat`은
   `app/data/model/chatbot.py`에 테이블 정의와
   마이그레이션만 있고 **참조하는 비즈니스 로직이 없다.** 챗봇 리포지토리도 없다.
 - `app/api/chat.py`: `POST /chat/ask` 하나뿐, 세션 개념 없음
@@ -87,8 +87,8 @@ pgvector 코사인 검색이다(`app/services/rag/`). 다만 `chatbot_retriever.
 
 1. **도메인 상수** — `customer_action` 19종 / `fraud_circumstance` 20종 + 검색 질의 한국어 매핑
    + 채점표 (스키마 3.8)
-2. **테이블** — `agent_chat_answers` / `agent_chat_extractions` 신설,
-   `agent_chat_sessions`·`fraud_type_score_after_chat` 변경 (스키마 3.4~3.7) + 마이그레이션
+2. **테이블** — `chat_answers` / 고객 행동·사기 정황 추출 테이블 신설,
+   `chat_sessions`·`fraud_type_score_after_chat` 변경 (스키마 3.4~3.7) + 마이그레이션
 3. **DTO** — 추출 결과 구조화 출력 스키마. `type` 필드는 1번 상수를 참조하는 `Enum` / `Literal`
 4. **리트리버 구조화** — 0건을 빈 리스트로 반환 (PRD 2.5의 선결 조건)
 5. **서비스** — 질문 진행, 평가 LLM, 추출 LLM, RAG. 재시도·타임아웃은 `app/core/config.py` env var
