@@ -215,6 +215,12 @@ class ConfirmedTransaction:
 
 
 class LabeledDatasetBuilder:
+    """기존 train1 CSV에 확정 라벨 거래를 반영해 새 버전을 만든다.
+
+    기존 GCS 객체는 수정하지 않는다. 같은 거래 ID가 있으면 라벨과 원천 값을
+    교체하고, 없으면 DB의 정규화 테이블을 raw64 한 행으로 복원해 추가한다.
+    """
+
     def __init__(self, storage: ObjectStorage) -> None:
         self._storage = storage
 

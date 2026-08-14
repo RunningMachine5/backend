@@ -1,4 +1,10 @@
-"""관리자 전용 ML 학습·Serving 배포 API."""
+"""관리자 전용 ML 학습·Serving 배포 API.
+
+전체 흐름은 ``데이터셋 등록 → Training Job 실행 → 결과 callback → 관리자 승인
+→ 0% 후보 배포 → 실제 예측 smoke → 100% 전환 → 배포 완료`` 순서다.
+Backend DB에는 이 흐름의 최소 상태만 저장하고, 학습 지표와 모델 버전의 원본은
+MLflow에서, 실제 리비전과 트래픽의 원본은 Cloud Run에서 다시 확인한다.
+"""
 
 from __future__ import annotations
 
@@ -66,6 +72,9 @@ router = APIRouter(
     tags=["mlops-admin"],
     dependencies=[Depends(require_mlops_admin)],
 )
+
+# DatasetVersion은 CSV 자체를 DB에 복사하지 않고, 학습에 사용할 불변 GCS
+# 객체의 주소와 버전만 가리킨다.
 
 
 def _operation_id(payload: dict[str, Any]) -> str | None:
@@ -306,6 +315,10 @@ def start_training_run(
         "operation_id": _operation_id(operation),
         "operation": operation,
     }
+
+
+# Training Job은 Backend 요청과 별도로 실행되므로 성공·실패 결과를 callback으로
+# 돌려준다. 아래 조회/결과 API는 그 비동기 실행 상태를 연결하는 경계다.
 
 
 @router.get("/training/runs")

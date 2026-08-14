@@ -1,4 +1,8 @@
-"""MLflow를 모델 상세와 Registry 버전의 단일 원본으로 조회하는 얇은 client."""
+"""MLflow Tracking·Registry를 조회하고 관리자 결정만 기록하는 얇은 client.
+
+학습 지표나 모델 버전을 Backend DB에 중복 저장하지 않는다. TrainingRun에 남은
+``mlflow_run_id``를 기준으로 MLflow에서 정확한 모델 버전과 지표를 다시 찾는다.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +22,8 @@ class MLflowRegistryError(RuntimeError):
 
 
 class MLflowRegistryClient:
+    """MLflow REST API와 Backend MLOps 흐름 사이의 최소 어댑터."""
+
     def __init__(
         self,
         *,
@@ -50,6 +56,8 @@ class MLflowRegistryClient:
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """인증·timeout·응답 형식 검사를 한곳에서 처리한다."""
+
         try:
             response = httpx.request(
                 method,
@@ -70,6 +78,8 @@ class MLflowRegistryClient:
         return body
 
     def _model_versions(self, model_name: str) -> list[dict[str, Any]]:
+        """페이지가 여러 개인 Registry 검색 결과를 빠짐없이 모은다."""
+
         escaped_name = model_name.replace("\\", "\\\\").replace("'", "\\'")
         params: dict[str, Any] = {
             "filter": f"name='{escaped_name}'",
@@ -102,6 +112,8 @@ class MLflowRegistryClient:
     def resolve_model_version(self, model_name: str, run_id: str) -> str:
         """등록 모델 중 정확히 같은 MLflow run이 만든 단일 버전을 찾습니다."""
 
+        # 최신 버전을 단순 선택하면 다른 학습 Run의 모델을 승인할 수 있다.
+        # 따라서 Backend TrainingRun과 연결된 run_id가 정확히 같은 버전만 쓴다.
         matches = [
             item
             for item in self._model_versions(model_name)
@@ -180,6 +192,8 @@ class MLflowRegistryClient:
         }
 
     def set_model_alias(self, model_name: str, alias: str, version: str) -> None:
+        """실제 100% 배포가 확인된 버전에 champion alias를 붙인다."""
+
         if not alias:
             raise MLflowRegistryError("MLflow model alias가 비어 있습니다.")
         self._request(

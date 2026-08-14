@@ -1,4 +1,9 @@
-"""Administrator API for versioned fraud-type rule management."""
+"""버전이 있는 사기유형 룰을 관리하는 관리자 API.
+
+ACTIVE 룰셋은 실시간 거래 평가에 사용되므로 직접 수정하지 않는다. 관리자는
+ACTIVE를 복제한 DRAFT에서 룰을 편집하고, validate·test·replay로 영향을 확인한
+뒤 activate한다. 활성화 시 기존 ACTIVE는 ARCHIVED가 된다.
+"""
 
 from __future__ import annotations
 
