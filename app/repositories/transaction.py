@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 
 from sqlalchemy import func
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from app.data.model.account import Account
@@ -76,7 +77,7 @@ class TransactionRepository:
         self.session = session
 
     def get(self, transaction_id: str) -> Transaction | None:
-        return self.session.get(Transaction, id)
+        return self.session.get(Transaction, transaction_id)
 
     def load_ml_features(
         self,
@@ -92,11 +93,11 @@ class TransactionRepository:
         customer = self.session.get(Customer, transaction.customer_id)
         source_account = self.session.get(Account, transaction.id)
         if derived is None or customer is None or source_account is None:
-        source_account = self.session.exec(
-            select(Account).where(
-                Account.account_number == transaction.source_account_number
-            )
-        ).first()
+            source_account = self.session.exec(
+                select(Account).where(
+                    Account.account_number == transaction.source_account_number
+                )
+            ).first()
         recipient_account = (
             self.session.exec(
                 select(Account).where(
