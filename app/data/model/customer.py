@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, date
 
-from sqlalchemy import CheckConstraint, Column, DateTime, SmallInteger
+from sqlalchemy import CheckConstraint, Column, DateTime, SmallInteger, Date
 from sqlmodel import Field, SQLModel
 
 
@@ -26,7 +26,7 @@ class Customer(SQLModel, table=True):
     id: str = Field(primary_key=True, max_length=64)
     # 생성 원본에서 고객 이름으로 사용되는 값이라 동명이인을 허용한다.
     name: str = Field(max_length=255)
-    birth_date: date = Field(sa_column=Column(Date, nullable=False))
+    birth_date: datetime = Field(sa_column=Column(Date, nullable=False))
     gender: str = Field(max_length=16)
     identification_number: str = Field(max_length=255, unique=True)
     phone_number: str | None = Field(default=None, max_length=32)
@@ -36,8 +36,6 @@ class Customer(SQLModel, table=True):
     )
     credit_rating: int = Field(sa_column=Column(SmallInteger, nullable=False))
     loan_type: str = Field(max_length=8)
-    email: str | None = Field(default=None, max_length=255)
-    phone_number: str | None = Field(default=None, max_length=32)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False),

@@ -1,15 +1,14 @@
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from ipaddress import ip_address
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StrictBool,
     field_validator,
+    model_validator,
 )
 
 MAC_ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
@@ -17,12 +16,12 @@ MAC_ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 class TransactionRequestDTO(BaseModel):
     """
     외부 클라이언트가 보내는 거래 원시 데이터.
-    계좌 정보와
+    계좌 정보와 단말기에서 감지할 수 있는 정보들이 들어온다.
     """
     model_config = ConfigDict(extra="forbid")
 
     customer_id: str | None = Field(default=None, min_length=1, max_length=64) # atm, 지점 거래의 경우 None.
-    account_account_number: str = Field(min_length=8, max_length=32)
+    source_account_number: str = Field(min_length=8, max_length=32)
     recipient_account_number: str | None = Field(default=None, min_length=8, max_length=32) # atm 입금의 경우엔 상대 계좌 없을 수 있음.
     transaction_datetime: datetime
     transaction_amount: int
@@ -92,17 +91,12 @@ class TransactionResponseDTO(BaseModel):
 
 class TransactionLabelUpdateDTO(BaseModel):
     """담당자가 확정한 거래의 이진 정답 라벨."""
-
-class TransactionLabelUpdateDTO(SQLModel):
     model_config = ConfigDict(extra="forbid")
 
     confirmed_is_fraud: bool
 
-
 class TransactionLabelResponseDTO(BaseModel):
     """저장된 거래 정답 라벨 응답."""
-
-class TransactionLabelResponseDTO(SQLModel):
     transaction_id: str
     confirmed_is_fraud: bool
     labeled_at: datetime
