@@ -67,7 +67,7 @@ class FakeCaseService:
         self.complete_calls += 1
         return AgentResponseDTO(
             case_id=case_id,
-            transaction_id="TX-001",
+            transaction_id=1,
             execution_status=AgentExecutionStatus.COMPLETED,
             failure_reason=None,
             rule_result=self.rule_result,
@@ -128,7 +128,7 @@ class FakeCaseService:
     @staticmethod
     def _input() -> AgentInputDTO:
         return AgentInputDTO(
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             risk_score=91,
             risk_grade=RiskGrade.VERY_HIGH,
@@ -331,7 +331,7 @@ class AgentWorkflowTest(unittest.TestCase):
     @staticmethod
     def _input() -> AgentInputDTO:
         return AgentInputDTO(
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             risk_score=91,
             risk_grade=RiskGrade.VERY_HIGH,

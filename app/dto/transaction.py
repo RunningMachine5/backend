@@ -1,15 +1,9 @@
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field
 
 MAC_ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
@@ -47,39 +41,12 @@ class TransactionRequestDTO(BaseModel):
     customer_flag_terminal_malicious_behavior_5: bool = Field(default=0)
     customer_flag_terminal_malicious_behavior_6: bool = Field(default=0)
 
-    @field_validator("transaction_id", mode="before")
-    @classmethod
-    def normalize_transaction_id(cls, value: object) -> str:
-        if isinstance(value, bool) or not isinstance(value, (str, int)):
-            # Pydantic v2 does not wrap TypeError raised by validators.
-            raise ValueError(  # noqa: TRY004
-                "transaction_id must be a non-empty string or integer"
-            )
-        normalized = str(value).strip()
-        if not normalized:
-            raise ValueError("transaction_id must not be empty")
-        return normalized
-
-    @field_validator("is_fraud", mode="before")
-    @classmethod
-    def normalize_fraud_label(cls, value: object) -> bool | None:
-        if value is None or value == "":
-            return None
-        if value in (0, 1, False, True, "0", "1"):
-            return str(value).lower() in {"1", "true"}
-        raise ValueError("is_fraud must be 0, 1, true, false, or null")
-
-    @model_validator(mode="before")
-    @classmethod
-    def split_flat_raw64_row(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or "raw_features" in value:
-            return value
-
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
-    transaction_id: int
+    transaction_id: int = Field(strict=True, gt=0)
 
-    prediction_status: Literal["COMPLETED", "FAILED"]
+    # NOT_AVAILABLE은 ML 호출 실패가 아니라 아직 예측 결과가 없는 거래를 뜻한다.
+    prediction_status: Literal["COMPLETED", "FAILED", "NOT_AVAILABLE"]
 
     predict_result: bool | None = None
     predict_proba: float | None = None
@@ -97,7 +64,7 @@ class TransactionLabelUpdateDTO(BaseModel):
 
 class TransactionLabelResponseDTO(BaseModel):
     """저장된 거래 정답 라벨 응답."""
-    transaction_id: str
+    transaction_id: int = Field(strict=True, gt=0)
     confirmed_is_fraud: bool
     labeled_at: datetime
 
@@ -124,9 +91,8 @@ class TransactionFeaturesDTO:
 
 __all__ = [
     "MAC_ADDRESS_PATTERN",
-    "TransactionRequestDTO",
-    "TransactionResponseDTO",
     "TransactionLabelResponseDTO",
     "TransactionLabelUpdateDTO",
+    "TransactionRequestDTO",
     "TransactionResponseDTO",
 ]

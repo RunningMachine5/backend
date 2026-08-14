@@ -23,7 +23,7 @@ class SectionResult(BaseModel, Generic[T]):
 
 # 각 섹션의 데이터 구조를 정의하는 DTO
 class TransactionView(BaseModel):
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: str # 거래 시간
     transaction_amount: int # 거래 금액
     channel: str # 거래 방법(atm, 카드 등)
@@ -84,7 +84,7 @@ class ChatView(BaseModel):
 # 선택한 사건 하나의 상세 화면 전체 데이터
 class CaseDetailResponse(BaseModel):
     case_id: str
-    transaction_id: str
+    transaction_id: int
 
     transaction: SectionResult[TransactionView]
     ml: SectionResult[MLView]
@@ -95,7 +95,7 @@ class CaseDetailResponse(BaseModel):
 # 위험 점수와 위험 등급, 사기 유형 등의 거래 정보
 class CaseListItemResponse(BaseModel):
     case_id: str
-    transaction_id: str
+    transaction_id: int
     execution_status: str
     risk_score: int | None = None
     risk_grade: str | None = None

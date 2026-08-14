@@ -12,14 +12,18 @@ from app.services.agent.type_confidence import TypeConfidenceResult
 
 def build_fraud_alert_email_command(
     *,
-    transaction_id: str,
+    transaction_id: int,
     type_confidence: TypeConfidenceResult,
     investigation_result: InvestigationResultDTO | None = None,
 ) -> FraudAlertEmailCommand:
     """Rule 상위 후보와 선택적인 Agent 추천으로 이메일 표시 순서를 결정한다."""
 
-    if not isinstance(transaction_id, str) or not transaction_id.strip():
-        raise ValueError("transaction_id는 비어 있지 않은 문자열이어야 한다.")
+    if (
+        not isinstance(transaction_id, int)
+        or isinstance(transaction_id, bool)
+        or transaction_id <= 0
+    ):
+        raise ValueError("transaction_id는 양의 정수여야 한다.")
 
     primary_type = type_confidence.top_type_code
     secondary_type = type_confidence.second_type_code

@@ -12,7 +12,7 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
-from app.data.model.types import INET_COLUMN, MACADDR_COLUMN
+from app.data.model.types import BIGINT_PRIMARY_KEY, INET_COLUMN, MACADDR_COLUMN
 
 
 class Transaction(SQLModel, table=True):
@@ -70,7 +70,15 @@ class Transaction(SQLModel, table=True):
         ),
     )
 
-    id: str = Field(primary_key=True, max_length=64)
+    # 외부 응답과 모든 자식 FK가 같은 DB 생성 정수 ID를 사용한다.
+    id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BIGINT_PRIMARY_KEY,
+            primary_key=True,
+            autoincrement=True,
+        ),
+    )
     customer_id: str = Field(
         foreign_key="customers.id",
         ondelete="RESTRICT",
@@ -79,14 +87,14 @@ class Transaction(SQLModel, table=True):
     source_account_number: str = Field(
         foreign_key="accounts.account_number",
         ondelete="RESTRICT",
-        max_length=64,
+        max_length=255,
         index=True,
     )
     recipient_account_number: str | None = Field(
         default=None,
         foreign_key="accounts.account_number",
         ondelete="SET NULL",
-        max_length=64,
+        max_length=255,
         index=True,
     )
     transaction_datetime: datetime = Field(
@@ -104,9 +112,6 @@ class Transaction(SQLModel, table=True):
     another_person_account: bool
 
     # 거래 시점 계좌 상태 스냅샷
-    initial_balance: int = Field(sa_type=BigInteger, nullable=True)
-    balance: int = Field(sa_type=BigInteger, nullable=True)
-    remaining_amount_daily_limit_exceeded: int = Field(sa_type=BigInteger, nullable=True)
     initial_balance: int | None = Field(default=None, sa_type=BigInteger)
     balance: int | None = Field(default=None, sa_type=BigInteger)
     remaining_amount_daily_limit_exceeded: int | None = Field(
@@ -115,7 +120,6 @@ class Transaction(SQLModel, table=True):
     )
 
     # 단말·접속 환경
-    operating_system: str | None = Field(max_length=32)
     operating_system: str | None = Field(default=None, max_length=32)
     ip_address: str | None = Field(
         default=None,

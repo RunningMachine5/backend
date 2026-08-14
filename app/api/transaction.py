@@ -1,5 +1,3 @@
-from typing import Any
-
 from fastapi import APIRouter, HTTPException, status
 from sqlmodel import select
 
@@ -16,7 +14,6 @@ from app.dto.transaction import (
 )
 from app.pipelines.fraud_detection_pipeline import (
     CustomerIdentificationConflictError,
-    DuplicateTransactionError,
     FraudDetectionPipeline,
 )
 from app.repositories.transaction import (
@@ -24,24 +21,11 @@ from app.repositories.transaction import (
     AccountOwnershipConflictError,
     PredictionResultRepository,
     TransactionLabelRepository,
-    TransactionRepository,
 )
 from app.services.ml_serving.client import MLServingClientDep
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
-
-
-def _dumped_features(
-    repository: TransactionRepository,
-    transaction: Transaction,
-) -> dict[str, Any] | None:
-    """정규화 컬럼에서 조립한 raw59 Feature를 응답용 JSON dict로 바꾼다."""
-
-    features = repository.load_ml_features(transaction)
-    if features is None:
-        return None
-    return features.model_dump(mode="json", by_alias=True)
 
 
 def _transaction_response(
@@ -51,7 +35,6 @@ def _transaction_response(
     label: TransactionLabel | None,
     *,
     prediction_status: str | None = None,
-    ml_features: dict[str, Any] | None = None,
 ) -> TransactionResponseDTO:
     return TransactionResponseDTO.model_validate(
         {
@@ -59,41 +42,20 @@ def _transaction_response(
             # 빈 dict를 반환할 수 있다. 응답 계약의 필드를 명시적으로 읽어
             # 세션 상태와 관계없이 같은 응답을 만든다.
             "transaction_id": transaction.id,
-            "customer_id": transaction.customer_id,
-            # 외부 응답 필드명은 기존 클라이언트 호환을 위해 유지하지만,
-            # 값은 새 거래 FK인 계좌번호를 사용한다.
-            "source_account_id": transaction.source_account_number,
-            "recipient_account_id": transaction.recipient_account_number,
-            "transaction_datetime": transaction.transaction_datetime,
-            "transaction_amount": transaction.transaction_amount,
-            "channel": transaction.channel,
-            "location": transaction.location,
-            "raw_features": ml_features,
             "created_at": transaction.created_at,
             "prediction_status": prediction_status or (
                 "COMPLETED" if prediction_result else "NOT_AVAILABLE"
             ),
-            "ml_is_fraud": (
-                prediction_result.prediction_is_fraud
+            "predict_result": (
+                prediction_result.predict_result
                 if prediction_result
                 else None
             ),
-            "fraud_probability": (
-                prediction_result.fraud_probability
+            "predict_proba": (
+                prediction_result.predict_proba
                 if prediction_result
                 else None
             ),
-            "model_name": (
-                prediction_result.model_name if prediction_result else None
-            ),
-            "model_version": (
-                prediction_result.model_version if prediction_result else None
-            ),
-            "latency_ms": (
-                prediction_result.latency_ms if prediction_result else None
-            ),
-            "rule_scores": score_result.type_scores if score_result else None,
-            "rule_set_id": score_result.rule_set_id if score_result else None,
             "confirmed_is_fraud": (label.confirmed_is_fraud if label else None),
             "labeled_at": label.labeled_at if label else None,
         }
@@ -115,11 +77,6 @@ def create_transaction(
     pipeline = FraudDetectionPipeline(session=session, ml_client=ml_client)
     try:
         result = pipeline.run(payload)
-    except DuplicateTransactionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="이미 존재하는 transaction_id입니다.",
-        ) from exc
     except AccountIdentifierConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -143,7 +100,6 @@ def create_transaction(
             result.transaction.id
         ),
         prediction_status=result.prediction_status,
-        ml_features=result.ml_features,
     )
 
 
@@ -163,7 +119,7 @@ def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
             MLPredictionResult.id.desc(),
         )
     ).all()
-    prediction_by_transaction_id: dict[str, MLPredictionResult] = {}
+    prediction_by_transaction_id: dict[int, MLPredictionResult] = {}
     for item in prediction_results:
         prediction_by_transaction_id.setdefault(item.transaction_id, item)
 
@@ -183,14 +139,12 @@ def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
     label_by_transaction_id = {
         item.transaction_id: item for item in labels
     }
-    repository = TransactionRepository(session)
     return [
         _transaction_response(
             tx,
             prediction_by_transaction_id.get(tx.id),
             score_by_transaction_id.get(tx.id),
             label_by_transaction_id.get(tx.id),
-            ml_features=_dumped_features(repository, tx),
         )
         for tx in transactions
     ]
@@ -201,7 +155,7 @@ def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
     response_model=TransactionLabelResponseDTO,
 )
 def upsert_transaction_label(
-    transaction_id: str,
+    transaction_id: int,
     payload: TransactionLabelUpdateDTO,
     session: SessionDep,
 ) -> TransactionLabel:
@@ -224,7 +178,7 @@ def upsert_transaction_label(
 
 @router.get("/{transaction_id}", response_model=TransactionResponseDTO)
 def get_transaction(
-    transaction_id: str,
+    transaction_id: int,
     session: SessionDep,
 ) -> TransactionResponseDTO:
     transaction = session.exec(
@@ -249,8 +203,4 @@ def get_transaction(
         prediction_result,
         score_result,
         label,
-        ml_features=_dumped_features(
-            TransactionRepository(session),
-            transaction,
-        ),
     )

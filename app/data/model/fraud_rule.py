@@ -167,11 +167,11 @@ class FraudTypeScoreResult(SQLModel, table=True):
             autoincrement=True,
         ),
     )
-    transaction_id: str = Field(
+    transaction_id: int = Field(
         foreign_key="transactions.id",
         ondelete="CASCADE",
-        max_length=64,
         index=True,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
     rule_set_id: int = Field(
         foreign_key="fraud_rule_sets.id",

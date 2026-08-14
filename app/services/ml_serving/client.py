@@ -29,7 +29,7 @@ RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 class MLPredictionResponse(BaseModel):
     """ML 담당자의 정식 ``/ml/predict`` 응답."""
 
-    transaction_id: str
+    transaction_id: int = Field(strict=True, gt=0)
     predict_result: Literal[0, 1]
     predict_proba: float = Field(ge=0.0, le=1.0)
     shap_values: dict[str, float] = Field(default_factory=dict)
@@ -135,7 +135,7 @@ class MLServingClient:
     def predict(
         self,
         *,
-        transaction_id: str,
+        transaction_id: int,
         features: dict[str, Any],
     ) -> MLPredictionResponse:
         for attempt in range(1, self.max_attempts + 1):
