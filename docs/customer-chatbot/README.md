@@ -31,8 +31,8 @@ SQLAlchemy, SQLModel, langchain-openai.
 
 ### 1.3 현재 구현 상태
 
-`agent_chat_sessions` / `agent_chat_messages` / `fraud_type_score_after_chat`은
-[app/data/model/agent.py](../../app/data/model/agent.py)에 테이블 정의와 마이그레이션이
+`chat_sessions` / `chat_messages` / `fraud_type_score_after_chat`은
+[app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 테이블 정의와 마이그레이션이
 이미 있으나, **비즈니스 로직에서 참조하는 코드는 없다.** 챗봇 리포지토리도 없고
 [app/api/chat.py](../../app/api/chat.py)는 세션 개념이 없는 `POST /chat/ask` 하나뿐이다.
 
@@ -58,12 +58,12 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 생성된 채팅 세션에 접속 가능한 URL을 만들어, 해당 `transactions`의 연관 테이블
 (`customers.email`)에 저장된 유저 이메일로 메일을 보낸다.
 
-`agent_chat_sessions.status = URL_SENT`, `email_sent_at`에 발송 시각을 기록한다.
+`chat_sessions.status = URL_SENT`, `email_sent_at`에 발송 시각을 기록한다.
 
 고령자 판정: `transactions`와 연관된 `customers.birthyear`로 60세 이상인지 확인한다.
 
-- 참: `agent_chat_sessions.is_older = true`
-- 거짓: `agent_chat_sessions.is_older = false`
+- 참: `chat_sessions.is_older = true`
+- 거짓: `chat_sessions.is_older = false`
 
 #### 발송 구현과 기본 주소 폴백
 
@@ -95,7 +95,7 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 - 성공: 챗봇 접속
 - 실패: 본인인증 재시도
 
-챗봇 URL 접속 시 `agent_chat_sessions.is_older`를 확인한다.
+챗봇 URL 접속 시 `chat_sessions.is_older`를 확인한다.
 
 - 참: 고령자 전용 UI로 이동 (추후 구현)
 - 거짓: 기본 챗봇 UI로 이동
@@ -248,7 +248,7 @@ Generate를 1회로 묶으면 LLM 호출 수가 액션 개수와 무관하게 1�
    전부 응답 목록에 나타난다.** 답을 찾지 못했다는 사실을 침묵이 아니라 명시적으로 알린다.
    → 문구: [B.5](messages.md#b5-근거를-찾지-못한-액션-안내)
 4. **모든 액션이 0건이면** 챗봇이 할 말이 없으므로 그때만
-   `agent_chat_sessions.status = HANDOFF_REQUESTED`로 전이하고
+   `chat_sessions.status = HANDOFF_REQUESTED`로 전이하고
    [2.7의 SSE 이벤트](#27-상담사-반환-경로-sse)를 발행한다.
    → 문구: [B.6](messages.md#b6-전체-액션이-0건일-때)
 
@@ -324,23 +324,23 @@ response = assemble(fragments)
 매 턴 추출하는 구조이므로 서로 다른 턴에서 같은 enum이 다시 나올 수 있고, 그대로 더하면
 같은 정황이 중복 가산된다. 이를 다음 두 단계로 막는다.
 
-1. 추출 결과는 `agent_chat_extractions`에 저장하되
-   `UNIQUE (chat_session_id, kind, code)`로 세션당 enum 1행을 강제한다.
+1. 추출 결과는 종류에 따라 `chat_customer_actions` 또는
+   `chat_fraud_circumstances`에 저장한다. 각 테이블의
+   `UNIQUE (chat_session_id, *_code)`로 세션당 enum 1행을 강제한다.
    같은 enum이 다시 나오면 저장하지 않는다(`ON CONFLICT DO NOTHING`).
-2. 점수 계산은 매 턴 더하지 않고, **상담 종료 시점에 `agent_chat_extractions`의
-   `FRAUD_CIRCUMSTANCE` 행 전체를 읽어 한 번만 집계**해
+2. 점수 계산은 매 턴 더하지 않고, **상담 종료 시점에
+   `chat_fraud_circumstances` 행 전체를 읽어 한 번만 집계**해
    `fraud_type_score_after_chat`에 기록한다.
 
-집계 결과는 4개 유형 점수를 전부 `type_scores`에 남기고, 최고점 유형을
-`primary_fraud_type` / `primary_fraud_type_score`에 담는다. 동점이거나 정황이 하나도
-없으면 `primary_fraud_type = NULL`로 두고 `decision_status`로 구분한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)).
+집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
+상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)).
 
 ### 2.7 상담사 반환 경로 (SSE)
 
 챗봇이 처리할 수 없어 사람에게 넘겨야 하는 순간 — [2.3](#23-최초-알림-메시지와-버튼)의
 "상담사 연결" 버튼으로 `status`가 `HANDOFF_REQUESTED`로 바뀌는 순간 — 을 담당자가 어떻게
-알아채는지가 필요하다. 또한 `agent_cases`와 `agent_chat_sessions`는 둘 다 `transaction_id`에
-`UNIQUE` 제약만 있을 뿐([app/data/model/agent.py:53-60](../../app/data/model/agent.py#L53-L60))
+알아채는지가 필요하다. 또한 `agent_cases`와 `chat_sessions`는 둘 다 `transaction_id`에
+  `UNIQUE` 제약만 있을 뿐([app/data/model/agent.py](../../app/data/model/agent.py))
 서로를 가리키는 FK가 없어, 담당자 화면이 "이 상담 요청이 어느 조사 사건에 대응하는지"를
 얻으려면 매번 `transaction_id`로 조인해야 한다.
 
@@ -350,7 +350,7 @@ response = assemble(fragments)
 - 이벤트 페이로드
   - `chat_session_id`
   - `transaction_id`
-  - `case_id` — `agent_cases.transaction_id = agent_chat_sessions.transaction_id`로 조회해
+  - `case_id` — `agent_cases.transaction_id = chat_sessions.transaction_id`로 조회해
     채워 넣는다. 프론트가 이벤트 하나로 바로 해당 `AgentCase` 상세 화면으로 이동할 수 있도록
     간접 조인을 서버가 대신 해서 이벤트에 실어 보낸다
 - 상태 전이가 일어나는 지점(챗봇 파이프라인에서 `status`를 `HANDOFF_REQUESTED`로 갱신하는
@@ -430,8 +430,6 @@ response = assemble(fragments)
   `Transaction_Amount: int = Field(gt=0)`가 살아 있어 음수 거래는 `POST /transactions`에서
   422로 걸린다. DB에는 CHECK가 없어 저장 자체는 가능하다. ML 계약을 바꿀지, 방향을 다른
   값에서 파생할지(`source_account.customer_id == transaction.customer_id`면 출금) 정해야 한다. -> ML 계약을 바꾼다 ML 계약의 ge 부분을 수정한다
-- **`agent_chat_sessions.top_fraud_types`가 미사용으로 남는다.** 유형 판별 질문이 없어졌고
-  내부 채점표가 4개 유형 전부를 채점하므로 이 컬럼을 읽는 곳이 없다. 삭제해야한다
 - **외부 조회(더치트·Safe Browsing) 관련**
   - 더치트는 공개 API가 아니라 제휴 기반이다. 조달 가능 여부를 먼저 확인하고,
     안 되면 대체 경로(경찰청 사이버안전국 링크 안내)를 잡아둬야 한다.
@@ -447,7 +445,7 @@ response = assemble(fragments)
 ## 4. 부속 문서 색인
 
 이 PRD는 **흐름과 분기 조건**만 다룬다. 프롬프트 전문, 고객 문구, 채점표, 테이블 정의는
-분량이 크고 변경 주기가 달라 아래 4개 문서로 분리했다.
+분량이 크고 변경 주기가 달라 아래 문서로 분리했다.
 **코드에 프롬프트나 문구를 새로 쓰지 않는다.** 필요하면 해당 문서에 먼저 추가한 뒤 옮긴다.
 
 | 문서 | 담고 있는 것 |
@@ -456,6 +454,7 @@ response = assemble(fragments)
 | [messages.md](messages.md) | 고객 안내 문구 B.1~B.6 |
 | [scoring.md](scoring.md) | 사기 정황 내부 채점표 (20종 × 4유형) |
 | [schema.md](schema.md) | 테이블·컬럼 정의 3.1~3.10 |
+| [erd.md](erd.md) | 챗봇 테이블 관계 Mermaid ERD |
 
 ### [LLM 프롬프트](prompts.md)
 
@@ -481,9 +480,9 @@ response = assemble(fragments)
 | 절 | 내용 | 이 PRD의 사용처 |
 | --- | --- | --- |
 | [3.3](schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-sse) |
-| [3.4](schema.md#34-agent_chat_sessions--컬럼-추가) | `agent_chat_sessions` 컬럼 + 대화 진행 상태 | [2.1](#21-채팅-세션-생성-및-이메일-전송), [2.4](#24-정보-수집--챗봇-질문) |
-| [3.5](schema.md#35-agent_chat_answers--신규) | `agent_chat_answers` | [2.4 조건 1](#조건-1-현재-질문에-대한-재시도-횟수) |
-| [3.6](schema.md#36-agent_chat_extractions--신규) | `agent_chat_extractions` | [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |
+| [3.4](schema.md#34-chat_sessions--테이블명-변경-및-컬럼-추가) | `chat_sessions` 테이블명 변경 + 대화 진행 상태 | [2.1](#21-채팅-세션-생성-및-이메일-전송), [2.4](#24-정보-수집--챗봇-질문) |
+| [3.5](schema.md#35-chat_answers--신규) | `chat_answers` | [2.4 조건 1](#조건-1-현재-질문에-대한-재시도-횟수) |
+| [3.6](schema.md#36-추출-결과-테이블--신규) | 고객 행동·사기 정황 추출 테이블 | [2.5 고객 행동 추출](#고객-행동-추출), [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |
 | [3.7](schema.md#37-fraud_type_score_after_chat--구조-변경) | `fraud_type_score_after_chat` | [2.6](#26-사기-정황-추출과-채점-4-2) |
 | [3.8](schema.md#38-appdomain-enum-코드-상수화) | enum 코드 상수화 | [2.5 검색 질의 구성](#검색-질의-구성) |
 | [3.9](schema.md#39-customersemail-확보-경로) | `customers.email` 확보 경로 | [2.1 발송 구현과 기본 주소 폴백](#발송-구현과-기본-주소-폴백) |

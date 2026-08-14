@@ -3,11 +3,16 @@
 from app.data.model.account import Account  # noqa: F401
 from app.data.model.agent import (  # noqa: F401
     AgentCase,
-    AgentChatMessage,
-    AgentChatSession,
     AgentDashboardInsight,
     AgentExecutionStatus,
     AgentReview,
+)
+from app.data.model.chatbot import (  # noqa: F401
+    ChatAnswer,
+    ChatCustomerAction,
+    ChatFraudCircumstance,
+    ChatMessage,
+    ChatSession,
     ChatSenderType,
     ChatSessionStatus,
     FraudTypeScoreAfterChat,
@@ -39,13 +44,16 @@ from app.data.model.transaction_label import TransactionLabel  # noqa: F401
 __all__ = [
     "Account",
     "AgentCase",
-    "AgentChatMessage",
-    "AgentChatSession",
     "AgentDashboardInsight",
     "AgentExecutionStatus",
     "AgentReview",
     "ChatSenderType",
     "ChatSessionStatus",
+    "ChatAnswer",
+    "ChatCustomerAction",
+    "ChatFraudCircumstance",
+    "ChatMessage",
+    "ChatSession",
     "CsGuideDocument",
     "CsGuideDocumentChunk",
     "Customer",
