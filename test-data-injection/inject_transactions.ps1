@@ -1,16 +1,29 @@
-param(
+﻿param(
     [string]$BackendUrl = "http://127.0.0.1:8000",
     [string]$MlServingUrl = "http://127.0.0.1:8001",
     [string]$AdminToken = "local-dev-mlops-token",
-    [string]$CsvPath = "$PSScriptRoot\data\transactions_model80_10000.csv",
+    [string]$CsvPath = "",
     [string]$ExpectedModelName = "fdshield-fraud-detector-v2",
     [string]$ExpectedModelVersion = "1",
-    [string]$SmokePayloadPath = (
-        "$PSScriptRoot\..\..\ml\examples\local-model-predict-request.json"
-    )
+    [ValidateRange(1, 1000)]
+    [int]$TransactionsPerSecond = 100,
+    [string]$SmokePayloadPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1에서는 param 기본값 안의 $PSScriptRoot가 비어 있을
+# 수 있으므로 실행이 시작된 뒤 스크립트 위치를 기준으로 경로를 계산한다.
+if ([string]::IsNullOrWhiteSpace($CsvPath)) {
+    $CsvPath = Join-Path `
+        $PSScriptRoot `
+        "data\transactions_model80_10000.csv"
+}
+if ([string]::IsNullOrWhiteSpace($SmokePayloadPath)) {
+    $SmokePayloadPath = Join-Path `
+        $PSScriptRoot `
+        "..\..\ml\examples\local-model-predict-request.json"
+}
 
 if (-not (Test-Path -LiteralPath $CsvPath -PathType Leaf)) {
     throw (
@@ -174,18 +187,10 @@ if ($normalRows -ne $normalTarget -or $fraudRows -ne $fraudTarget) {
     )
 }
 
-# DB가 transaction_id를 자동 생성하므로 CSV의 문자열 ID로 재실행 여부를
-# 확인할 수 없다. 중복 거래 생성을 막기 위해 이 로컬 E2E는 빈 DB에서만 시작한다.
-$existingTransactions = @(Invoke-RestMethod `
-    -Uri "$BackendUrl/transactions" `
-    -TimeoutSec 10
-)
-if ($existingTransactions.Count -gt 0) {
-    throw (
-        "거래 DB가 비어 있지 않습니다. 로컬 DB를 초기화한 뒤 다시 실행하세요. " +
-        "현재 조회 건수=$($existingTransactions.Count)"
-    )
-}
+# CSV transaction_id는 로그에서 원본 행을 찾기 위한 값이다. 실제 거래 ID는
+# POST /transactions마다 DB가 새 정수로 발급하므로 기존 거래가 있어도 계속
+# 추가할 수 있다. 같은 CSV를 다시 실행하면 같은 원본 내용도 새 거래 ID를 받아
+# 다시 저장되며, 아래 라벨 요청은 그 실행에서 돌려받은 새 ID를 사용한다.
 
 $adminHeaders = @{ "X-MLOps-Admin-Token" = $AdminToken }
 try {
@@ -242,9 +247,55 @@ function Convert-ToCsvBoolean {
     return [bool]([int]$Value)
 }
 
+function Convert-ToApiDateTime {
+    param(
+        [object]$Value,
+        [string]$FieldName,
+        [string]$SourceRowId
+    )
+
+    # train1.csv에는 `2025-01-01 0:02`처럼 한 자리 시각과 초가 생략된
+    # 값이 있다. Backend DTO가 안정적으로 읽도록 ISO 8601 형식으로 맞춘다.
+    $text = [string]$Value
+    [string[]]$formats = @(
+        "yyyy-MM-dd H:mm",
+        "yyyy-MM-dd HH:mm",
+        "yyyy-MM-dd H:mm:ss",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ss"
+    )
+    $parsed = [datetime]::MinValue
+    $parsedSuccessfully = [datetime]::TryParseExact(
+        $text,
+        $formats,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::None,
+        [ref]$parsed
+    )
+    if (-not $parsedSuccessfully) {
+        throw (
+            "거래 ${SourceRowId}의 ${FieldName} 날짜 형식을 " +
+            "읽을 수 없습니다: $text"
+        )
+    }
+    return $parsed.ToString(
+        "yyyy-MM-ddTHH:mm:ss",
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+}
+
 # 생성된 DB ID가 같은 실행 안에서 중복되지 않는지도 별도로 확인한다.
 $createdTransactionIds = [System.Collections.Generic.HashSet[long]]::new()
 $processed = 0
+
+# 이 스크립트는 한 거래의 저장·ML 추론·룰 검증·라벨 저장이 끝난 뒤 다음
+# 거래를 처리하는 순차 E2E다. 아래 값은 POST /transactions를 초당 정확히
+# N건 병렬 전송하는 값이 아니라, 거래 요청 시작 속도가 N건/초를 넘지 않도록
+# 하는 상한이다. 실제 처리량은 Backend·ML·DB 응답시간에 따라 더 낮을 수 있다.
+$minimumTransactionIntervalMs = 1000.0 / $TransactionsPerSecond
+$injectionStopwatch = [Diagnostics.Stopwatch]::StartNew()
+$lastTransactionStartedAtMs = $null
+
 $results = foreach ($row in $rows) {
     $processed += 1
     Write-Progress `
@@ -286,7 +337,10 @@ $results = foreach ($row in $rows) {
         source_account_number = [string]$row.account_account_number
         recipient_account_number = Convert-ToNullableString `
             -Value $row.recipient_account_number
-        transaction_datetime = [string]$row.transaction_datetime
+        transaction_datetime = Convert-ToApiDateTime `
+            -Value $row.transaction_datetime `
+            -FieldName "transaction_datetime" `
+            -SourceRowId $sourceRowId
         transaction_amount = [long]$row.transaction_amount
         channel = [string]$row.channel
         type_general_automatic = [string]$row.type_general_automatic
@@ -330,6 +384,22 @@ $results = foreach ($row in $rows) {
             -FieldName "customer_flag_terminal_malicious_behavior_6" `
             -SourceRowId $sourceRowId
     }
+
+    # 이전 거래 POST를 시작한 시각부터 최소 간격이 지나지 않았다면 기다린다.
+    # 예: 100건/초는 10ms, 10건/초는 100ms의 최소 시작 간격을 사용한다.
+    if ($null -ne $lastTransactionStartedAtMs) {
+        $elapsedSinceLastStartMs = (
+            $injectionStopwatch.Elapsed.TotalMilliseconds -
+            $lastTransactionStartedAtMs
+        )
+        $remainingIntervalMs = (
+            $minimumTransactionIntervalMs - $elapsedSinceLastStartMs
+        )
+        if ($remainingIntervalMs -gt 0) {
+            Start-Sleep -Milliseconds ([math]::Ceiling($remainingIntervalMs))
+        }
+    }
+    $lastTransactionStartedAtMs = $injectionStopwatch.Elapsed.TotalMilliseconds
 
     try {
         $response = Invoke-RestMethod `
@@ -428,7 +498,8 @@ Write-Progress -Activity "slim 거래 10,000건 주입" -Completed
 Write-Output (
     "Backend=$($backendHealth.status), ML=$($mlHealth.status), " +
     "MLPreflight=$($smokeResponse.model_name):$($smokeResponse.model_version), " +
-    "SHAPGroups=$smokeShapCount, ActiveRuleSet=$($activeRuleSet.id)"
+    "SHAPGroups=$smokeShapCount, ActiveRuleSet=$($activeRuleSet.id), " +
+    "TransactionRateLimit=$TransactionsPerSecond/sec"
 )
 $agreementCount = @($results | Where-Object { $_.CsvLabel -eq $_.MlFraud }).Count
 $summary = [pscustomobject]@{

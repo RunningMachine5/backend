@@ -140,14 +140,24 @@ Pop-Location
 Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health'
 ```
 
-DB가 생성하는 정수 ID만 사용하므로 주입 스크립트는 거래가 없는 로컬 DB에서만
-시작한다. 기존 테스트 데이터가 있으면 중복 생성을 막기 위해 즉시 중단한다. 재실행할
-때는 로컬 DB를 먼저 초기화한다.
+DB가 생성하는 정수 ID를 사용하므로 기존 거래가 있어도 이어서 주입할 수 있다.
+같은 CSV를 다시 실행하면 기존 행을 재사용하지 않고 새로운 거래 ID 10,000개를
+발급해 추가 저장한다. 각 확정 라벨은 해당 실행에서 새로 발급된 거래 ID에 연결된다.
 
 ## 5. 10,000건 주입
 
 ```powershell
 .\backend\test-data-injection\inject_transactions.ps1
+```
+
+기본값은 `-TransactionsPerSecond 100`이며 `POST /transactions` 요청 시작 속도의
+최댓값을 뜻한다. 스크립트는 거래 저장·ML 추론·룰 검증·라벨 저장을 한 행씩
+순차 처리하므로 실제 처리량은 Backend·ML·DB 응답시간에 따라 100건/초보다 낮을
+수 있다. 더 천천히 확인하려면 다음처럼 조절한다.
+
+```powershell
+.\backend\test-data-injection\inject_transactions.ps1 `
+  -TransactionsPerSecond 10
 ```
 
 다른 로컬 모델 버전을 검증할 때만 예상값을 명시한다.
