@@ -66,7 +66,7 @@ def _transaction_payload(
     source_account_number: str,
     recipient_account_number: str,
     confirmed_is_fraud: bool,
-    initial_balance: int = 10_000_000,
+    initial_balance: int | None = 10_000_000,
 ) -> TransactionCreateDTO:
     sequence = transaction_id.rsplit("-", maxsplit=1)[-1]
     row = valid_transaction_row(
@@ -245,6 +245,32 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(row["transaction_amount"], "75000")
         self.assertEqual(row["account_initial_balance"], "0")
+        self.assertEqual(row["balance_drain_ratio"], "")
+
+    def test_null_initial_balance_emits_empty_feature_and_ratio(self) -> None:
+        payload = _transaction_payload(
+            "TX-DATASET-1",
+            customer_id="C-DATASET-1",
+            source_account_number="source-account-1",
+            recipient_account_number="recipient-account-1",
+            confirmed_is_fraud=True,
+            initial_balance=None,
+        )
+        self._save(payload)
+        source_uri = "gs://bucket/generated/v1/train1.csv"
+        destination_uri = "gs://bucket/generated/v2/train1.csv"
+        storage = FakeObjectStorage({source_uri: _csv_bytes([])})
+
+        LabeledDatasetBuilder(storage).build(
+            self.session,
+            source_uri=source_uri,
+            destination_uri=destination_uri,
+        )
+
+        row = next(
+            csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
+        )
+        self.assertEqual(row["account_initial_balance"], "")
         self.assertEqual(row["balance_drain_ratio"], "")
 
     def test_requires_exact_ordered_train1_raw64_source_contract(self) -> None:

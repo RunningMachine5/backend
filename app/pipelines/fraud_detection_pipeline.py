@@ -52,7 +52,7 @@ def _is_transaction_unique_violation(
 ) -> bool:
     return (
         constraint_name in _TRANSACTION_UNIQUE_CONSTRAINTS
-        or "transactions.transaction_id" in error_message
+        or "transactions.id" in error_message
     )
 
 
@@ -72,8 +72,8 @@ def _is_retryable_master_race(
 ) -> bool:
     return (
         constraint_name in _MASTER_RACE_CONSTRAINTS
-        or "customers.customer_id" in error_message
-        or "accounts.account_id" in error_message
+        or "customers.id" in error_message
+        or "accounts.id" in error_message
         or "accounts.account_number" in error_message
     )
 
@@ -166,7 +166,7 @@ class FraudDetectionPipeline:
         prediction_started_at = perf_counter()
         try:
             prediction = self.ml_client.predict(
-                transaction_id=transaction.transaction_id,
+                transaction_id=transaction.id,
                 features=raw_features,
             )
         except MLServingError:
@@ -178,7 +178,7 @@ class FraudDetectionPipeline:
             )
             prediction_status = "COMPLETED"
             prediction_result = MLPredictionResult(
-                transaction_id=transaction.transaction_id,
+                transaction_id=transaction.id,
                 prediction_is_fraud=prediction.is_fraud,
                 fraud_probability=prediction.fraud_probability,
                 model_name=prediction.model_name,
@@ -190,7 +190,7 @@ class FraudDetectionPipeline:
             if prediction.is_fraud:
                 score_result = score_transaction_fraud_types(
                     session=self.session,
-                    transaction_id=transaction.transaction_id,
+                    transaction_id=transaction.id,
                     raw_data=raw_features,
                 )
                 if score_result is not None:

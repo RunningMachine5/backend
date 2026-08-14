@@ -141,7 +141,7 @@ def build_derived_features_fields(
         "dawn_one_month_std_dev": features.account_dawn_one_month_std_dev,
         "unused_terminal_status": features.unused_terminal_status,
         "unused_account_status": features.unused_account_status,
-        "flag_deposit_more_than_tenmillion": (
+        "flag_deposit_more_than_tenMillion": (
             features.flag_deposit_more_than_ten_million
         ),
         "number_of_transaction_with_the_account": (
@@ -195,7 +195,7 @@ def assemble_ml_features(
     missing = [name for name, value in required_account_values.items() if value is None]
     if missing:
         raise FeatureAssemblyError(
-            f"source account {source_account.account_id} is missing {missing}"
+            f"source account {source_account.account_number} is missing {missing}"
         )
     if recipient_account is None:
         raise FeatureAssemblyError(
@@ -205,7 +205,7 @@ def assemble_ml_features(
     return MLTransactionFeatures(
         customer_birth_date=customer.birth_date,
         customer_gender=customer.gender,
-        customer_name=customer.personal_identifier,
+        customer_name=customer.name,
         customer_registration_datetime=customer.registration_datetime,
         customer_credit_rating=customer.credit_rating,
         customer_flag_change_of_authentication_1=(
@@ -279,7 +279,9 @@ def assemble_ml_features(
         last_bank_branch_transaction_datetime=(
             derived.last_bank_branch_transaction_datetime
         ),
-        flag_deposit_more_than_ten_million=(derived.flag_deposit_more_than_tenmillion),
+        flag_deposit_more_than_ten_million=(
+            derived.flag_deposit_more_than_tenMillion
+        ),
         unused_account_status=derived.unused_account_status,
         recipient_account_suspend_status=(derived.recipient_account_suspend_status),
         number_of_transaction_with_the_account=(

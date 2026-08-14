@@ -42,7 +42,7 @@ class AgentEmailRepository:
 
         return FraudAlertEmailContext(
             recipient_email=customer.email,
-            customer_name=customer.personal_identifier,
+            customer_name=customer.name,
             transaction_datetime=transaction.transaction_datetime,
             transaction_amount=transaction.transaction_amount,
             channel=transaction.channel,

@@ -235,16 +235,18 @@ _INTEGER_FIELDS = (
 )
 
 _NUMBER_FIELDS = (
-    "account_initial_balance",
-    "account_balance",
     "account_amount_daily_limit",
-    "account_remaining_amount_daily_limit_exceeded",
     "account_one_month_max_amount",
     "account_one_month_std_dev",
     "account_dawn_one_month_max_amount",
     "account_dawn_one_month_std_dev",
     "transaction_amount",
     "distance",
+)
+_OPTIONAL_NUMBER_FIELDS = (
+    "account_initial_balance",
+    "account_balance",
+    "account_remaining_amount_daily_limit_exceeded",
 )
 
 _REQUIRED_DATETIME_FIELDS = (
@@ -295,6 +297,12 @@ class RuleFeatureBuilder:
             normalized[field_name] = self._as_int(field_name, normalized[field_name])
         for field_name in _NUMBER_FIELDS:
             normalized[field_name] = self._as_number(field_name, normalized[field_name])
+        for field_name in _OPTIONAL_NUMBER_FIELDS:
+            if normalized[field_name] is not None:
+                normalized[field_name] = self._as_number(
+                    field_name,
+                    normalized[field_name],
+                )
         for field_name in _BINARY_FIELDS:
             normalized[field_name] = self._as_binary_flag(
                 field_name, normalized[field_name]
@@ -333,7 +341,7 @@ class RuleFeatureBuilder:
         normalized["account_account_type"] = self._as_enum(
             "account_account_type",
             normalized["account_account_type"],
-            {"a", "b", "c", "d"},
+            {"a", "b", "c", "d", "e"},
         )
         normalized["channel"] = self._as_enum(
             "channel",
@@ -354,12 +362,14 @@ class RuleFeatureBuilder:
             normalized["type_general_automatic"],
             {"general", "automatic"},
         )
-        normalized["access_medium"] = self._as_enum(
-            "access_medium", normalized["access_medium"], set("abcdefgh")
-        )
-        normalized["error_code"] = self._as_text(
-            "error_code", normalized["error_code"]
-        ).lower()
+        if normalized["access_medium"] is not None:
+            normalized["access_medium"] = self._as_enum(
+                "access_medium", normalized["access_medium"], set("abcdefgh")
+            )
+        error_code = normalized["error_code"]
+        if not isinstance(error_code, str):
+            raise RuleFeatureError("error_code는 문자열이어야 합니다.")
+        normalized["error_code"] = error_code.strip().lower()
         time_difference_seconds = self._as_duration_seconds(
             "time_difference", normalized["time_difference"]
         )
@@ -378,7 +388,10 @@ class RuleFeatureBuilder:
             "account_dawn_one_month_max_amount",
             "account_dawn_one_month_std_dev",
         ):
-            if normalized[field_name] < 0:
+            if (
+                normalized[field_name] is not None
+                and normalized[field_name] < 0
+            ):
                 raise RuleFeatureError(f"{field_name}은 음수일 수 없습니다.")
 
         age = self._age_at_transaction(birth_date, transaction_datetime)
@@ -418,15 +431,21 @@ class RuleFeatureBuilder:
             monthly_max,
             3 * max(monthly_std, 1),
         )
+        initial_balance = normalized["account_initial_balance"]
+        account_balance = normalized["account_balance"]
+        remaining_daily_limit = normalized[
+            "account_remaining_amount_daily_limit_exceeded"
+        ]
         balance_depletion = (
-            transaction_amount
-            >= 0.8 * max(abs(normalized["account_initial_balance"]), 1)
-            or normalized["account_balance"] < 0
-        )
+            initial_balance is not None
+            and transaction_amount >= 0.8 * max(abs(initial_balance), 1)
+        ) or (account_balance is not None and account_balance < 0)
         daily_limit_pressure = transaction_amount >= 0.8 * max(
             normalized["account_amount_daily_limit"], 1
-        ) or normalized["account_remaining_amount_daily_limit_exceeded"] <= 0.1 * max(
-            normalized["account_amount_daily_limit"], 1
+        ) or (
+            remaining_daily_limit is not None
+            and remaining_daily_limit
+            <= 0.1 * max(normalized["account_amount_daily_limit"], 1)
         )
         severe_amount_context = amount_anomaly and (
             balance_depletion or daily_limit_pressure
@@ -639,14 +658,6 @@ class RuleFeatureBuilder:
             choices = ", ".join(sorted(allowed))
             raise RuleFeatureError(f"{field_name}은 {choices} 중 하나여야 합니다.")
         return normalized
-
-    @staticmethod
-    def _as_text(field_name: str, value: Any) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise RuleFeatureError(
-                f"{field_name}은 비어 있지 않은 문자열이어야 합니다."
-            )
-        return value.strip()
 
     @staticmethod
     def _as_duration_seconds(field_name: str, value: Any) -> float:

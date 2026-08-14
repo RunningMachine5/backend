@@ -217,6 +217,38 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         self.assertFalse(context["amount_anomaly"])
         self.assertFalse(context["severe_amount_context"])
 
+    def test_nullable_ml_owner_fields_do_not_break_rule_context(self) -> None:
+        raw_data = valid_rule_raw_data()
+        raw_data.update(
+            {
+                "account_account_type": "e",
+                "account_initial_balance": None,
+                "account_balance": None,
+                "account_remaining_amount_daily_limit_exceeded": None,
+                "access_medium": None,
+            }
+        )
+
+        context = self.builder.build(raw_data)
+
+        self.assertEqual(context["account_account_type"], "e")
+        self.assertIsNone(context["account_initial_balance"])
+        self.assertIsNone(context["account_balance"])
+        self.assertIsNone(
+            context["account_remaining_amount_daily_limit_exceeded"]
+        )
+        self.assertIsNone(context["access_medium"])
+        self.assertFalse(context["balance_depletion"])
+        self.assertFalse(context["daily_limit_pressure"])
+
+    def test_empty_error_code_is_preserved_for_rules(self) -> None:
+        raw_data = valid_rule_raw_data()
+        raw_data["error_code"] = ""
+
+        context = self.builder.build(raw_data)
+
+        self.assertEqual(context["error_code"], "")
+
     def test_impossible_travel_uses_distance_and_two_hour_boundary(self) -> None:
         raw_data = valid_rule_raw_data()
         raw_data["distance"] = 100

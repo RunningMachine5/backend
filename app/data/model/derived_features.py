@@ -15,8 +15,8 @@ class DerivedFeatures(SQLModel, table=True):
     계좌·고객 조인 결과를 거래 시점 값 그대로 고정한다. 원본 테이블을 다시
     집계하면 값이 달라지므로 재채점은 이 테이블을 읽어야 한다.
 
-    컬럼명은 ERD 원문의 오타(release_suspention, inquery_atm_limit)를 바로잡아
-    정타로 저장한다. 외부 CSV·ML 계약의 오타 이름은 입력 계층에서만 흡수한다.
+    대부분의 컬럼명은 ERD 원문의 오타를 바로잡되, ML 담당자가 확정한
+    flag_deposit_more_than_tenMillion은 계약 이름 그대로 저장한다.
     """
 
     __tablename__ = "derived_features"
@@ -50,9 +50,9 @@ class DerivedFeatures(SQLModel, table=True):
         ),
     )
 
-    transaction_id: str = Field(
+    id: str = Field(
         primary_key=True,
-        foreign_key="transactions.transaction_id",
+        foreign_key="transactions.id",
         ondelete="CASCADE",
         max_length=64,
     )
@@ -69,14 +69,16 @@ class DerivedFeatures(SQLModel, table=True):
     dawn_one_month_max_amount: int = Field(sa_type=BigInteger)
     dawn_one_month_std_dev: float = Field(sa_column=Column(Float, nullable=False))
 
-    # TXN 7일
+    # 기존 거래 전체
     unused_terminal_status: bool
     unused_account_status: bool
-    flag_deposit_more_than_tenmillion: bool
+    transaction_history_with_the_account: int
+
+    # TXN 7일
+    flag_deposit_more_than_tenMillion: bool
 
     # TXN 3시간 / 누적
     number_of_transaction_with_the_account: int
-    transaction_history_with_the_account: int
 
     # TXN 채널 이력
     last_atm_transaction_datetime: datetime | None = Field(
