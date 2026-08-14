@@ -21,7 +21,6 @@ class CustomerEventType(str, Enum):
     SUSPENSION_START = "SUSPENSION_START"
     SUSPENSION_RELEASE = "SUSPENSION_RELEASE"
 
-
 class CustomerEvent(SQLModel, table=True):
     """인증 변경·ATM 한도 조정·정지 해제 등 고객 단위 사건 한 건."""
 
@@ -63,7 +62,7 @@ class CustomerEvent(SQLModel, table=True):
         default=None,
         foreign_key="accounts.account_number",
         ondelete="SET NULL",
-        max_length=255,
+        max_length=64,
         index=True,
     )
     event_type: str = Field(max_length=32)

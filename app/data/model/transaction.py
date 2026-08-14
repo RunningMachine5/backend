@@ -45,6 +45,10 @@ class Transaction(SQLModel, table=True):
             name="ck_transactions_access_medium",
         ),
         CheckConstraint(
+            "error_code IN ('a', 'b', 'c', 'd', 'e', 'f')",
+            name="ck_transactions_error_code",
+        ),
+        CheckConstraint(
             "location_lat IS NULL OR location_lat BETWEEN -90 AND 90",
             name="ck_transactions_location_lat",
         ),
@@ -55,10 +59,6 @@ class Transaction(SQLModel, table=True):
         CheckConstraint(
             "num_connection_failure >= 0",
             name="ck_transactions_num_connection_failure",
-        ),
-        CheckConstraint(
-            "transaction_amount > 0",
-            name="ck_transactions_transaction_amount_positive",
         ),
         CheckConstraint(
             "initial_balance >= 0",
@@ -79,30 +79,34 @@ class Transaction(SQLModel, table=True):
     source_account_number: str = Field(
         foreign_key="accounts.account_number",
         ondelete="RESTRICT",
-        max_length=255,
+        max_length=64,
         index=True,
     )
     recipient_account_number: str | None = Field(
         default=None,
         foreign_key="accounts.account_number",
         ondelete="SET NULL",
-        max_length=255,
+        max_length=64,
         index=True,
     )
     transaction_datetime: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False)
     )
-    # ML raw64의 transaction_amount는 출금액의 절댓값이므로 항상 양수다.
     transaction_amount: int = Field(sa_type=BigInteger)
 
     channel: str = Field(max_length=32)
     type_general_automatic: str = Field(max_length=16)
-    access_medium: str | None = Field(default=None, max_length=8)
-    error_code: str = Field(max_length=8)
-    num_connection_failure: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    access_medium: str | None = Field(max_length=8, nullable=True)
+    error_code: str | None = Field(max_length=8, nullable=True)
+    num_connection_failure: int = Field(
+        sa_column=Column(SmallInteger, nullable=False)
+    )
     another_person_account: bool
 
     # 거래 시점 계좌 상태 스냅샷
+    initial_balance: int = Field(sa_type=BigInteger, nullable=True)
+    balance: int = Field(sa_type=BigInteger, nullable=True)
+    remaining_amount_daily_limit_exceeded: int = Field(sa_type=BigInteger, nullable=True)
     initial_balance: int | None = Field(default=None, sa_type=BigInteger)
     balance: int | None = Field(default=None, sa_type=BigInteger)
     remaining_amount_daily_limit_exceeded: int | None = Field(
@@ -111,6 +115,7 @@ class Transaction(SQLModel, table=True):
     )
 
     # 단말·접속 환경
+    operating_system: str | None = Field(max_length=32)
     operating_system: str | None = Field(default=None, max_length=32)
     ip_address: str | None = Field(
         default=None,

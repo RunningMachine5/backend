@@ -12,6 +12,8 @@ from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
+from app.dto.ml_features import RAW_TRANSACTION_FEATURE_COLUMNS
+from app.dto.transaction import TransactionRequestDTO
 from app.dto.transaction import TransactionCreateDTO
 from app.repositories.transaction import TransactionRepository
 from app.services.mlops.dataset_builder import (
@@ -67,7 +69,7 @@ def _transaction_payload(
     recipient_account_number: str,
     confirmed_is_fraud: bool,
     initial_balance: int | None = 10_000_000,
-) -> TransactionCreateDTO:
+) -> TransactionRequestDTO:
     sequence = transaction_id.rsplit("-", maxsplit=1)[-1]
     row = valid_transaction_row(
         transaction_id,
@@ -107,7 +109,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.session.close()
         self.engine.dispose()
 
-    def _save(self, payload: TransactionCreateDTO) -> None:
+    def _save(self, payload: TransactionRequestDTO) -> None:
         TransactionRepository(self.session).add_received(payload)
         self.session.commit()
 

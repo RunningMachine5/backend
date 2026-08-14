@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.dto.ml_prediction import MLTransactionFeatures
+from app.dto.ml_features import MLTransactionFeatures
 
 
 class StrictMLOpsDTO(BaseModel):
@@ -98,9 +98,9 @@ class TrainingDecisionRequest(StrictMLOpsDTO):
     # 확정 ERD에는 사유 컬럼이 없습니다. 요청 감사 로그에서 활용할 수 있도록
     # 호환은 유지하지만 영속 데이터로 취급하지 않습니다.
     reason: str | None = Field(default=None, max_length=2000)
-    # STAGED 리비전의 비동기 생성 실패를 확인한 관리자가 같은 후보로 새
-    # 0% 리비전을 명시적으로 다시 만들 때만 사용합니다. 일반 HTTP 재시도가
-    # 중복 리비전을 만드는 것을 막기 위해 기본값은 false입니다.
+    # STAGED 후보를 ML Serving CD가 다시 준비한 뒤 계약 검증을 명시적으로
+    # 반복할 때만 사용합니다. 일반 HTTP 재시도로 상태를 다시 쓰지 않도록
+    # 기본값은 false입니다.
     restage: bool = False
 
     @model_validator(mode="after")

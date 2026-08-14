@@ -1,39 +1,52 @@
-from __future__ import annotations
-
+import re
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta
+from ipaddress import ip_address
+from typing import Any, Literal
 
-from pydantic import ConfigDict, field_validator, model_validator
-from pydantic import Field as PydanticField
-from sqlmodel import SQLModel
-
-from app.dto.ml_prediction import (
-    MAC_ADDRESS_PATTERN,
-    RAW_TRANSACTION_FEATURE_COLUMNS,
-    MLTransactionFeatures,
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
 )
 
+MAC_ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
-class TransactionCreateDTO(SQLModel):
-    """ML 담당자의 raw64 한 행을 받는 거래 탐지 요청.
-
-    정식 HTTP/CSV 계약은 ``transaction_id + raw59 + 학습 메타데이터 4개``인
-    flat snake_case다. 프로그램 호출 편의를 위해 raw59만 ``raw_features``에
-    중첩한 형태도 함께 허용한다.
+class TransactionRequestDTO(BaseModel):
     """
-
+    외부 클라이언트가 보내는 거래 원시 데이터.
+    계좌 정보와
+    """
     model_config = ConfigDict(extra="forbid")
 
-    transaction_id: str = PydanticField(min_length=1, max_length=64)
-    customer_id: str = PydanticField(min_length=1, max_length=64)
-    customer_identification_number: str = PydanticField(
-        min_length=1,
-        max_length=255,
-    )
-    balance_drain_ratio: float | None = PydanticField(default=None, ge=0)
-    is_fraud: bool | None = None
-    raw_features: MLTransactionFeatures
+    customer_id: str | None = Field(default=None, min_length=1, max_length=64) # atm, 지점 거래의 경우 None.
+    account_account_number: str = Field(min_length=8, max_length=32)
+    recipient_account_number: str | None = Field(default=None, min_length=8, max_length=32) # atm 입금의 경우엔 상대 계좌 없을 수 있음.
+    transaction_datetime: datetime
+    transaction_amount: int
+
+    channel: str = Field(min_length=1, max_length=32)
+    type_general_automatic: str = Field(min_length=1, max_length=16)
+    access_medium: str | None = Field(default=None, max_length=8)
+    num_connection_failure: int = Field(ge=0)
+
+    operating_system: str | None = Field(default=None, max_length=32)
+    ip_address: str | None = None
+    mac_address: str | None = None
+
+    location_lat: float
+    location_lon: float
+
+    customer_rooting_jailbreak_indicator: bool = Field(default=0)
+    customer_mobile_roaming_indicator: bool = Field(default=0)
+    customer_vpn_indicator: bool = Field(default=0)
+    customer_flag_terminal_malicious_behavior_1: bool = Field(default=0)
+    customer_flag_terminal_malicious_behavior_2: bool = Field(default=0)
+    customer_flag_terminal_malicious_behavior_3: bool = Field(default=0)
+    customer_flag_terminal_malicious_behavior_5: bool = Field(default=0)
+    customer_flag_terminal_malicious_behavior_6: bool = Field(default=0)
 
     @field_validator("transaction_id", mode="before")
     @classmethod
@@ -63,73 +76,31 @@ class TransactionCreateDTO(SQLModel):
         if not isinstance(value, dict) or "raw_features" in value:
             return value
 
-        feature_keys = set(RAW_TRANSACTION_FEATURE_COLUMNS)
-        # train1.csv 한 컬럼의 알려진 오타도 입력에서만 허용한다.
-        feature_keys.add("flag_deposit_more_than_tenmillion")
-        raw_features = {key: item for key, item in value.items() if key in feature_keys}
-        remaining = {
-            key: item for key, item in value.items() if key not in feature_keys
-        }
-        remaining["raw_features"] = raw_features
-        return remaining
+class TransactionResponseDTO(BaseModel):
+    """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
+    transaction_id: int
 
-    @property
-    def customer_personal_identifier(self) -> str:
-        return self.raw_features.customer_name
+    prediction_status: Literal["COMPLETED", "FAILED"]
 
-    @property
-    def source_account_number(self) -> str:
-        return self.raw_features.account_account_number
+    predict_result: bool | None = None
+    predict_proba: float | None = None
 
-    @property
-    def recipient_account_number(self) -> str:
-        return self.raw_features.recipient_account_number
-
-    @property
-    def ip_address(self) -> str | None:
-        return self.raw_features.ip_address
-
-    @property
-    def mac_address(self) -> str | None:
-        return self.raw_features.mac_address
-
-    @property
-    def confirmed_is_fraud(self) -> bool | None:
-        """기존 저장소 내부 명칭과의 호환 프로퍼티."""
-
-        return self.is_fraud
-
-
-class TransactionResponseDTO(SQLModel):
-    """저장된 거래와 ML·룰 탐지 결과 응답."""
-
-    transaction_id: str
-    customer_id: str
-    source_account_id: str
-    recipient_account_id: str | None
-    transaction_datetime: datetime
-    transaction_amount: int
-    channel: str
-    location: str
-    raw_features: dict[str, Any] | None
-    prediction_status: str
-    ml_is_fraud: bool | None
-    fraud_probability: float | None
-    model_name: str | None
-    model_version: str | None
-    latency_ms: int | None
-    created_at: datetime
-    rule_scores: dict[str, float] | None = None
-    rule_set_id: int | None = None
     confirmed_is_fraud: bool | None = None
     labeled_at: datetime | None = None
 
+    created_at: datetime
+
+class TransactionLabelUpdateDTO(BaseModel):
+    """담당자가 확정한 거래의 이진 정답 라벨."""
 
 class TransactionLabelUpdateDTO(SQLModel):
     model_config = ConfigDict(extra="forbid")
 
     confirmed_is_fraud: bool
 
+
+class TransactionLabelResponseDTO(BaseModel):
+    """저장된 거래 정답 라벨 응답."""
 
 class TransactionLabelResponseDTO(SQLModel):
     transaction_id: str
@@ -159,9 +130,8 @@ class TransactionFeaturesDTO:
 
 __all__ = [
     "MAC_ADDRESS_PATTERN",
-    "TransactionCreateDTO",
-    "TransactionDTO",
-    "TransactionFeaturesDTO",
+    "TransactionRequestDTO",
+    "TransactionResponseDTO",
     "TransactionLabelResponseDTO",
     "TransactionLabelUpdateDTO",
     "TransactionResponseDTO",
