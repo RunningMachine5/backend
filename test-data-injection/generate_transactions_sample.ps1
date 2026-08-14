@@ -1,13 +1,19 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$SourceCsvPath,
-    [string]$OutputPath = (
-        "$PSScriptRoot\data\transactions_model80_10000.csv"
-    ),
+    [string]$OutputPath = "",
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1은 param 기본값을 계산할 때 $PSScriptRoot가 아직
+# 비어 있을 수 있다. 스크립트 실행이 시작된 뒤 Backend 내부 경로를 만든다.
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    $OutputPath = Join-Path `
+        $PSScriptRoot `
+        "data\transactions_model80_10000.csv"
+}
 
 $normalTarget = 9000
 $fraudTarget = 1000
@@ -133,7 +139,8 @@ foreach ($row in $selectedRows) {
         -Map $customerIndexByOriginal `
         -OriginalValue ([string]$row.customer_id)
     $row.customer_id = "LOCAL_CUST_{0:D6}" -f $customerIndex
-    $row.customer_name = "테스트고객{0:D6}" -f $customerIndex
+    # Windows PowerShell 5.1에서도 UTF-8 인코딩과 무관하게 같은 값을 만든다.
+    $row.customer_name = "TEST_CUSTOMER_{0:D6}" -f $customerIndex
     $row.customer_identification_number = (
         "LOCAL-ID-{0:D6}" -f $customerIndex
     )
