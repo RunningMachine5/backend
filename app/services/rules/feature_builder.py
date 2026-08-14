@@ -375,8 +375,11 @@ class RuleFeatureBuilder:
         )
         normalized["time_difference"] = time_difference_seconds
 
-        if normalized["transaction_amount"] <= 0:
-            raise RuleFeatureError("transaction_amount는 0보다 커야 합니다.")
+        if normalized["transaction_amount"] == 0:
+            raise RuleFeatureError("transaction_amount는 0이 아니어야 합니다.")
+        # 거래 API와 ML에는 입·출금 부호를 그대로 보낸다. 룰의 금액 임계값은
+        # 방향이 아니라 거래 규모를 판단하므로 여기에서만 절댓값으로 바꾼다.
+        normalized["transaction_amount"] = abs(normalized["transaction_amount"])
         if normalized["distance"] < 0:
             raise RuleFeatureError("distance는 음수일 수 없습니다.")
         for field_name in (
@@ -424,7 +427,7 @@ class RuleFeatureBuilder:
         )
         rapid_repeat = normalized["number_of_transaction_with_the_account"] >= 3
 
-        transaction_amount = abs(normalized["transaction_amount"])
+        transaction_amount = normalized["transaction_amount"]
         monthly_max = abs(normalized["account_one_month_max_amount"])
         monthly_std = abs(normalized["account_one_month_std_dev"])
         amount_anomaly = transaction_amount > max(

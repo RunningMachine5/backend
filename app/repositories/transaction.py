@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 from sqlalchemy import func
@@ -89,8 +89,8 @@ class TransactionRepository:
     ) -> MLTransactionFeatures | None:
         """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다.
 
-        파생 피처 행이 없거나 외부 계좌 정보만 있는 등 계약을 복원할 수 없는
-        경우에는 호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
+        고객 또는 수취 계좌가 없어 계약을 복원할 수 없는 경우에는
+        호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
         """
 
         derived = self.session.get(DerivedFeatures, transaction.id)
@@ -113,12 +113,7 @@ class TransactionRepository:
             if transaction.recipient_account_number
             else None
         )
-        if (
-            derived is None
-            or customer is None
-            or source_account is None
-            or recipient_account is None
-        ):
+        if derived is None or source_account is None:
             return None
 
         try:
@@ -185,7 +180,48 @@ class TransactionRepository:
         self.session.add(transaction)
         self.session.flush()
         assert transaction.id is not None
+
+        # 아직 실시간 파생 계산기가 없으므로, ML 입력 59개의 자리를
+        # 비워 두지 않고 중립적인 기본값으로 저장한다. 나중에 계산 로직이
+        # 준비되면 같은 transaction.id의 행을 실제 값으로 갱신하면 된다.
+        self.session.add(self._default_derived_features(transaction.id))
         return transaction
+
+    @staticmethod
+    def _default_derived_features(transaction_id: int) -> DerivedFeatures:
+        """실제 파생 계산기가 없는 동안 사용할 임시 스냅샷을 만든다.
+
+        수치형은 0, 상태형은 False, 과거 시각은 None을 사용한다.
+        이 값은 '이상 징후 없음'을 가정한 테스트용 기본값이지,
+        실제 거래 이력을 계산한 결과가 아니다.
+        """
+
+        return DerivedFeatures(
+            id=transaction_id,
+            distance=0.0,
+            time_difference=timedelta(0),
+            one_month_max_amount=0,
+            one_month_std_dev=0.0,
+            dawn_one_month_max_amount=0,
+            dawn_one_month_std_dev=0.0,
+            unused_terminal_status=False,
+            unused_account_status=False,
+            transaction_history_with_the_account=0,
+            flag_deposit_more_than_tenMillion=False,
+            number_of_transaction_with_the_account=0,
+            last_atm_transaction_datetime=None,
+            last_bank_branch_transaction_datetime=None,
+            flag_change_of_authentication_1=False,
+            flag_change_of_authentication_2=False,
+            flag_change_of_authentication_3=False,
+            flag_change_of_authentication_4=False,
+            inquiry_atm_limit=False,
+            increase_atm_limit=False,
+            release_suspension=False,
+            transaction_resumed_date=None,
+            recipient_account_suspend_status=False,
+            first_time_ios_by_vulnerable_user=False,
+        )
 
     def _find_customer(self, customer_id: str | None) -> Customer | None:
         if customer_id is None:

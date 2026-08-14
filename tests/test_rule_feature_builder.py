@@ -288,8 +288,12 @@ class RuleFeatureBuilderTest(unittest.TestCase):
 
         raw_data = valid_rule_raw_data()
         raw_data["transaction_amount"] = 0
-        with self.assertRaisesRegex(RuleFeatureError, "0보다 커야"):
+        with self.assertRaisesRegex(RuleFeatureError, "0이 아니어야"):
             self.builder.build(raw_data)
+
+        raw_data = valid_rule_raw_data()
+        raw_data["transaction_amount"] = -100_000
+        self.assertEqual(self.builder.build(raw_data)["transaction_amount"], 100_000)
 
         raw_data = valid_rule_raw_data()
         raw_data["account_balance"] = -1

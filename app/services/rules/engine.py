@@ -50,7 +50,11 @@ _COMPONENT_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 
 
 class RuleEngine:
-    """활성 룰별 점수와 일치한 구성요소를 계산한다."""
+    """활성 룰별 점수와 일치한 구성요소를 계산한다.
+
+    ML이 사기인지 판단한 뒤, 이 엔진은 그 거래가 어떤 사기유형 신호와
+    가까운지만 설명한다. 룰 점수는 ML 판정을 변경하는 확률값이 아니다.
+    """
 
     def __init__(
         self,
@@ -98,6 +102,8 @@ class RuleEngine:
             if not rule.enabled:
                 continue
 
+            # 한 사기유형 안에서 조건을 만족한 component의 가중치만 더한다.
+            # 유형들은 서로 독립적이므로 네 유형 점수의 총합은 1일 필요가 없다.
             matched: list[str] = []
             matched_weights: list[float] = []
             for component in rule.components:
@@ -174,9 +180,9 @@ class RuleEngine:
 
 __all__ = [
     "FraudRuleDefinition",
-    "RuleScoreResult",
     "RuleComponentDefinition",
     "RuleEngine",
+    "RuleScoreResult",
     "RuleSetDefinition",
     "RuleSetValidationError",
 ]

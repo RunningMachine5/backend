@@ -48,8 +48,8 @@ class MLTransactionFeatures(BaseModel):
     account_balance: float | None
     account_indicator_release_limit_excess: int
     account_amount_daily_limit: float
-    account_remaining_amount_daily_limit_exceeded: float | None
     account_indicator_openbanking: bool
+    account_remaining_amount_daily_limit_exceeded: float | None
     account_release_suspention: bool
     account_one_month_max_amount: int
     account_one_month_std_dev: float
