@@ -65,9 +65,6 @@ customer_action 정의:
 
 $customer_action_definitions
 
-거래 정보:
-$transaction_context
-
 사용자 답변:
 $user_answers
 
@@ -112,9 +109,6 @@ FRAUD_CIRCUMSTANCE_EXTRACTION_PROMPT_TEMPLATE = Template("""당신은 금융 이
 fraud_circumstance 정의:
 
 $fraud_circumstance_definitions
-
-거래 정보:
-$transaction_context
 
 사용자 답변:
 $user_answers
@@ -165,27 +159,23 @@ def render_quality_check_prompt(
 
 def render_customer_action_extraction_prompt(
     *,
-    transaction_context: str,
     user_answers: str,
 ) -> str:
     """고객 행동을 추출하는 프롬프트를 만든다."""
 
     return CUSTOMER_ACTION_EXTRACTION_PROMPT_TEMPLATE.substitute(
         customer_action_definitions=CUSTOMER_ACTION_DEFINITION_BLOCK,
-        transaction_context=transaction_context,
         user_answers=user_answers,
     )
 
 
 def render_fraud_circumstance_extraction_prompt(
     *,
-    transaction_context: str,
     user_answers: str,
 ) -> str:
     """사기 정황을 추출하는 프롬프트를 만든다."""
 
     return FRAUD_CIRCUMSTANCE_EXTRACTION_PROMPT_TEMPLATE.substitute(
         fraud_circumstance_definitions=FRAUD_CIRCUMSTANCE_DEFINITION_BLOCK,
-        transaction_context=transaction_context,
         user_answers=user_answers,
     )

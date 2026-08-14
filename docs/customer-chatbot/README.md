@@ -389,9 +389,8 @@ response = assemble(fragments)
 
 ### 3.2 프롬프트·RAG
 
-- **자리표시자 내용이 정의되지 않았다.** `{target_hint}`,
-  `{{transaction_context}}`의 실제 내용이 없다. 특히
-  `transaction_context`는 54개 필드 중 무엇을 넣을지가 개인정보 최소화와 직결된다.
+- **`{target_hint}`의 내용이 정의되지 않았다.** 고객 행동과 사기 정황
+  추출은 거래 정보를 사용하지 않고 고객 답변만 사용한다.
 - **평가 LLM만 JSON 출력을 프롬프트로 요구한다.** "출력은 JSON만 반환하세요"는 강제가
   아니므로 추출 LLM과 마찬가지로 structured output 스키마를 지정해야 한다.
 - **리트리버가 아직 문자열을 돌려준다.**

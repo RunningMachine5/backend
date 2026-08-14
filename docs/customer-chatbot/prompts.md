@@ -129,9 +129,6 @@ open_banking_or_external_finance_linked
 crypto_purchased_or_transferred
 : 탐지 거래와 관련해 가상자산을 구매하거나 외부 지갑으로 전송함
 
-거래 정보:
-{{transaction_context}}
-
 사용자 답변:
 {{user_answers}}
 
@@ -266,9 +263,6 @@ incoming_funds_withdrawn_or_handed_over
 third_party_payment_followed_by_asset_delivery
 : 실제 거래 상대방과 다른 제3자가 거래대금을 입금했고, 사용자가 그 대가로 거래 상대방 또는 대리인에게 금·외화·상품 등 자산을 실제로 전달했다고 명확히 말함
 : 입금자와 거래 상대방이 다르다는 사실 및 자산 전달이 모두 확인되어야 함
-
-거래 정보:
-{{transaction_context}}
 
 사용자 답변:
 {{user_answers}}
