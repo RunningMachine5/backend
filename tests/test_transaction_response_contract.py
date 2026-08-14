@@ -18,6 +18,8 @@ class TransactionResponseContractTest(unittest.TestCase):
             prediction_status="COMPLETED",
             predict_result=True,
             predict_proba=0.91,
+            rule_set_id=1,
+            rule_scores={"VOICE_PHISHING": 0.3},
             created_at=datetime.now(UTC),
         )
 
@@ -25,6 +27,8 @@ class TransactionResponseContractTest(unittest.TestCase):
         self.assertIsNone(unavailable.predict_proba)
         self.assertTrue(completed.predict_result)
         self.assertEqual(completed.predict_proba, 0.91)
+        self.assertEqual(completed.rule_set_id, 1)
+        self.assertEqual(completed.rule_scores, {"VOICE_PHISHING": 0.3})
 
     def test_transaction_id_rejects_the_old_string_contract(self) -> None:
         with self.assertRaises(ValidationError):

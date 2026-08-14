@@ -52,6 +52,8 @@ def _transaction_response(
             "predict_proba": (
                 prediction_result.predict_proba if prediction_result else None
             ),
+            "rule_set_id": score_result.rule_set_id if score_result else None,
+            "rule_scores": score_result.type_scores if score_result else None,
             "confirmed_is_fraud": (label.confirmed_is_fraud if label else None),
             "labeled_at": label.labeled_at if label else None,
         }
