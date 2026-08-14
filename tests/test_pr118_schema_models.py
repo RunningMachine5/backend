@@ -57,7 +57,7 @@ class PR118SchemaModelTests(unittest.TestCase):
             "ml_prediction_results",
             "fraud_type_score_results",
             "agent_cases",
-            "agent_chat_sessions",
+            "chat_sessions",
             "fraud_type_score_after_chat",
         ):
             with self.subTest(table=table_name):

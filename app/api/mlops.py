@@ -441,6 +441,27 @@ def decide_training_run(
     decision_tags = {"backend_decision": payload.decision.value}
     if payload.reason:
         decision_tags["backend_decision_reason"] = payload.reason
+    if payload.decision == TrainingDecision.REJECT:
+        try:
+            mlflow.set_model_version_tags(
+                run.model_key,
+                model_version,
+                decision_tags,
+            )
+        except MLflowRegistryError as exc:
+            raise _upstream_error(exc) from exc
+        run.status = "REJECTED"
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        return {"training_run": _training_run_payload(run), "operation": None}
+
+    try:
+        result = client.stage_model_revision(model_version)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+    # 승인 태그는 CD 후보 리비전 검증이 성공한 뒤에만 기록한다. 그렇지 않으면
+    # MLflow는 승인됐지만 Backend는 CANDIDATE인 분리 상태가 남는다.
     try:
         mlflow.set_model_version_tags(
             run.model_key,
@@ -449,25 +470,16 @@ def decide_training_run(
         )
     except MLflowRegistryError as exc:
         raise _upstream_error(exc) from exc
-    if payload.decision == TrainingDecision.REJECT:
-        run.status = "REJECTED"
-        session.add(run)
-        session.commit()
-        session.refresh(run)
-        return {"training_run": _training_run_payload(run), "operation": None}
-
-    try:
-        result = client.create_model_revision(model_version)
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
     run.status = "STAGED"
     session.add(run)
     session.commit()
     session.refresh(run)
+    operation = result.get("operation")
+    operation_id = _operation_id(operation) if isinstance(operation, dict) else None
     return {
         "training_run": _training_run_payload(run),
         "model_version": model_version,
-        "operation_id": _operation_id(result["operation"]),
+        "operation_id": operation_id,
         **result,
     }
 
@@ -582,7 +594,7 @@ def promote_serving_revision(
 ) -> dict[str, Any]:
     """태그 리비전을 실제 예측으로 검증하고 100% 트래픽 승격을 요청한다."""
 
-    run = _get_training_run_or_404(payload.training_run_id, session)
+    run = _get_training_run_for_update_or_404(payload.training_run_id, session)
     if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED"}:
         raise HTTPException(status_code=409, detail="승격 가능한 학습 실행이 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
@@ -617,7 +629,7 @@ def complete_model_deployment(
 ) -> dict[str, Any]:
     """Cloud Run live traffic를 확인하고 champion alias와 상태를 종결한다."""
 
-    run = _get_training_run_or_404(run_id, session)
+    run = _get_training_run_for_update_or_404(run_id, session)
     if run.status not in {"PROMOTING", "PRODUCTION"}:
         raise HTTPException(status_code=409, detail="완료 확인 대상 배포가 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
