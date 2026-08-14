@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, Column, DateTime, SmallInteger
+from sqlalchemy import CheckConstraint, Column, Date, DateTime, SmallInteger
 from sqlmodel import Field, SQLModel
 
 
