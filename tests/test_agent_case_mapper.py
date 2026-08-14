@@ -27,7 +27,7 @@ class AgentCaseMapperTest(unittest.TestCase):
     def setUp(self) -> None:
         self.score_result = FraudTypeScoreResult(
             id=7,
-            transaction_id="TX-001",
+            transaction_id=1,
             rule_set_id=1,
             rule_filter_status="APPLIED",
             primary_fraud_type="ACCOUNT_TAKEOVER",
@@ -97,7 +97,7 @@ class AgentCaseMapperTest(unittest.TestCase):
             )
 
     def test_agent_input_requires_same_transaction(self) -> None:
-        transaction = Transaction.model_construct(id="TX-OTHER")
+        transaction = Transaction.model_construct(id=2)
 
         with self.assertRaisesRegex(ValueError, "transaction_id"):
             build_agent_input_dto(
@@ -108,7 +108,7 @@ class AgentCaseMapperTest(unittest.TestCase):
             )
 
     def test_agent_input_validates_risk_score_boundaries(self) -> None:
-        transaction = Transaction.model_construct(id="TX-001")
+        transaction = Transaction.model_construct(id=1)
 
         for risk_score in (0, 100):
             dto = build_agent_input_dto(
@@ -131,7 +131,7 @@ class AgentCaseMapperTest(unittest.TestCase):
     def test_completed_agent_case_maps_nested_json(self) -> None:
         agent_case = AgentCase(
             case_id="CASE-001",
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             execution_status="COMPLETED",
             risk_score=92,
@@ -210,7 +210,7 @@ class AgentCaseMapperTest(unittest.TestCase):
     def test_processing_case_allows_empty_results(self) -> None:
         agent_case = AgentCase(
             case_id="CASE-002",
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             execution_status="PROCESSING",
             risk_score=70,
@@ -231,7 +231,7 @@ class AgentCaseMapperTest(unittest.TestCase):
     def test_failed_case_preserves_failure_reason(self) -> None:
         agent_case = AgentCase(
             case_id="CASE-FAILED",
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             execution_status="FAILED",
             failure_reason="유사 사건 조회 시간이 초과되었다.",

@@ -68,7 +68,7 @@ class AgentCaseServiceTest(unittest.TestCase):
     def _seed_detection_result(self) -> None:
         self.session.add(
             Transaction(
-                id="TX-001",
+                id=1,
                 customer_id="CUSTOMER-001",
                 source_account_number="ACCOUNT-001",
                 recipient_account_number=None,
@@ -127,7 +127,7 @@ class AgentCaseServiceTest(unittest.TestCase):
         self.session.add(
             FraudTypeScoreResult(
                 id=7,
-                transaction_id="TX-001",
+                transaction_id=1,
                 rule_set_id=1,
                 rule_filter_status="APPLIED",
                 primary_fraud_type="ACCOUNT_TAKEOVER",
@@ -147,7 +147,7 @@ class AgentCaseServiceTest(unittest.TestCase):
     @staticmethod
     def _input() -> AgentInputDTO:
         return AgentInputDTO(
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             risk_score=92,
             risk_grade=RiskGrade.VERY_HIGH,
@@ -287,7 +287,7 @@ class AgentCaseServiceTest(unittest.TestCase):
 
     def test_start_case_requires_saved_transaction(self) -> None:
         missing_input = AgentInputDTO(
-            transaction_id="TX-MISSING",
+            transaction_id=999,
             fraud_type_score_result_id=7,
             risk_score=80,
             risk_grade=RiskGrade.HIGH,

@@ -30,8 +30,13 @@ from app.dto.fraud_rule import (
     FraudRuleReplayChangedTransactionResponse,
     FraudRuleReplayComponentImpactResponse,
 )
-from app.dto.transaction import TransactionCreateDTO
-from app.repositories.transaction import TransactionRepository
+from app.dto.ml_features import MLTransactionFeatures
+from app.services.features.ml_feature_assembler import (
+    build_account_fields,
+    build_customer_fields,
+    build_derived_features_fields,
+    build_transaction_fields,
+)
 from app.services.rules.replay import _component_changes, replay_rule_sets
 from tests.test_rule_feature_builder import valid_rule_raw_data
 
@@ -41,12 +46,21 @@ app = FastAPI()
 app.include_router(fraud_rule_router)
 
 
-def _transaction_payload(
+_TRANSACTION_IDS: dict[str, int] = {}
+
+
+def _transaction_id(value: str | int) -> int:
+    if isinstance(value, int):
+        return value
+    return _TRANSACTION_IDS.setdefault(value, len(_TRANSACTION_IDS) + 1)
+
+
+def _transaction_features(
     transaction_id: str,
     *,
     transaction_datetime: datetime,
     loan_type: str = "c",
-) -> TransactionCreateDTO:
+) -> MLTransactionFeatures:
     suffix = transaction_id.lower()
     raw_features = valid_rule_raw_data()
     raw_features.update(
@@ -58,14 +72,7 @@ def _transaction_payload(
             "transaction_datetime": transaction_datetime.isoformat(),
         }
     )
-    return TransactionCreateDTO.model_validate(
-        {
-            "transaction_id": transaction_id,
-            "customer_id": f"C-{suffix}",
-            "customer_identification_number": f"identity-{suffix}",
-            **raw_features,
-        }
-    )
+    return MLTransactionFeatures.model_validate(raw_features)
 
 
 def _save_transaction(
@@ -75,11 +82,48 @@ def _save_transaction(
     transaction_datetime: datetime,
     loan_type: str = "c",
 ) -> Transaction:
-    transaction = TransactionRepository(session).add_received(
-        _transaction_payload(
-            transaction_id,
-            transaction_datetime=transaction_datetime,
-            loan_type=loan_type,
+    features = _transaction_features(
+        transaction_id,
+        transaction_datetime=transaction_datetime,
+        loan_type=loan_type,
+    )
+    suffix = transaction_id.lower()
+    customer = Customer(
+        id=f"C-{suffix}",
+        name=features.customer_name,
+        identification_number=f"identity-{suffix}",
+        **build_customer_fields(features),
+    )
+    source = Account(
+        id=f"source-{suffix}",
+        customer_id=customer.id,
+        account_number=str(features.account_account_number),
+        **build_account_fields(features),
+    )
+    recipient = Account(
+        id=f"recipient-{suffix}",
+        account_number=str(features.recipient_account_number),
+    )
+    session.add(customer)
+    session.flush()
+    session.add(source)
+    session.add(recipient)
+    session.flush()
+    transaction = Transaction(
+        id=_transaction_id(transaction_id),
+        customer_id=customer.id,
+        source_account_number=source.account_number,
+        recipient_account_number=recipient.account_number,
+        ip_address=features.ip_address,
+        mac_address=features.mac_address,
+        **build_transaction_fields(features),
+    )
+    session.add(transaction)
+    session.flush()
+    session.add(
+        DerivedFeatures(
+            id=transaction.id,
+            **build_derived_features_fields(features),
         )
     )
     session.commit()
@@ -88,15 +132,15 @@ def _save_transaction(
 
 
 def _prediction(
-    transaction_id: str,
+    transaction_id: str | int,
     *,
     is_fraud: bool,
     created_at: datetime,
 ) -> MLPredictionResult:
     return MLPredictionResult(
-        transaction_id=transaction_id,
-        prediction_is_fraud=is_fraud,
-        fraud_probability=0.9 if is_fraud else 0.1,
+        transaction_id=_transaction_id(transaction_id),
+        predict_result=is_fraud,
+        predict_proba=0.9 if is_fraud else 0.1,
         model_name="fdshield-fraud-detector",
         model_version="5",
         latency_ms=10,
@@ -250,7 +294,7 @@ class FraudRuleReplayApiTest(unittest.TestCase):
             session.commit()
             session.add(
                 FraudTypeScoreResult(
-                    transaction_id="TX-LATEST-POSITIVE",
+                    transaction_id=_transaction_id("TX-LATEST-POSITIVE"),
                     rule_set_id=int(active["id"]),
                     rule_filter_status="APPLIED",
                     type_scores={"SENTINEL": 0.123},
@@ -300,7 +344,7 @@ class FraudRuleReplayApiTest(unittest.TestCase):
         self.assertEqual(body["evidence_changed_transaction_count"], 2)
         self.assertEqual(
             [item["transaction_id"] for item in body["changed_transaction_details"]],
-            ["TX-LATEST-POSITIVE"],
+            [_transaction_id("TX-LATEST-POSITIVE")],
         )
         self.assertTrue(body["changed_details_truncated"])
         self.assertEqual(write_statements, [])
@@ -547,7 +591,7 @@ class FraudRuleReplayInvariantTest(unittest.TestCase):
     def test_changed_detail_rejects_empty_evidence_keys(self) -> None:
         with self.assertRaises(ValidationError):
             FraudRuleReplayChangedTransactionResponse(
-                transaction_id="TX-INVALID",
+                transaction_id=999,
                 transaction_datetime=datetime.now(UTC),
                 score_changed=True,
                 evidence_changed=True,

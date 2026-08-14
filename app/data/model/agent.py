@@ -59,10 +59,10 @@ class AgentCase(SQLModel, table=True):
     )
 
     case_id: str = Field(primary_key=True, max_length=64)
-    transaction_id: str = Field(
+    transaction_id: int = Field(
         foreign_key="transactions.id",
         ondelete="CASCADE",
-        max_length=64,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
     fraud_type_score_result_id: int = Field(
         foreign_key="fraud_type_score_results.id",

@@ -21,14 +21,15 @@ class MLPredictionResult(SQLModel, table=True):
             autoincrement=True,
         ),
     )
-    transaction_id: str = Field(
+    transaction_id: int = Field(
         foreign_key="transactions.id",
         ondelete="CASCADE",
-        max_length=64,
         index=True,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
-    prediction_is_fraud: bool
-    fraud_probability: float = Field(ge=0.0, le=1.0)
+    # ML HTTP 응답, DB, API 응답에서 같은 이름을 사용해 매핑 누락을 막는다.
+    predict_result: bool
+    predict_proba: float = Field(ge=0.0, le=1.0)
     model_name: str = Field(max_length=128)
     model_version: str = Field(max_length=64)
     latency_ms: int = Field(ge=0)

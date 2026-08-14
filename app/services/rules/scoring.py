@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 def score_transaction_fraud_types(
     *,
     session: Session,
-    transaction_id: str,
+    transaction_id: int,
     raw_data: Mapping[str, Any],
     engine: RuleEngine | None = None,
 ) -> FraudTypeScoreResult | None:

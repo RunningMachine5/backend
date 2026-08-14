@@ -21,7 +21,7 @@ from app.domain.enums import RiskGrade
 class AgentInputDTO:
     """탐지와 위험등급 산정이 끝난 후 Agent에 전달하는 입력 DTO."""
 
-    transaction_id: str
+    transaction_id: int
     fraud_type_score_result_id: int
     risk_score: int
     risk_grade: RiskGrade
@@ -110,7 +110,7 @@ class AgentResponseDTO:
     """Agent 사건 상세조회와 대시보드 전달에 사용하는 최종 DTO."""
 
     case_id: str
-    transaction_id: str
+    transaction_id: int
     execution_status: AgentExecutionStatus
     failure_reason: str | None
     rule_result: FraudTypeScoreResultDTO
@@ -129,7 +129,7 @@ class AgentResponseDTO:
 class FraudAlertEmailCommand:
     """유형 판단 후 고객 이메일 서비스에 전달하는 자동 발송 명령."""
 
-    transaction_id: str
+    transaction_id: int
     primary_suspected_type: str
     secondary_suspected_type: str
     classification_status: ClassificationStatus

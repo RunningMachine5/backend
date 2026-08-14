@@ -179,14 +179,14 @@ class MockDashboardRepository:
 
     def get_transaction(
             self,
-            transaction_id: str,
+            transaction_id: int,
     ) -> dict[str, Any] | None:
         """거래 정보 조회"""
         return self._copy(self.transactions.get(transaction_id))
 
     def get_ml_result(
             self,
-            transaction_id: str,
+            transaction_id: int,
     ) -> dict[str, Any] | None:
         """ML 결과 조회"""
         return self._copy(self.ml_results.get(transaction_id))

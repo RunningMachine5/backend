@@ -48,7 +48,7 @@ Table customer_events {
 }
 
 Table transactions {
-  id varchar(64) [pk]
+  id bigint [pk, increment]
   customer_id varchar(64) [not null, ref: > customers.id, note: "ON DELETE RESTRICT"]
   source_account_number varchar(255) [not null, ref: > accounts.account_number, note: "ON DELETE RESTRICT"]
   recipient_account_number varchar(255) [ref: > accounts.account_number, note: "ON DELETE SET NULL"]
@@ -86,7 +86,7 @@ Table transactions {
 }
 
 Table derived_features {
-  id varchar(64) [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
+  id bigint [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
   distance float [not null]
   time_difference interval [not null]
   one_month_max_amount bigint [not null]
@@ -114,16 +114,16 @@ Table derived_features {
 }
 
 Table transaction_labels {
-  transaction_id varchar(64) [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
+  transaction_id bigint [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
   confirmed_is_fraud boolean [not null]
   labeled_at timestamptz [not null]
 }
 
 Table ml_prediction_results {
   id bigint [pk, increment]
-  transaction_id varchar(64) [not null, ref: > transactions.id, note: "ON DELETE CASCADE"]
-  prediction_is_fraud boolean [not null]
-  fraud_probability float [not null, note: "0.0 <= x <= 1.0"]
+  transaction_id bigint [not null, ref: > transactions.id, note: "ON DELETE CASCADE"]
+  predict_result boolean [not null]
+  predict_proba float [not null, note: "0.0 <= x <= 1.0"]
   model_name varchar(128) [not null]
   model_version varchar(64) [not null]
   latency_ms integer [not null, note: ">= 0"]
@@ -173,7 +173,7 @@ Table fraud_rule_components {
 
 Table fraud_type_score_results {
   id bigint [pk, increment]
-  transaction_id varchar(64) [not null, unique, ref: > transactions.id, note: "ON DELETE CASCADE"]
+  transaction_id bigint [not null, unique, ref: > transactions.id, note: "ON DELETE CASCADE"]
   rule_set_id bigint [not null, ref: > fraud_rule_sets.id, note: "ON DELETE RESTRICT"]
   rule_filter_status varchar(32) [not null, note: "CHECK IN ('APPLIED','SKIPPED_NOT_FRAUD','FAILED')"]
   primary_fraud_type varchar(64)
@@ -256,7 +256,7 @@ Table cs_guide_document_chunks {
 
 Table agent_cases {
   case_id varchar(64) [pk]
-  transaction_id varchar(64) [not null, unique, ref: > transactions.id, note: "ON DELETE CASCADE"]
+  transaction_id bigint [not null, unique, ref: > transactions.id, note: "ON DELETE CASCADE"]
   fraud_type_score_result_id bigint [not null, unique, ref: > fraud_type_score_results.id, note: "ON DELETE CASCADE"]
   execution_status varchar(16) [not null, default: "PROCESSING", note: "CHECK IN ('PROCESSING','COMPLETED','FAILED')"]
   failure_reason text
@@ -297,7 +297,7 @@ Table agent_dashboard_insights {
 
 Table chat_sessions {
   chat_session_id varchar(64) [pk]
-  transaction_id varchar(64) [not null, unique, ref: > transactions.id, note: "ON DELETE CASCADE"]
+  transaction_id bigint [not null, unique, ref: > transactions.id, note: "ON DELETE CASCADE"]
   status varchar(32) [not null, default: "URL_SENT", note: "CHECK IN ('URL_SENT','IN_PROGRESS','HANDOFF_REQUESTED','DONE','FAILED')"]
   last_message_id bigint [ref: > chat_messages.message_id, note: "순환 FK, use_alter, ON DELETE SET NULL"]
   is_older boolean [not null, default: false]
@@ -371,7 +371,7 @@ Table chat_fraud_circumstances {
 }
 
 Table fraud_type_score_after_chat {
-  transaction_id varchar(64) [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
+  transaction_id bigint [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
   chat_session_id varchar(64) [not null, ref: > chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
   type_scores jsonb [not null, default: "{}"]
   scored_at timestamptz [not null]
