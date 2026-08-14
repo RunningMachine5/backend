@@ -9,7 +9,7 @@ from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.transaction import (
-    TransactionCreateDTO,
+    TransactionRequestDTO,
     TransactionLabelResponseDTO,
     TransactionLabelUpdateDTO,
     TransactionResponseDTO,
@@ -106,7 +106,7 @@ def _transaction_response(
     status_code=status.HTTP_201_CREATED,
 )
 def create_transaction(
-    payload: TransactionCreateDTO,
+    payload: TransactionRequestDTO,
     session: SessionDep,
     ml_client: MLServingClientDep,
 ) -> TransactionResponseDTO:

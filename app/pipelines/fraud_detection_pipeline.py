@@ -11,7 +11,7 @@ from app.data.model.customer import Customer
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
-from app.dto.transaction import TransactionCreateDTO
+from app.dto.transaction import TransactionRequestDTO
 from app.repositories.transaction import (
     CustomerIdentificationConflictError,
     PredictionResultRepository,
@@ -99,7 +99,7 @@ class FraudDetectionPipeline:
         self.transaction_repository = TransactionRepository(session)
         self.prediction_repository = PredictionResultRepository(session)
 
-    def run(self, payload: TransactionCreateDTO) -> FraudDetectionResult:
+    def run(self, payload: TransactionRequestDTO) -> FraudDetectionResult:
         """거래 원본을 보존한 뒤 ML 예측과 선택적 룰 점수를 저장한다."""
 
         if self.transaction_repository.get(payload.transaction_id) is not None:
