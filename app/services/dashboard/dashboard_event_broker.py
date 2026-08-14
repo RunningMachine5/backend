@@ -1,8 +1,8 @@
 # SSE 연결 관리, dashboard_updated 이벤트 전송
 
 from dataclasses import dataclass
-from typing import Any
 from queue import Queue
+from threading import Lock
 
 @dataclass(frozen=True)
 class DashboardEvent:
@@ -12,6 +12,7 @@ class DashboardEvent:
 class DashboardEventBroker:
     def __init__(self) -> None:
         self._subscribers: set[Queue[DashboardEvent]] = set()
+        self._lock = Lock()
 
     def subscribe(self) -> Queue[DashboardEvent]:
         subscriber_queue: Queue[DashboardEvent] = Queue()
