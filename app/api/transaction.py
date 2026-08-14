@@ -1,3 +1,4 @@
+# 거래 적재·ML·Rule 처리 완료 후 Broker에 대시보드 갱신 요청
 from fastapi import APIRouter, HTTPException, status
 from sqlmodel import select
 
@@ -25,9 +26,12 @@ from app.repositories.transaction import (
 )
 from app.services.ml_serving.client import MLServingClientDep
 
+from app.services.dashboard.dashboard_event_broker import(
+    dashboard_event_broker
+)
+
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
-
 
 def _transaction_response(
     transaction: Transaction,
@@ -63,6 +67,7 @@ def _transaction_response(
     response_model=TransactionResponseDTO,
     status_code=status.HTTP_201_CREATED,
 )
+
 def create_transaction(
     payload: TransactionRequestDTO,
     session: SessionDep,
@@ -93,6 +98,14 @@ def create_transaction(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="고객 원장에서 customer_id를 찾을 수 없습니다.",
         ) from exc
+    if (
+        result.prediction_result is not None
+        and result.prediction_result.predict_result
+    ):
+        dashboard_event_broker.publish(
+            event="dashboard_updated",
+            data={"source":"ml"}
+        )
     return _transaction_response(
         result.transaction,
         result.prediction_result,
