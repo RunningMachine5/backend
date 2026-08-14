@@ -27,7 +27,6 @@ QUALITY_CHECK_PROMPT = """
 당신은 금융 이상거래 상담 챗봇에서 고객 응답의 충실도를 평가합니다.
 
 직전 질문: {question_text}
-이 질문의 목적: {target_hint}
 고객 응답: {customer_answer}
 
 다음 중 하나로 분류하세요.

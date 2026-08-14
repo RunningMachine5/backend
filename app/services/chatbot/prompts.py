@@ -24,7 +24,6 @@ from app.domain.fraud_circumstance_codes import FRAUD_CIRCUMSTANCE_DESCRIPTIONS
 QUALITY_CHECK_PROMPT_TEMPLATE = Template("""당신은 금융 이상거래 상담 챗봇에서 고객 응답의 충실도를 평가합니다.
 
 직전 질문: $question_text
-이 질문의 목적: $target_hint
 고객 응답: $customer_answer
 
 다음 중 하나로 분류하세요.
@@ -145,14 +144,12 @@ FRAUD_CIRCUMSTANCE_DEFINITION_BLOCK = _render_definition_block(
 def render_quality_check_prompt(
     *,
     question_text: str,
-    target_hint: str,
     customer_answer: str,
 ) -> str:
     """고객 답변의 충실도를 판정하는 프롬프트를 만든다."""
 
     return QUALITY_CHECK_PROMPT_TEMPLATE.substitute(
         question_text=question_text,
-        target_hint=target_hint,
         customer_answer=customer_answer,
     )
 
