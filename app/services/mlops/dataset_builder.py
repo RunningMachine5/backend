@@ -46,6 +46,17 @@ CSV_DATETIME_COLUMNS = frozenset(
     }
 )
 CSV_DURATION_COLUMNS = frozenset({"time_difference"})
+CSV_INTEGER_AMOUNT_COLUMNS = frozenset(
+    {
+        "account_initial_balance",
+        "account_balance",
+        "account_amount_daily_limit",
+        "account_remaining_amount_daily_limit_exceeded",
+        "account_one_month_max_amount",
+        "account_dawn_one_month_max_amount",
+        "transaction_amount",
+    }
+)
 
 TRAINING_TRANSACTION_ID_COLUMN = "transaction_id"
 TRAINING_IDENTIFICATION_COLUMN = "customer_identification_number"
@@ -204,13 +215,19 @@ class ConfirmedTransaction:
 
 
 class LabeledDatasetBuilder:
+    """기존 train1 CSV에 확정 라벨 거래를 반영해 새 버전을 만든다.
+
+    기존 GCS 객체는 수정하지 않는다. 같은 거래 ID가 있으면 라벨과 원천 값을
+    교체하고, 없으면 DB의 정규화 테이블을 raw64 한 행으로 복원해 추가한다.
+    """
+
     def __init__(self, storage: ObjectStorage) -> None:
         self._storage = storage
 
     @staticmethod
     def _confirmed_transactions(
         session: Session,
-    ) -> dict[str, ConfirmedTransaction]:
+    ) -> dict[int, ConfirmedTransaction]:
         source_account = aliased(Account, name="source_account")
         recipient_account = aliased(Account, name="recipient_account")
         rows = session.exec(
@@ -255,6 +272,19 @@ class LabeledDatasetBuilder:
         }
 
     @staticmethod
+    def _transaction_id(value: str) -> int:
+        """train1의 기존 T00000001 형식과 신규 정수 ID를 같은 값으로 본다."""
+
+        normalized = value.strip()
+        if normalized[:1].upper() == "T":
+            normalized = normalized[1:]
+        if not normalized.isdigit() or int(normalized) <= 0:
+            raise DatasetBuildError(
+                f"기존 학습 CSV의 transaction_id가 올바르지 않습니다: {value}"
+            )
+        return int(normalized)
+
+    @staticmethod
     def _validate_header(fieldnames: list[str] | None) -> list[str]:
         if not fieldnames:
             raise DatasetBuildError("기존 학습 CSV에 헤더가 없습니다.")
@@ -282,6 +312,14 @@ class LabeledDatasetBuilder:
             return ""
         if isinstance(value, bool):
             return int(value)
+        if field_name == "mac_address" and isinstance(value, str):
+            return value.replace("-", ":").lower()
+        if (
+            field_name in CSV_INTEGER_AMOUNT_COLUMNS
+            and isinstance(value, float)
+            and value.is_integer()
+        ):
+            return int(value)
         if field_name in CSV_DURATION_COLUMNS:
             if not isinstance(value, timedelta):
                 raise DatasetBuildError(
@@ -296,9 +334,13 @@ class LabeledDatasetBuilder:
             hours, remainder = divmod(remainder, 60 * 60)
             minutes, seconds = divmod(remainder, 60)
             return (
-                f"{int(days)} days {int(hours):02d}:{int(minutes):02d}:"
-                f"{seconds:09.6f}"
-            ).rstrip("0").rstrip(".")
+                (
+                    f"{int(days)} days {int(hours):02d}:{int(minutes):02d}:"
+                    f"{seconds:09.6f}"
+                )
+                .rstrip("0")
+                .rstrip(".")
+            )
         if field_name not in CSV_DATETIME_COLUMNS:
             return value
         if not isinstance(value, datetime):
@@ -349,9 +391,7 @@ class LabeledDatasetBuilder:
                 ),
                 TRAINING_CUSTOMER_ID_COLUMN: transaction.customer_id,
                 TRAINING_BALANCE_DRAIN_RATIO_COLUMN: balance_drain_ratio,
-                TRAINING_LABEL_COLUMN: int(
-                    confirmed.label.confirmed_is_fraud
-                ),
+                TRAINING_LABEL_COLUMN: int(confirmed.label.confirmed_is_fraud),
             }
         )
         return row
@@ -377,7 +417,7 @@ class LabeledDatasetBuilder:
 
             source_row_count = 0
             replaced_label_count = 0
-            seen_transaction_ids: set[str] = set()
+            seen_transaction_ids: set[int] = set()
 
             with (
                 source_path.open("r", encoding="utf-8-sig", newline="") as source_file,
@@ -393,18 +433,18 @@ class LabeledDatasetBuilder:
                 writer.writeheader()
 
                 for row in reader:
-                    transaction_id = (
+                    transaction_id_text = (
                         row.get(TRAINING_TRANSACTION_ID_COLUMN) or ""
                     ).strip()
-                    if not transaction_id:
+                    if not transaction_id_text:
                         raise DatasetBuildError(
-                            "기존 학습 CSV에 transaction_id가 비어 있는 행이 "
-                            "있습니다."
+                            "기존 학습 CSV에 transaction_id가 비어 있는 행이 있습니다."
                         )
+                    transaction_id = self._transaction_id(transaction_id_text)
                     if transaction_id in seen_transaction_ids:
                         raise DatasetBuildError(
                             "기존 학습 CSV에 중복 transaction_id가 있습니다: "
-                            f"{transaction_id}"
+                            f"{transaction_id_text}"
                         )
                     seen_transaction_ids.add(transaction_id)
                     source_row_count += 1

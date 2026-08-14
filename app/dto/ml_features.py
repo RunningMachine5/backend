@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 BinaryFlag = Literal[0, 1]
 LOCATION_PATTERN = re.compile(
@@ -18,13 +18,12 @@ class MLTransactionFeatures(BaseModel):
     ML서버로 보낼 피쳐.
     날짜 성분 추출, One-Hot Encoding과 학습 Schema 정렬은 ML 서버가 담당한다.
     """
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    transaction_id: int
     customer_birth_date: datetime
     customer_gender: str
     customer_name: str
-    customer_identification_number: str
     customer_registration_datetime: datetime
     customer_credit_rating: int
     customer_flag_change_of_authentication_1: bool
@@ -42,29 +41,31 @@ class MLTransactionFeatures(BaseModel):
     customer_flag_terminal_malicious_behavior_6: bool
     customer_inquery_atm_limit: bool
     customer_increase_atm_limit: bool
-    account_account_number: int
+    account_account_number: str | int
     account_account_type: str
     account_creation_datetime: datetime
-    account_initial_balance: int
-    account_balance: int
+    account_initial_balance: float | None
+    account_balance: float | None
     account_indicator_release_limit_excess: int
-    account_amount_daily_limit: int
+    account_amount_daily_limit: float
     account_indicator_openbanking: bool
-    account_remaining_amount_daily_limit_exceeded: bool
+    account_remaining_amount_daily_limit_exceeded: float | None
     account_release_suspention: bool
     account_one_month_max_amount: int
     account_one_month_std_dev: float
     account_dawn_one_month_max_amount: int
     account_dawn_one_month_std_dev: int
     transaction_datetime: datetime
-    transaction_amount: int
+    transaction_amount: float
     channel: str
     operating_system: str | None
+    error_code: str = Field(max_length=8)
     type_general_automatic: str
     ip_address: str | None
     mac_address: str | None
-    access_medium: str
-    recipient_account_number: str
+    access_medium: str | None
+    location: str
+    recipient_account_number: str | int
     transaction_num_connection_failure: int
     another_person_account: bool
     distance: float
@@ -79,6 +80,33 @@ class MLTransactionFeatures(BaseModel):
     transaction_history_with_the_account: int
     first_time_ios_by_vulnerable_user: bool
     transaction_resumed_date: datetime | None
+
+    @field_validator(
+        "account_initial_balance",
+        "account_balance",
+        "account_remaining_amount_daily_limit_exceeded",
+        "access_medium",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_train1_value(cls, value: object) -> object | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
+
+    @field_validator(
+        "account_remaining_amount_daily_limit_exceeded",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_remaining_daily_limit(cls, value: object) -> object:
+        if isinstance(value, bool):
+            # Pydantic는 ValueError만 검증 오류(422)로 변환한다.
+            raise ValueError(  # noqa: TRY004
+                "account_remaining_amount_daily_limit_exceeded must be an amount, "
+                "not a boolean"
+            )
+        return value
 
 
 RAW_TRANSACTION_FEATURE_COLUMNS = tuple(

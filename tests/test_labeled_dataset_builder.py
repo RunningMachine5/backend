@@ -1,5 +1,6 @@
 import csv
 import unittest
+from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
@@ -12,10 +13,13 @@ from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
-from app.dto.ml_features import RAW_TRANSACTION_FEATURE_COLUMNS
-from app.dto.transaction import TransactionRequestDTO
-from app.dto.transaction import TransactionCreateDTO
-from app.repositories.transaction import TransactionRepository
+from app.dto.ml_features import RAW_TRANSACTION_FEATURE_COLUMNS, MLTransactionFeatures
+from app.services.features.ml_feature_assembler import (
+    build_account_fields,
+    build_customer_fields,
+    build_derived_features_fields,
+    build_transaction_fields,
+)
 from app.services.mlops.dataset_builder import (
     TRAINING_CSV_COLUMNS,
     DatasetBuildError,
@@ -61,6 +65,17 @@ def _training_row(
     return row
 
 
+@dataclass(frozen=True)
+class StoredTransactionFixture:
+    transaction_id: int
+    customer_id: str
+    identification_number: str
+    source_account_number: str
+    recipient_account_number: str
+    confirmed_is_fraud: bool
+    features: MLTransactionFeatures
+
+
 def _transaction_payload(
     transaction_id: str,
     *,
@@ -69,7 +84,7 @@ def _transaction_payload(
     recipient_account_number: str,
     confirmed_is_fraud: bool,
     initial_balance: int | None = 10_000_000,
-) -> TransactionRequestDTO:
+) -> StoredTransactionFixture:
     sequence = transaction_id.rsplit("-", maxsplit=1)[-1]
     row = valid_transaction_row(
         transaction_id,
@@ -88,7 +103,18 @@ def _transaction_payload(
             "is_fraud": confirmed_is_fraud,
         }
     )
-    return TransactionCreateDTO.model_validate(row)
+    features = MLTransactionFeatures.model_validate(
+        {column: row[column] for column in RAW_TRANSACTION_FEATURE_COLUMNS}
+    )
+    return StoredTransactionFixture(
+        transaction_id=int(sequence),
+        customer_id=customer_id,
+        identification_number=f"identity-{sequence}",
+        source_account_number=source_account_number,
+        recipient_account_number=recipient_account_number,
+        confirmed_is_fraud=confirmed_is_fraud,
+        features=features,
+    )
 
 
 class LabeledDatasetBuilderTest(unittest.TestCase):
@@ -109,8 +135,52 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.session.close()
         self.engine.dispose()
 
-    def _save(self, payload: TransactionRequestDTO) -> None:
-        TransactionRepository(self.session).add_received(payload)
+    def _save(self, payload: StoredTransactionFixture) -> None:
+        features = payload.features
+        customer = Customer(
+            id=payload.customer_id,
+            name=features.customer_name,
+            identification_number=payload.identification_number,
+            **build_customer_fields(features),
+        )
+        source = Account(
+            id=f"SOURCE-{payload.transaction_id}",
+            customer_id=customer.id,
+            account_number=payload.source_account_number,
+            **build_account_fields(features),
+        )
+        recipient = Account(
+            id=f"RECIPIENT-{payload.transaction_id}",
+            account_number=payload.recipient_account_number,
+        )
+        self.session.add(customer)
+        self.session.flush()
+        self.session.add(source)
+        self.session.add(recipient)
+        self.session.flush()
+        transaction = Transaction(
+            id=payload.transaction_id,
+            customer_id=customer.id,
+            source_account_number=source.account_number,
+            recipient_account_number=recipient.account_number,
+            ip_address=features.ip_address,
+            mac_address=features.mac_address,
+            **build_transaction_fields(features),
+        )
+        self.session.add(transaction)
+        self.session.flush()
+        self.session.add(
+            DerivedFeatures(
+                id=transaction.id,
+                **build_derived_features_fields(features),
+            )
+        )
+        self.session.add(
+            TransactionLabel(
+                transaction_id=transaction.id,
+                confirmed_is_fraud=payload.confirmed_is_fraud,
+            )
+        )
         self.session.commit()
 
     def test_appends_exact_train1_raw64_row_with_one_join_query(self) -> None:
@@ -167,7 +237,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         first_row = rows[0]
         self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
         self.assertEqual(len(first_row), 64)
-        self.assertEqual(first_row["transaction_id"], "TX-DATASET-1")
+        self.assertEqual(first_row["transaction_id"], "1")
         self.assertEqual(first_row["customer_id"], "C-DATASET-1")
         self.assertEqual(first_row["customer_name"], "테스트고객-1")
         self.assertEqual(

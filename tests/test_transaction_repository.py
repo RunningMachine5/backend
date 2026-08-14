@@ -1,4 +1,5 @@
 import unittest
+from datetime import UTC, datetime
 
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
@@ -8,33 +9,46 @@ from app.data.model.account import Account
 from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
-from app.data.model.transaction_label import TransactionLabel
-from app.dto.transaction import TransactionCreateDTO
+from app.dto.transaction import TransactionRequestDTO
 from app.repositories.transaction import (
     AccountOwnershipConflictError,
+    CustomerReferenceNotFoundError,
     TransactionRepository,
 )
-from tests.ml_feature_fixture import valid_transaction_row
 
 
-def _payload(
-    transaction_id: str,
-    *,
-    customer_id: str = "C000494",
-    identification_number: str = "upTALE-VwSUVKY",
-    source_account_number: str = "TLBxRCjZdK",
-    recipient_account_number: str = "yeTPcVrUhr",
-    **overrides: object,
-) -> TransactionCreateDTO:
-    row = {
-        **valid_transaction_row(transaction_id),
-        "customer_id": customer_id,
-        "customer_identification_number": identification_number,
-        "account_account_number": source_account_number,
-        "recipient_account_number": recipient_account_number,
-        **overrides,
+def _payload(**overrides: object) -> TransactionRequestDTO:
+    data: dict[str, object] = {
+        "customer_id": "C-REPOSITORY",
+        "source_account_number": "source-0001",
+        "recipient_account_number": "recipient-0001",
+        "transaction_datetime": "2026-08-14T12:00:00+09:00",
+        "transaction_amount": -10_000,
+        "channel": "mobile",
+        "type_general_automatic": "general",
+        "access_medium": "a",
+        "num_connection_failure": 0,
+        "operating_system": "android",
+        "ip_address": None,
+        "mac_address": None,
+        "location_lat": 37.5,
+        "location_lon": 127.0,
     }
-    return TransactionCreateDTO.model_validate(row)
+    data.update(overrides)
+    return TransactionRequestDTO.model_validate(data)
+
+
+def _customer(customer_id: str) -> Customer:
+    return Customer(
+        id=customer_id,
+        name=f"고객-{customer_id}",
+        birth_date=datetime(1990, 1, 1, tzinfo=UTC),
+        gender="female",
+        identification_number=f"IDENTITY-{customer_id}",
+        registration_datetime=datetime(2020, 1, 1, tzinfo=UTC),
+        credit_rating=5,
+        loan_type="b",
+    )
 
 
 class TransactionRepositoryTest(unittest.TestCase):
@@ -55,175 +69,97 @@ class TransactionRepositoryTest(unittest.TestCase):
         Account.__table__.create(self.engine)
         Transaction.__table__.create(self.engine)
         DerivedFeatures.__table__.create(self.engine)
-        TransactionLabel.__table__.create(self.engine)
         self.session = Session(self.engine)
+        self.session.add(_customer("C-REPOSITORY"))
+        self.session.commit()
         self.repository = TransactionRepository(self.session)
 
     def tearDown(self) -> None:
         self.session.close()
         self.engine.dispose()
 
-    def _save(self, payload: TransactionCreateDTO) -> Transaction:
+    def _save(self, payload: TransactionRequestDTO) -> Transaction:
         transaction = self.repository.add_received(payload)
         self.session.commit()
         self.session.refresh(transaction)
         return transaction
 
-    def test_saved_features_round_trip_exactly_after_account_state_changes(
-        self,
-    ) -> None:
-        first_payload = _payload("TX-ROUNDTRIP-1")
-        first_transaction = self._save(first_payload)
+    def test_slim_request_saves_transaction_and_account_identifiers(self) -> None:
+        transaction = self._save(_payload())
 
-        second_payload = _payload(
-            "TX-ROUNDTRIP-2",
-            account_initial_balance=4_817_417,
-            account_balance=-3_000_000,
-            account_remaining_amount_daily_limit_exceeded=4_000_000,
-            transaction_amount=1_817_417,
-        )
-        second_transaction = self._save(second_payload)
-
-        first_assembled = self.repository.load_ml_features(first_transaction)
-        second_assembled = self.repository.load_ml_features(second_transaction)
-
-        self.assertIsNotNone(first_assembled)
-        self.assertIsNotNone(second_assembled)
-        self.assertEqual(
-            first_assembled.model_dump(mode="json", by_alias=True),
-            first_payload.raw_features.model_dump(mode="json", by_alias=True),
-        )
-        self.assertEqual(
-            second_assembled.model_dump(mode="json", by_alias=True),
-            second_payload.raw_features.model_dump(mode="json", by_alias=True),
-        )
-        account = self.session.exec(
-            select(Account).where(
-                Account.account_number == first_transaction.source_account_number
-            )
+        self.assertIsInstance(transaction.id, int)
+        self.assertEqual(transaction.transaction_amount, -10_000)
+        self.assertEqual(transaction.location, "37.5 127.0")
+        source = self.session.exec(
+            select(Account).where(Account.account_number == "source-0001")
         ).one()
-        self.assertIsNotNone(account)
-        self.assertEqual(account.current_balance, -3_000_000)
-        self.assertEqual(account.remaining_daily_limit, 4_000_000)
-
-    def test_transaction_is_inserted_before_derived_features(self) -> None:
-        insert_order: list[str] = []
-
-        def capture_insert_order(
-            _connection,
-            _cursor,
-            statement: str,
-            _parameters,
-            _context,
-            _executemany,
-        ) -> None:
-            normalized = statement.lstrip().lower()
-            if normalized.startswith("insert into transactions"):
-                insert_order.append("transactions")
-            elif normalized.startswith("insert into derived_features"):
-                insert_order.append("derived_features")
-
-        event.listen(self.engine, "before_cursor_execute", capture_insert_order)
-        try:
-            self._save(_payload("TX-FK-ORDER"))
-        finally:
-            event.remove(
-                self.engine,
-                "before_cursor_execute",
-                capture_insert_order,
-            )
-
-        self.assertEqual(insert_order, ["transactions", "derived_features"])
-        self.assertIsNotNone(self.session.get(Transaction, "TX-FK-ORDER"))
-        self.assertIsNotNone(self.session.get(DerivedFeatures, "TX-FK-ORDER"))
-
-    def test_updates_customer_and_account_values_from_latest_payload(self) -> None:
-        self._save(_payload("TX-MASTER-1"))
-
-        latest = _payload(
-            "TX-MASTER-2",
-            customer_credit_rating=5,
-            customer_loan_type="d",
-            account_amount_daily_limit=20_000_000,
-            account_indicator_openbanking=False,
-        )
-        self._save(latest)
-
-        customer = self.session.get(Customer, latest.customer_id)
-        account = self.session.get(Account, latest.source_account_number)
-        self.assertIsNotNone(customer)
-        self.assertIsNotNone(account)
-        self.assertEqual(customer.credit_rating, 5)
-        self.assertEqual(customer.loan_type, "d")
-        self.assertEqual(account.amount_daily_limit, 20_000_000)
-        self.assertFalse(account.indicator_openbanking)
-
-    def test_recipient_account_can_later_be_claimed_by_its_owner(self) -> None:
-        target_account = "recipient-becomes-source"
-        self._save(
-            _payload(
-                "TX-RECIPIENT-FIRST",
-                recipient_account_number=target_account,
-                recipient_account_suspend_status=True,
-            )
-        )
-        recipient = self.session.get(Account, target_account)
-        self.assertIsNotNone(recipient)
+        recipient = self.session.exec(
+            select(Account).where(Account.account_number == "recipient-0001")
+        ).one()
+        self.assertEqual(source.customer_id, "C-REPOSITORY")
         self.assertIsNone(recipient.customer_id)
-        self.assertTrue(recipient.suspend_status)
+        derived = self.session.get(DerivedFeatures, transaction.id)
+        self.assertIsNotNone(derived)
+        assert derived is not None
+        self.assertEqual(derived.distance, 0.0)
+        self.assertEqual(derived.time_difference.total_seconds(), 0)
+        self.assertEqual(derived.one_month_max_amount, 0)
+        self.assertIs(derived.unused_terminal_status, False)
 
-        owner_payload = _payload(
-            "TX-SOURCE-LATER",
-            customer_id="C-OWNER-2",
-            identification_number="owner-identity-2",
-            source_account_number=target_account,
-            recipient_account_number="recipient-owner-2",
-            customer_name="계좌주인",
-        )
-        self._save(owner_payload)
-
-        claimed = self.session.get(Account, target_account)
-        self.assertIsNotNone(claimed)
-        self.assertEqual(claimed.customer_id, "C-OWNER-2")
+        # 계좌 상세 프로필이 아직 없어도 DB 원본을 덮지 않고
+        # ML 조립 시에만 중립 기본값을 사용한다.
+        features = self.repository.load_ml_features(transaction)
+        self.assertIsNotNone(features)
+        assert features is not None
+        self.assertEqual(features.account_account_type, "a")
+        self.assertEqual(features.account_amount_daily_limit, 0)
         self.assertEqual(
-            claimed.account_type, owner_payload.raw_features.account_account_type
+            features.account_creation_datetime,
+            transaction.transaction_datetime,
         )
+
+    def test_missing_customer_is_allowed_only_when_customer_id_is_null(self) -> None:
+        with self.assertRaises(CustomerReferenceNotFoundError):
+            self.repository.add_received(_payload(customer_id="C-MISSING"))
+        self.session.rollback()
+
+        transaction = self._save(
+            _payload(customer_id=None, recipient_account_number=None, channel="ATM")
+        )
+        self.assertIsNone(transaction.customer_id)
+        self.assertIsNone(transaction.recipient_account_number)
+        self.assertEqual(transaction.channel, "atm")
+        features = self.repository.load_ml_features(transaction)
+        self.assertIsNotNone(features)
+        assert features is not None
+        self.assertEqual(features.recipient_account_number, "unknown-recipient")
+        self.assertEqual(features.customer_name, "unknown-customer")
+
+    def test_existing_account_cannot_be_claimed_by_another_customer(self) -> None:
+        self.session.add(_customer("C-OTHER"))
+        self.session.flush()
+        self.session.add(
+            Account(
+                id="source-0001",
+                customer_id="C-OTHER",
+                account_number="source-0001",
+            )
+        )
+        self.session.commit()
 
         with self.assertRaises(AccountOwnershipConflictError):
-            self.repository.add_received(
-                _payload(
-                    "TX-WRONG-OWNER",
-                    customer_id="C-WRONG-OWNER",
-                    identification_number="wrong-owner-identity",
-                    source_account_number=target_account,
-                    recipient_account_number="recipient-wrong-owner",
-                    customer_name="다른고객",
-                )
+            self.repository.add_received(_payload())
+
+    def test_each_saved_transaction_gets_next_integer_id(self) -> None:
+        first = self._save(_payload())
+        second = self._save(
+            _payload(
+                source_account_number="source-0002",
+                recipient_account_number="recipient-0002",
             )
-        self.session.rollback()
-        self.assertEqual(
-            self.session.get(Account, target_account).customer_id,
-            "C-OWNER-2",
         )
 
-    def test_recipient_suspend_status_tracks_latest_observation(self) -> None:
-        self._save(
-            _payload(
-                "TX-SUSPEND-1",
-                recipient_account_suspend_status=True,
-            )
-        )
-        recipient = self.session.get(Account, "yeTPcVrUhr")
-        self.assertIsNotNone(recipient)
-        self.assertTrue(recipient.suspend_status)
-
-        self._save(
-            _payload(
-                "TX-SUSPEND-2",
-                recipient_account_suspend_status=False,
-            )
-        )
-        self.assertFalse(self.session.get(Account, "yeTPcVrUhr").suspend_status)
+        self.assertEqual(second.id, first.id + 1)
 
 
 if __name__ == "__main__":

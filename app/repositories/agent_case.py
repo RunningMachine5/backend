@@ -23,7 +23,7 @@ class AgentCaseRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get_transaction(self, transaction_id: str) -> Transaction | None:
+    def get_transaction(self, transaction_id: int) -> Transaction | None:
         return self.session.get(Transaction, transaction_id)
 
     def get_score_result(
@@ -38,7 +38,7 @@ class AgentCaseRepository:
     def get_case(self, case_id: str) -> AgentCase | None:
         return self.session.get(AgentCase, case_id)
 
-    def find_case_by_transaction(self, transaction_id: str) -> AgentCase | None:
+    def find_case_by_transaction(self, transaction_id: int) -> AgentCase | None:
         return self.session.exec(
             select(AgentCase).where(AgentCase.transaction_id == transaction_id)
         ).first()
@@ -78,7 +78,7 @@ class AgentCaseRepository:
         self,
         *,
         case_id: str,
-        transaction_id: str,
+        transaction_id: int,
         fraud_type_score_result_id: int,
         risk_score: int,
         risk_grade: str,

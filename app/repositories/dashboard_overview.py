@@ -19,7 +19,7 @@ from app.data.model.agent import AgentDashboardInsight, AgentCase
 # 프론트 응답 DTO 아니고, 내부 전달용 row 객체
 @dataclass(frozen=True)
 class DashboardSuspiciousRow:
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: datetime
     transaction_amount: int
     channel: str

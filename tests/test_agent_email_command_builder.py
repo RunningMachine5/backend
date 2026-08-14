@@ -17,7 +17,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
 
     def test_confident_case_uses_rule_top_two_types(self) -> None:
         command = build_fraud_alert_email_command(
-            transaction_id="TX-001",
+            transaction_id=1,
             type_confidence=self._confidence(
                 account_takeover=0.80,
                 messenger_phishing=0.40,
@@ -35,7 +35,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
         investigation = self._investigation("MESSENGER_PHISHING")
 
         command = build_fraud_alert_email_command(
-            transaction_id="TX-002",
+            transaction_id=2,
             type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,
@@ -52,7 +52,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
 
     def test_missing_investigation_falls_back_to_rule_order(self) -> None:
         command = build_fraud_alert_email_command(
-            transaction_id="TX-003",
+            transaction_id=3,
             type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,
@@ -68,7 +68,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
 
     def test_recommendation_outside_top_two_keeps_rule_order(self) -> None:
         command = build_fraud_alert_email_command(
-            transaction_id="TX-004",
+            transaction_id=4,
             type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,
@@ -82,7 +82,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
     def test_empty_transaction_id_is_rejected_at_builder_boundary(self) -> None:
         with self.assertRaises(ValueError):
             build_fraud_alert_email_command(
-                transaction_id=" ",
+                transaction_id=0,
                 type_confidence=self._confidence(
                     account_takeover=0.80,
                     messenger_phishing=0.40,
@@ -96,7 +96,7 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
         )
 
         command = build_fraud_alert_email_command(
-            transaction_id="TX-005",
+            transaction_id=5,
             type_confidence=self._confidence(
                 account_takeover=0.62,
                 messenger_phishing=0.57,

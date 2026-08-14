@@ -119,7 +119,12 @@ def _default_smoke_client(
 
 
 class CloudRunAdminClient:
-    """학습 Job 실행과 검증된 Serving 리비전 승격을 담당한다."""
+    """학습 Job 실행과 검증된 Serving 리비전 승격을 담당한다.
+
+    이 client는 모델의 성능을 판단하지 않는다. API 계층이 승인한 정확한 모델
+    버전을 0% 리비전으로 확인하고, tagged URL의 실제 예측이 성공한 뒤에만
+    운영 트래픽 변경을 요청한다.
+    """
 
     def __init__(
         self,
@@ -822,7 +827,7 @@ class CloudRunAdminClient:
         self,
         *,
         model_version: str,
-        transaction_id: str,
+        transaction_id: int,
         features: dict[str, Any],
     ) -> dict[str, Any]:
         """태그 리비전을 실제 예측으로 검증한 뒤 트래픽 100%를 승격한다."""

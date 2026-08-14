@@ -19,6 +19,7 @@ from app.dto.agent import (
     AgentResponseDTO,
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
+    SimilarCaseResultDTO,
 )
 from app.dto.agent_guide import RetrievedGuideChunkDTO
 from app.services.agent.case_service import AgentCaseStartResult
@@ -63,11 +64,11 @@ class FakeCaseService:
         generation_metadata,
         best_similar_case_id=None,
     ) -> AgentResponseDTO:
-        del similar_case_results, best_similar_case_id
+        del best_similar_case_id
         self.complete_calls += 1
         return AgentResponseDTO(
             case_id=case_id,
-            transaction_id="TX-001",
+            transaction_id=1,
             execution_status=AgentExecutionStatus.COMPLETED,
             failure_reason=None,
             rule_result=self.rule_result,
@@ -75,7 +76,7 @@ class FakeCaseService:
             risk_grade=RiskGrade.VERY_HIGH,
             investigation_result=investigation_result,
             best_similar_case_id=None,
-            similar_case_results=[],
+            similar_case_results=similar_case_results,
             response_result=response_result,
             generation_metadata=generation_metadata,
             created_at=datetime(2026, 8, 12, tzinfo=UTC),
@@ -128,7 +129,7 @@ class FakeCaseService:
     @staticmethod
     def _input() -> AgentInputDTO:
         return AgentInputDTO(
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             risk_score=91,
             risk_grade=RiskGrade.VERY_HIGH,
@@ -224,6 +225,25 @@ class FakeEmailNotifier:
         self.commands.append(command)
         if self.error is not None:
             raise self.error
+
+
+class FakeDashboardSimilarCaseFinder:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.call_count = 0
+        self.error = error
+
+    def find_top_three(self, **_kwargs):
+        self.call_count += 1
+        if self.error is not None:
+            raise self.error
+        return [
+            SimilarCaseResultDTO(
+                similar_case_id="CASE-PAST-001",
+                similarity_rank=1,
+                similarity_score=0.91,
+                similarity_reason="공통 Rule 근거가 유사함",
+            )
+        ]
 
 
 class AgentWorkflowTest(unittest.TestCase):
@@ -328,10 +348,44 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertIsNotNone(response.response_result)
         self.assertEqual(case_service.complete_calls, 1)
 
+    def test_dashboard_similar_cases_are_saved_after_plan_generation(self) -> None:
+        finder = FakeDashboardSimilarCaseFinder()
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(self._rule_result(0.80, 0.40)),  # type: ignore[arg-type]
+            policy_repository=FakePolicyRepository(),
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            dashboard_similar_case_finder=finder,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(finder.call_count, 1)
+        self.assertEqual(len(response.similar_case_results), 1)
+        self.assertEqual(
+            response.similar_case_results[0].similar_case_id,
+            "CASE-PAST-001",
+        )
+
+    def test_similar_case_failure_does_not_fail_agent_case(self) -> None:
+        finder = FakeDashboardSimilarCaseFinder(
+            error=RuntimeError("유사 사건 조회 실패")
+        )
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(self._rule_result(0.80, 0.40)),  # type: ignore[arg-type]
+            policy_repository=FakePolicyRepository(),
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            dashboard_similar_case_finder=finder,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
+        self.assertEqual(response.similar_case_results, [])
+
     @staticmethod
     def _input() -> AgentInputDTO:
         return AgentInputDTO(
-            transaction_id="TX-001",
+            transaction_id=1,
             fraud_type_score_result_id=7,
             risk_score=91,
             risk_grade=RiskGrade.VERY_HIGH,

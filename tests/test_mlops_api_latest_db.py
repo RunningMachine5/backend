@@ -489,7 +489,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             "/mlops/serving/promotions",
             headers=self.headers,
             json={
-                "transaction_id": "TX-SMOKE",
+                "transaction_id": 900001,
                 "features": valid_ml_raw_data(),
             },
         )
@@ -499,7 +499,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             json={
                 "training_run_id": 1,
                 "model_version": "999",
-                "transaction_id": "TX-SMOKE",
+                "transaction_id": 900001,
                 "features": valid_ml_raw_data(),
             },
         )
@@ -528,7 +528,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             headers=self.headers,
             json={
                 "training_run_id": run_id,
-                "transaction_id": "TX-SMOKE",
+                "transaction_id": 900001,
                 "features": valid_ml_raw_data(),
             },
         )
@@ -646,7 +646,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             headers=self.headers,
             json={
                 "training_run_id": run_id,
-                "transaction_id": "TX-SMOKE",
+                "transaction_id": 900001,
                 "features": valid_ml_raw_data(),
             },
         )

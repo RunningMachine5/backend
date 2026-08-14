@@ -1,4 +1,9 @@
-"""최신 ML 양성 거래에 ACTIVE·DRAFT 룰을 함께 적용한다."""
+"""최신 ML 양성 거래에 ACTIVE·DRAFT 룰을 함께 적용한다.
+
+같은 거래 표본에 두 룰셋을 평가해 점수·매칭 component가 어떻게 달라지는지만
+비교한다. 운영 점수 행을 다시 쓰거나 DRAFT를 자동 활성화하지 않는 읽기 전용
+사전 점검 기능이다.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ from app.services.rules.feature_builder import RuleFeatureError
 
 @dataclass(frozen=True, slots=True)
 class _RuleReplayTransaction:
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: datetime
     active_type_scores: dict[str, float]
     draft_type_scores: dict[str, float]
@@ -52,7 +57,7 @@ class _RuleReplayTransaction:
 
 @dataclass(frozen=True, slots=True)
 class RuleReplayChangedTransaction:
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: datetime
     score_changed: bool
     evidence_changed: bool
@@ -66,7 +71,7 @@ class RuleReplayChangedTransaction:
 
 @dataclass(frozen=True, slots=True)
 class RuleReplayErrorDetail:
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: datetime
     error: str
 

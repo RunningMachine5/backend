@@ -1,7 +1,8 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 from sqlalchemy import func
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from app.data.model.account import Account
@@ -15,10 +16,6 @@ from app.dto.transaction import TransactionRequestDTO
 from app.services.features.ml_feature_assembler import (
     FeatureAssemblyError,
     assemble_ml_features,
-    build_account_fields,
-    build_customer_fields,
-    build_derived_features_fields,
-    build_transaction_fields,
 )
 
 
@@ -71,12 +68,20 @@ class AccountOwnershipConflictError(CustomerIdentificationConflictError):
         )
 
 
+class CustomerReferenceNotFoundError(RuntimeError):
+    """거래가 참조한 고객이 고객 원장에 아직 등록되지 않은 경우."""
+
+    def __init__(self, customer_id: str) -> None:
+        self.customer_id = customer_id
+        super().__init__(f"고객 원장에서 customer_id를 찾을 수 없습니다: {customer_id}")
+
+
 class TransactionRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get(self, transaction_id: str) -> Transaction | None:
-        return self.session.get(Transaction, id)
+    def get(self, transaction_id: int) -> Transaction | None:
+        return self.session.get(Transaction, transaction_id)
 
     def load_ml_features(
         self,
@@ -84,14 +89,16 @@ class TransactionRepository:
     ) -> MLTransactionFeatures | None:
         """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다.
 
-        파생 피처 행이 없거나 외부 계좌 정보만 있는 등 계약을 복원할 수 없는
-        경우에는 호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
+        고객 또는 수취 계좌가 없어 계약을 복원할 수 없는 경우에는
+        호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
         """
 
         derived = self.session.get(DerivedFeatures, transaction.id)
-        customer = self.session.get(Customer, transaction.customer_id)
-        source_account = self.session.get(Account, transaction.id)
-        if derived is None or customer is None or source_account is None:
+        customer = (
+            self.session.get(Customer, transaction.customer_id)
+            if transaction.customer_id is not None
+            else None
+        )
         source_account = self.session.exec(
             select(Account).where(
                 Account.account_number == transaction.source_account_number
@@ -106,12 +113,7 @@ class TransactionRepository:
             if transaction.recipient_account_number
             else None
         )
-        if (
-            derived is None
-            or customer is None
-            or source_account is None
-            or recipient_account is None
-        ):
+        if derived is None or source_account is None:
             return None
 
         try:
@@ -126,106 +128,117 @@ class TransactionRepository:
             return None
 
     def add_received(self, payload: TransactionRequestDTO) -> Transaction:
-        features = payload.raw_features
-
-        customer = self._upsert_customer(payload, features)
-        # 새 고객을 기존 수취 계좌의 소유자로 연결하는 UPDATE가 먼저 flush되면
-        # accounts.customer_id FK가 실패한다. 계좌 조회가 일으키는 autoflush보다
-        # 고객 INSERT를 앞세운다.
-        self.session.flush()
-        source_account_number = self._upsert_source_account(payload, features)
+        customer = self._find_customer(payload.customer_id)
+        source_account_number = self._upsert_source_account(payload, customer)
         recipient_account_number = self._upsert_recipient_account(payload)
         # Transaction은 출금·수취 계좌 FK를 모두 참조한다. ORM relationship이
         # 없는 mapper들의 순서에 기대지 않고 계좌 INSERT/UPDATE를 먼저 확정한다.
         self.session.flush()
 
         transaction = Transaction(
-            id=payload.transaction_id,
-            customer_id=customer.id,
+            customer_id=(customer.id if customer is not None else None),
             source_account_number=source_account_number,
             recipient_account_number=recipient_account_number,
+            transaction_datetime=payload.transaction_datetime,
+            transaction_amount=payload.transaction_amount,
+            channel=payload.channel.lower(),
+            type_general_automatic=payload.type_general_automatic.lower(),
+            access_medium=(
+                payload.access_medium.lower() if payload.access_medium else None
+            ),
+            error_code=None,
+            num_connection_failure=payload.num_connection_failure,
+            another_person_account=False,
+            initial_balance=None,
+            balance=None,
+            remaining_amount_daily_limit_exceeded=None,
+            operating_system=payload.operating_system,
             ip_address=payload.ip_address,
             mac_address=payload.mac_address,
-            **build_transaction_fields(features),
+            location=f"{payload.location_lat} {payload.location_lon}",
+            location_lat=payload.location_lat,
+            location_lon=payload.location_lon,
+            rooting_jailbreak_indicator=(payload.customer_rooting_jailbreak_indicator),
+            mobile_roaming_indicator=payload.customer_mobile_roaming_indicator,
+            vpn_indicator=payload.customer_vpn_indicator,
+            flag_terminal_malicious_behavior_1=(
+                payload.customer_flag_terminal_malicious_behavior_1
+            ),
+            flag_terminal_malicious_behavior_2=(
+                payload.customer_flag_terminal_malicious_behavior_2
+            ),
+            flag_terminal_malicious_behavior_3=(
+                payload.customer_flag_terminal_malicious_behavior_3
+            ),
+            flag_terminal_malicious_behavior_5=(
+                payload.customer_flag_terminal_malicious_behavior_5
+            ),
+            flag_terminal_malicious_behavior_6=(
+                payload.customer_flag_terminal_malicious_behavior_6
+            ),
         )
         self.session.add(transaction)
-
-        # DerivedFeatures는 Transaction FK를 가지지만 두 모델 사이에 ORM
-        # relationship이 없어 Unit of Work가 mapper INSERT 순서를 보장하지
-        # 않는다. 실제 PostgreSQL에서는 derived_features가 먼저 INSERT되어
-        # 즉시 FK 위반이 날 수 있으므로 부모 거래를 같은 트랜잭션 안에서 먼저
-        # flush한다. 이후 오류가 발생해도 Pipeline rollback이 전체를 되돌린다.
         self.session.flush()
-        self.session.add(
-            DerivedFeatures(
-                id=payload.transaction_id,
-                **build_derived_features_fields(features),
-            )
-        )
+        assert transaction.id is not None
 
-        if payload.confirmed_is_fraud is not None:
-            self.session.add(
-                TransactionLabel(
-                    transaction_id=payload.transaction_id,
-                    confirmed_is_fraud=payload.confirmed_is_fraud,
-                )
-            )
+        # 아직 실시간 파생 계산기가 없으므로, ML 입력 59개의 자리를
+        # 비워 두지 않고 중립적인 기본값으로 저장한다. 나중에 계산 로직이
+        # 준비되면 같은 transaction.id의 행을 실제 값으로 갱신하면 된다.
+        self.session.add(self._default_derived_features(transaction.id))
         return transaction
 
-    def _upsert_customer(
-        self,
-        payload: TransactionRequestDTO,
-        features: MLTransactionFeatures,
-    ) -> Customer:
-        customer = self.session.get(Customer, payload.customer_id)
+    @staticmethod
+    def _default_derived_features(transaction_id: int) -> DerivedFeatures:
+        """실제 파생 계산기가 없는 동안 사용할 임시 스냅샷을 만든다.
+
+        수치형은 0, 상태형은 False, 과거 시각은 None을 사용한다.
+        이 값은 '이상 징후 없음'을 가정한 테스트용 기본값이지,
+        실제 거래 이력을 계산한 결과가 아니다.
+        """
+
+        return DerivedFeatures(
+            id=transaction_id,
+            distance=0.0,
+            time_difference=timedelta(0),
+            one_month_max_amount=0,
+            one_month_std_dev=0.0,
+            dawn_one_month_max_amount=0,
+            dawn_one_month_std_dev=0.0,
+            unused_terminal_status=False,
+            unused_account_status=False,
+            transaction_history_with_the_account=0,
+            flag_deposit_more_than_tenMillion=False,
+            number_of_transaction_with_the_account=0,
+            last_atm_transaction_datetime=None,
+            last_bank_branch_transaction_datetime=None,
+            flag_change_of_authentication_1=False,
+            flag_change_of_authentication_2=False,
+            flag_change_of_authentication_3=False,
+            flag_change_of_authentication_4=False,
+            inquiry_atm_limit=False,
+            increase_atm_limit=False,
+            release_suspension=False,
+            transaction_resumed_date=None,
+            recipient_account_suspend_status=False,
+            first_time_ios_by_vulnerable_user=False,
+        )
+
+    def _find_customer(self, customer_id: str | None) -> Customer | None:
+        if customer_id is None:
+            return None
+        customer = self.session.get(Customer, customer_id)
         if customer is None:
-            customer_with_identification = self.session.exec(
-                select(Customer).where(
-                    Customer.identification_number
-                    == payload.customer_identification_number
-                )
-            ).first()
-            if customer_with_identification is not None:
-                raise CustomerIdentificationConflictError(
-                    payload.customer_identification_number
-                )
-            customer = Customer(
-                id=payload.customer_id,
-                name=payload.customer_personal_identifier,
-                identification_number=payload.customer_identification_number,
-                **build_customer_fields(features),
-            )
-            self.session.add(customer)
-            return customer
-
-        if customer.identification_number != payload.customer_identification_number:
-            raise CustomerIdentificationConflictError(
-                payload.customer_identification_number
-            )
-
-        latest_customer_fields = {
-            "name": payload.customer_personal_identifier,
-            **build_customer_fields(features),
-        }
-        for field_name, value in latest_customer_fields.items():
-            setattr(customer, field_name, value)
-        customer.updated_at = datetime.now(UTC)
-        self.session.add(customer)
+            raise CustomerReferenceNotFoundError(customer_id)
         return customer
 
     def _upsert_source_account(
         self,
         payload: TransactionRequestDTO,
-        features: MLTransactionFeatures,
+        customer: Customer | None,
     ) -> str:
-        """출금 계좌를 만들거나 마지막으로 처리된 요청값으로 갱신한다.
-
-        생성 데이터는 같은 계좌의 공통 Feature가 항상 일관되지는 않으므로
-        계좌번호와 소유 고객만 충돌을 막고 나머지 값은 최신 입력을 반영한다.
-        """
+        """출금 계좌 식별자를 보존하고 알려진 고객 소유권만 검증한다."""
 
         source_account_id = _account_id(payload.source_account_number)
-        account_fields = build_account_fields(features)
         source_account = self.session.exec(
             select(Account).where(
                 Account.account_number == payload.source_account_number
@@ -240,22 +253,22 @@ class TransactionRepository:
                 )
             source_account = Account(
                 id=source_account_id,
-                customer_id=payload.customer_id,
+                customer_id=(customer.id if customer is not None else None),
                 account_number=payload.source_account_number,
-                **account_fields,
             )
         else:
-            if source_account.customer_id is None:
-                source_account.customer_id = payload.customer_id
-            elif source_account.customer_id != payload.customer_id:
+            if source_account.customer_id is None and customer is not None:
+                source_account.customer_id = customer.id
+            elif (
+                customer is not None
+                and source_account.customer_id is not None
+                and source_account.customer_id != customer.id
+            ):
                 raise AccountOwnershipConflictError(
                     source_account_id,
                     stored_customer_id=source_account.customer_id,
-                    requested_customer_id=payload.customer_id,
+                    requested_customer_id=customer.id,
                 )
-
-            for field_name, value in account_fields.items():
-                setattr(source_account, field_name, value)
             source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
         return source_account.account_number
@@ -270,7 +283,6 @@ class TransactionRepository:
             return None
 
         recipient_account_id = _account_id(payload.recipient_account_number)
-        suspend_status = payload.raw_features.recipient_account_suspend_status
         recipient_account = self.session.exec(
             select(Account).where(
                 Account.account_number == payload.recipient_account_number
@@ -288,13 +300,8 @@ class TransactionRepository:
                     id=recipient_account_id,
                     customer_id=None,
                     account_number=payload.recipient_account_number,
-                    suspend_status=suspend_status,
                 )
             )
-        else:
-            recipient_account.suspend_status = suspend_status
-            recipient_account.updated_at = datetime.now(UTC)
-            self.session.add(recipient_account)
         return payload.recipient_account_number
 
 
@@ -304,13 +311,13 @@ class TransactionLabelRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get(self, transaction_id: str) -> TransactionLabel | None:
+    def get(self, transaction_id: int) -> TransactionLabel | None:
         return self.session.get(TransactionLabel, transaction_id)
 
     def upsert(
         self,
         *,
-        transaction_id: str,
+        transaction_id: int,
         confirmed_is_fraud: bool,
     ) -> TransactionLabel:
         label = self.get(transaction_id)
@@ -336,7 +343,7 @@ class PredictionResultRepository:
 
     def latest_for_transaction(
         self,
-        transaction_id: str,
+        transaction_id: int,
     ) -> MLPredictionResult | None:
         return self.session.exec(
             select(MLPredictionResult)
@@ -421,7 +428,7 @@ class PredictionResultRepository:
             )
             .where(
                 ranked_predictions.c.prediction_rank == 1,
-                MLPredictionResult.prediction_is_fraud.is_(True),
+                MLPredictionResult.predict_result.is_(True),
             )
             .order_by(
                 Transaction.transaction_datetime.desc(),
@@ -448,6 +455,7 @@ __all__ = [
     "AccountIdentifierConflictError",
     "AccountOwnershipConflictError",
     "CustomerIdentificationConflictError",
+    "CustomerReferenceNotFoundError",
     "PredictionResultRepository",
     "TransactionLabelRepository",
     "TransactionRepository",

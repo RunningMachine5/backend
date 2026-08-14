@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from app.data.model.account import Account
 from app.data.model.customer import Customer
@@ -93,9 +93,11 @@ def build_transaction_fields(
     return {
         "transaction_datetime": features.transaction_datetime,
         "transaction_amount": features.transaction_amount,
-        "channel": features.channel,
-        "type_general_automatic": features.type_general_automatic,
-        "access_medium": features.access_medium,
+        "channel": features.channel.lower(),
+        "type_general_automatic": features.type_general_automatic.lower(),
+        "access_medium": (
+            features.access_medium.lower() if features.access_medium else None
+        ),
         "error_code": features.error_code,
         "num_connection_failure": features.transaction_num_connection_failure,
         "another_person_account": features.another_person_account,
@@ -179,7 +181,7 @@ def build_derived_features_fields(
 
 def assemble_ml_features(
     *,
-    customer: Customer,
+    customer: Customer | None,
     source_account: Account,
     recipient_account: Account | None,
     transaction: Transaction,
@@ -187,27 +189,47 @@ def assemble_ml_features(
 ) -> MLTransactionFeatures:
     """정규화된 거래 스냅샷에서 exact raw59 객체를 복원한다."""
 
-    required_account_values = {
-        "account_type": source_account.account_type,
-        "creation_datetime": source_account.creation_datetime,
-        "amount_daily_limit": source_account.amount_daily_limit,
-    }
-    missing = [name for name, value in required_account_values.items() if value is None]
-    if missing:
-        raise FeatureAssemblyError(
-            f"source account {source_account.account_number} is missing {missing}"
-        )
-    if recipient_account is None:
-        raise FeatureAssemblyError(
-            "recipient account is required by the raw59 contract"
-        )
+    # ATM 출금처럼 상대 계좌가 없는 거래도 모델에 전달한다. 실제 수취계좌가
+    # 있으면 그대로 사용하고, 없을 때만 일반 계좌번호와 겹치지 않는 고정값을 쓴다.
+    recipient_account_number = (
+        recipient_account.account_number
+        if recipient_account is not None
+        else "unknown-recipient"
+    )
+
+    # 현재 거래 API는 고객 ID가 없거나 고객 원장이 아직 준비되지 않은 거래도 받는다.
+    # ML 입력은 고객 프로필을 요구하므로, 실제 고객 행이 없을 때만 아래 임시값을
+    # 사용한다. 가짜 Customer 행을 DB에 저장하지 않으므로 실제 원장과 섞이지 않는다.
+    customer_birth_date = (
+        customer.birth_date
+        if customer is not None
+        else datetime(1990, 1, 1, tzinfo=UTC)
+    )
+    customer_gender = customer.gender if customer is not None else "male"
+    customer_name = customer.name if customer is not None else "unknown-customer"
+    customer_registration_datetime = (
+        customer.registration_datetime
+        if customer is not None
+        else datetime(2020, 1, 1, tzinfo=UTC)
+    )
+    customer_credit_rating = customer.credit_rating if customer is not None else 5
+    customer_loan_type = customer.loan_type if customer is not None else "a"
+
+    # 현재 거래 API는 계좌번호만 받고 상세 계좌 프로필은 나중에 채운다.
+    # ML 서버가 raw59 전체를 요구하므로, 프로필이 아직 없는 동안만
+    # 중립적인 기본값을 사용한다. DB의 계좌 원본을 가짜 값으로 덮지는 않는다.
+    account_type = source_account.account_type or "a"
+    account_creation_datetime = (
+        source_account.creation_datetime or transaction.transaction_datetime
+    )
+    account_amount_daily_limit = source_account.amount_daily_limit or 0
 
     return MLTransactionFeatures(
-        customer_birth_date=customer.birth_date,
-        customer_gender=customer.gender,
-        customer_name=customer.name,
-        customer_registration_datetime=customer.registration_datetime,
-        customer_credit_rating=customer.credit_rating,
+        customer_birth_date=customer_birth_date,
+        customer_gender=customer_gender,
+        customer_name=customer_name,
+        customer_registration_datetime=customer_registration_datetime,
+        customer_credit_rating=customer_credit_rating,
         customer_flag_change_of_authentication_1=(
             derived.flag_change_of_authentication_1
         ),
@@ -223,7 +245,7 @@ def assemble_ml_features(
         customer_rooting_jailbreak_indicator=(transaction.rooting_jailbreak_indicator),
         customer_mobile_roaming_indicator=transaction.mobile_roaming_indicator,
         customer_vpn_indicator=transaction.vpn_indicator,
-        customer_loan_type=customer.loan_type,
+        customer_loan_type=customer_loan_type,
         customer_flag_terminal_malicious_behavior_1=(
             transaction.flag_terminal_malicious_behavior_1
         ),
@@ -242,14 +264,14 @@ def assemble_ml_features(
         customer_inquery_atm_limit=derived.inquiry_atm_limit,
         customer_increase_atm_limit=derived.increase_atm_limit,
         account_account_number=source_account.account_number,
-        account_account_type=source_account.account_type,
-        account_creation_datetime=source_account.creation_datetime,
+        account_account_type=account_type,
+        account_creation_datetime=account_creation_datetime,
         account_initial_balance=transaction.initial_balance,
         account_balance=transaction.balance,
         account_indicator_release_limit_excess=int(
             bool(source_account.indicator_release_limit_excess)
         ),
-        account_amount_daily_limit=source_account.amount_daily_limit,
+        account_amount_daily_limit=account_amount_daily_limit,
         account_indicator_openbanking=bool(source_account.indicator_openbanking),
         account_remaining_amount_daily_limit_exceeded=(
             transaction.remaining_amount_daily_limit_exceeded
@@ -263,13 +285,13 @@ def assemble_ml_features(
         transaction_amount=transaction.transaction_amount,
         channel=transaction.channel,
         operating_system=transaction.operating_system,
-        error_code=transaction.error_code,
+        error_code=transaction.error_code or "",
         type_general_automatic=transaction.type_general_automatic,
         ip_address=(str(transaction.ip_address) if transaction.ip_address else None),
         mac_address=(str(transaction.mac_address) if transaction.mac_address else None),
         access_medium=transaction.access_medium,
         location=transaction.location,
-        recipient_account_number=recipient_account.account_number,
+        recipient_account_number=recipient_account_number,
         transaction_num_connection_failure=transaction.num_connection_failure,
         another_person_account=transaction.another_person_account,
         distance=derived.distance,
@@ -279,9 +301,7 @@ def assemble_ml_features(
         last_bank_branch_transaction_datetime=(
             derived.last_bank_branch_transaction_datetime
         ),
-        flag_deposit_more_than_ten_million=(
-            derived.flag_deposit_more_than_tenMillion
-        ),
+        flag_deposit_more_than_ten_million=(derived.flag_deposit_more_than_tenMillion),
         unused_account_status=derived.unused_account_status,
         recipient_account_suspend_status=(derived.recipient_account_suspend_status),
         number_of_transaction_with_the_account=(

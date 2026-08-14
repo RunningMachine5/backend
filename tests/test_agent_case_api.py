@@ -21,7 +21,7 @@ from app.services.agent.case_service import AgentCaseNotFoundError
 def _agent_response() -> AgentResponseDTO:
     return AgentResponseDTO(
         case_id="CASE-20260813-TEST0001",
-        transaction_id="TX-001",
+        transaction_id=1,
         execution_status=AgentExecutionStatus.COMPLETED,
         failure_reason=None,
         rule_result=FraudTypeScoreResultDTO(
@@ -64,7 +64,7 @@ class FakeCaseService:
             raise AgentCaseNotFoundError(case_id)
         return _agent_response()
 
-    def get_case_by_transaction(self, transaction_id: str) -> AgentResponseDTO:
+    def get_case_by_transaction(self, transaction_id: int) -> AgentResponseDTO:
         if self.missing:
             raise AgentCaseNotFoundError(transaction_id)
         return _agent_response()
@@ -73,7 +73,7 @@ class FakeCaseService:
 class AgentCaseApiTest(unittest.TestCase):
     def test_create_case_builds_input_from_saved_detection_result(self) -> None:
         score_result = SimpleNamespace(id=7)
-        prediction = SimpleNamespace(fraud_probability=0.9)
+        prediction = SimpleNamespace(predict_proba=0.9)
         transaction = SimpleNamespace(transaction_amount=10_000_000)
         session = MagicMock()
         session.exec.return_value.first.side_effect = [score_result, prediction]
@@ -81,12 +81,15 @@ class AgentCaseApiTest(unittest.TestCase):
         workflow = FakeWorkflow()
 
         response = create_agent_case(
-            AgentCaseCreateRequest(transaction_id="TX-001"),
+            AgentCaseCreateRequest(transaction_id=1),
             session,
             workflow,
         )
 
-        self.assertEqual(response.case_id, "CASE-20260813-TEST0001")
+        self.assertTrue(response.success)
+        self.assertIsNotNone(response.data)
+        self.assertEqual(response.data.case_id, "CASE-20260813-TEST0001")
+        self.assertIsNone(response.error)
         self.assertEqual(workflow.agent_input.fraud_type_score_result_id, 7)
         self.assertEqual(workflow.agent_input.risk_score, 84)
         self.assertEqual(workflow.agent_input.risk_grade, RiskGrade.VERY_HIGH)
@@ -106,11 +109,14 @@ class AgentCaseApiTest(unittest.TestCase):
 
     def test_transaction_case_lookup_returns_case(self) -> None:
         response = get_agent_case_by_transaction(
-            "TX-001",
+            1,
             FakeCaseService(),
         )
 
-        self.assertEqual(response.transaction_id, "TX-001")
+        self.assertTrue(response.success)
+        self.assertIsNotNone(response.data)
+        self.assertEqual(response.data.transaction_id, 1)
+        self.assertIsNone(response.error)
 
 
 if __name__ == "__main__":
