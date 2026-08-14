@@ -112,7 +112,7 @@ class TrainingDecisionRequest(StrictMLOpsDTO):
 
 class ModelPromotionRequest(StrictMLOpsDTO):
     training_run_id: int = Field(gt=0)
-    transaction_id: str = Field(min_length=1, max_length=64)
+    transaction_id: int = Field(gt=0)
     features: MLTransactionFeatures
 
 

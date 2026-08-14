@@ -76,7 +76,7 @@ class TransactionRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get(self, transaction_id: str) -> Transaction | None:
+    def get(self, transaction_id: int) -> Transaction | None:
         return self.session.get(Transaction, transaction_id)
 
     def load_ml_features(
@@ -141,7 +141,6 @@ class TransactionRepository:
         self.session.flush()
 
         transaction = Transaction(
-            id=payload.transaction_id,
             customer_id=customer.id,
             source_account_number=source_account_number,
             recipient_account_number=recipient_account_number,
@@ -157,20 +156,13 @@ class TransactionRepository:
         # 즉시 FK 위반이 날 수 있으므로 부모 거래를 같은 트랜잭션 안에서 먼저
         # flush한다. 이후 오류가 발생해도 Pipeline rollback이 전체를 되돌린다.
         self.session.flush()
+        assert transaction.id is not None
         self.session.add(
             DerivedFeatures(
-                id=payload.transaction_id,
+                id=transaction.id,
                 **build_derived_features_fields(features),
             )
         )
-
-        if payload.confirmed_is_fraud is not None:
-            self.session.add(
-                TransactionLabel(
-                    transaction_id=payload.transaction_id,
-                    confirmed_is_fraud=payload.confirmed_is_fraud,
-                )
-            )
         return transaction
 
     def _upsert_customer(
@@ -305,13 +297,13 @@ class TransactionLabelRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get(self, transaction_id: str) -> TransactionLabel | None:
+    def get(self, transaction_id: int) -> TransactionLabel | None:
         return self.session.get(TransactionLabel, transaction_id)
 
     def upsert(
         self,
         *,
-        transaction_id: str,
+        transaction_id: int,
         confirmed_is_fraud: bool,
     ) -> TransactionLabel:
         label = self.get(transaction_id)
@@ -337,7 +329,7 @@ class PredictionResultRepository:
 
     def latest_for_transaction(
         self,
-        transaction_id: str,
+        transaction_id: int,
     ) -> MLPredictionResult | None:
         return self.session.exec(
             select(MLPredictionResult)
@@ -422,7 +414,7 @@ class PredictionResultRepository:
             )
             .where(
                 ranked_predictions.c.prediction_rank == 1,
-                MLPredictionResult.prediction_is_fraud.is_(True),
+                MLPredictionResult.predict_result.is_(True),
             )
             .order_by(
                 Transaction.transaction_datetime.desc(),

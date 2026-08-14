@@ -30,7 +30,7 @@ class AgentEmailRepository:
 
     def get_email_context(
         self,
-        transaction_id: str,
+        transaction_id: int,
     ) -> FraudAlertEmailContext | None:
         transaction = self.session.get(Transaction, transaction_id)
         if transaction is None:

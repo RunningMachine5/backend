@@ -1,5 +1,6 @@
 import unittest
 
+from sqlalchemy import BigInteger
 from sqlmodel import SQLModel
 
 import app.data.model  # noqa: F401
@@ -65,6 +66,29 @@ class PR118SchemaModelTests(unittest.TestCase):
                     self._foreign_key_target(table_name, "transaction_id"),
                     "transactions.id",
                 )
+
+    def test_transaction_id_and_prediction_columns_match_ml_contract(self) -> None:
+        self.assertIsInstance(self.tables["transactions"].c.id.type, BigInteger)
+        for table_name, column_name in (
+            ("derived_features", "id"),
+            ("transaction_labels", "transaction_id"),
+            ("ml_prediction_results", "transaction_id"),
+            ("fraud_type_score_results", "transaction_id"),
+            ("agent_cases", "transaction_id"),
+            ("chat_sessions", "transaction_id"),
+            ("fraud_type_score_after_chat", "transaction_id"),
+        ):
+            with self.subTest(table=table_name):
+                self.assertIsInstance(
+                    self.tables[table_name].c[column_name].type,
+                    BigInteger,
+                )
+
+        prediction_columns = self.tables["ml_prediction_results"].c
+        self.assertIn("predict_result", prediction_columns)
+        self.assertIn("predict_proba", prediction_columns)
+        self.assertNotIn("prediction_is_fraud", prediction_columns)
+        self.assertNotIn("fraud_probability", prediction_columns)
 
     def test_nullable_and_length_changes_match_final_transaction_contract(self) -> None:
         transactions = self.tables["transactions"].c

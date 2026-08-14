@@ -21,11 +21,6 @@ from app.services.ml_serving.client import MLServingClient, MLServingError
 from app.services.rules.scoring import score_transaction_fraud_types
 
 
-class DuplicateTransactionError(RuntimeError):
-    """같은 transaction_id의 거래가 이미 저장된 경우."""
-
-
-_TRANSACTION_UNIQUE_CONSTRAINTS = {"transactions_pkey", "pk_transactions"}
 _MASTER_RACE_CONSTRAINTS = {
     "customers_pkey",
     "pk_customers",
@@ -44,16 +39,6 @@ def _integrity_error_details(exc: IntegrityError) -> tuple[str | None, str]:
         None,
     )
     return constraint_name, str(exc.orig)
-
-
-def _is_transaction_unique_violation(
-    constraint_name: str | None,
-    error_message: str,
-) -> bool:
-    return (
-        constraint_name in _TRANSACTION_UNIQUE_CONSTRAINTS
-        or "transactions.id" in error_message
-    )
 
 
 def _is_customer_identification_violation(
@@ -102,9 +87,6 @@ class FraudDetectionPipeline:
     def run(self, payload: TransactionRequestDTO) -> FraudDetectionResult:
         """거래 원본을 보존한 뒤 ML 예측과 선택적 룰 점수를 저장한다."""
 
-        if self.transaction_repository.get(payload.transaction_id) is not None:
-            raise DuplicateTransactionError(payload.transaction_id)
-
         transaction: Transaction | None = None
         for attempt in range(2):
             try:
@@ -119,16 +101,6 @@ class FraudDetectionPipeline:
             except IntegrityError as exc:
                 self.session.rollback()
                 constraint_name, error_message = _integrity_error_details(exc)
-
-                # 최초 조회 이후 같은 transaction_id가 먼저 commit된 경우에도
-                # 기존 409 계약을 지키며 master race로 오인해 재시도하지 않는다.
-                if self.transaction_repository.get(payload.transaction_id) is not None:
-                    raise DuplicateTransactionError(payload.transaction_id) from exc
-                if _is_transaction_unique_violation(
-                    constraint_name,
-                    error_message,
-                ):
-                    raise DuplicateTransactionError(payload.transaction_id) from exc
 
                 if _is_customer_identification_violation(
                     constraint_name,
@@ -157,6 +129,7 @@ class FraudDetectionPipeline:
 
         assert transaction is not None
         self.session.refresh(transaction)
+        assert transaction.id is not None
         # 저장 직후에는 요청 본문의 Feature가 DB 재조립 결과와 동일하므로
         # 조회를 한 번 아끼기 위해 그대로 사용한다.
         raw_features = payload.raw_features.model_dump(mode="json", by_alias=True)
@@ -179,8 +152,8 @@ class FraudDetectionPipeline:
             prediction_status = "COMPLETED"
             prediction_result = MLPredictionResult(
                 transaction_id=transaction.id,
-                prediction_is_fraud=prediction.is_fraud,
-                fraud_probability=prediction.fraud_probability,
+                predict_result=prediction.is_fraud,
+                predict_proba=prediction.predict_proba,
                 model_name=prediction.model_name,
                 model_version=prediction.model_version,
                 latency_ms=latency_ms,
@@ -210,7 +183,6 @@ class FraudDetectionPipeline:
 
 __all__ = [
     "CustomerIdentificationConflictError",
-    "DuplicateTransactionError",
     "FraudDetectionPipeline",
     "FraudDetectionResult",
 ]

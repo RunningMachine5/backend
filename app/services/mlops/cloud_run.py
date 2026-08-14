@@ -822,7 +822,7 @@ class CloudRunAdminClient:
         self,
         *,
         model_version: str,
-        transaction_id: str,
+        transaction_id: int,
         features: dict[str, Any],
     ) -> dict[str, Any]:
         """태그 리비전을 실제 예측으로 검증한 뒤 트래픽 100%를 승격한다."""

@@ -49,14 +49,14 @@ class AgentCaseCreateRequest(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    transaction_id: str
+    transaction_id: int
 
 
 class AgentCaseResponse(BaseModel):
     """대시보드에 공개하는 Agent 사건 응답."""
 
     case_id: str
-    transaction_id: str
+    transaction_id: int
     execution_status: AgentExecutionStatus
     failure_reason: str | None
     rule_result: FraudTypeScoreResultDTO
@@ -153,7 +153,7 @@ def create_agent_case(
 
     risk = RiskGrader().assess(
         transaction.transaction_amount,
-        prediction.fraud_probability,
+        prediction.predict_proba,
     )
     response = workflow.run(
         AgentInputDTO(
@@ -188,7 +188,7 @@ def get_agent_case(
     response_model=AgentCaseResponse,
 )
 def get_agent_case_by_transaction(
-    transaction_id: str,
+    transaction_id: int,
     service: AgentCaseServiceDep,
 ) -> AgentCaseResponse:
     try:

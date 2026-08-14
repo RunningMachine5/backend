@@ -57,10 +57,10 @@ class ChatSession(SQLModel, table=True):
     )
 
     chat_session_id: str = Field(primary_key=True, max_length=64)
-    transaction_id: str = Field(
+    transaction_id: int = Field(
         foreign_key="transactions.id",
         ondelete="CASCADE",
-        max_length=64,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
     status: str = Field(default=ChatSessionStatus.URL_SENT.value, max_length=32)
     # 현재 '세션에 기록된 마지막 채팅 id' '채팅 마지막 순번 id'는 서로 참조하므로 FK를 미리 박을수가 없는 구조
@@ -345,11 +345,11 @@ class FraudTypeScoreAfterChat(SQLModel, table=True):
 
     __tablename__ = "fraud_type_score_after_chat"
 
-    transaction_id: str = Field(
+    transaction_id: int = Field(
         primary_key=True,
         foreign_key="transactions.id",
         ondelete="CASCADE",
-        max_length=64,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
     chat_session_id: str = Field(
         foreign_key="chat_sessions.chat_session_id",

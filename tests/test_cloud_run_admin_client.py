@@ -515,7 +515,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         ]
         smoke_client = Mock()
         smoke_client.predict.return_value = MLPredictionResponse(
-            transaction_id="TX-SMOKE",
+            transaction_id=900001,
             predict_result=0,
             predict_proba=0.1,
             model_name="fraud-model",
@@ -526,7 +526,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
 
         result = client.promote_model_revision(
             model_version="17",
-            transaction_id="TX-SMOKE",
+            transaction_id=900001,
             features={"Transaction_Amount": 1000},
         )
 
@@ -575,7 +575,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         with self.assertRaisesRegex(CloudRunAdminError, "Ready"):
             client.promote_model_revision(
                 model_version="17",
-                transaction_id="TX-SMOKE",
+                transaction_id=900001,
                 features={},
             )
 
@@ -646,7 +646,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         with self.assertRaisesRegex(CloudRunAdminError, "digest"):
             client.promote_model_revision(
                 model_version="17",
-                transaction_id="TX-SMOKE",
+                transaction_id=900001,
                 features={},
             )
 
