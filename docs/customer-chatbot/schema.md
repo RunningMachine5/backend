@@ -5,8 +5,24 @@
 각 값을 언제 쓰는지는 PRD의 [2. 작동 시나리오](README.md#2-작동-시나리오)에 있다.
 전체 테이블 관계는 [Mermaid ERD](erd.md)에서 확인할 수 있다.
 
+## 구현 상태
+
+**챗봇 영속 스키마 구현 완료 (2026-08-14).**
+
+- `customer_action` 19종, `fraud_circumstance` 20종과 유형별 점수표를
+  `app/domain/`에 정의했다.
+- [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 세션·메시지·답변·고객 행동·
+  사기 정황·채점 결과 모델을 정의하고
+  [app/data/model/__init__.py](../../app/data/model/__init__.py)에 등록했다.
+- Alembic revision `c4f7a2b9d810`에 기존 `agent_chat_*` 테이블 이름 변경, 신규 테이블 생성,
+  채점 결과 백필, FK·CHECK·UNIQUE·부분 유니크 인덱스 적용과 downgrade를 구현했다.
+
+이 완료 표시는 이 문서의 챗봇 영속 구조(3.1~3.8)에 한정한다. 리포지토리·DTO·LLM·API와
+[3.9의 이메일 확보 경로](#39-customersemail-확보-경로)는 후속 애플리케이션 작업이다.
+
 | 절 | 내용 |
 | --- | --- |
+| [구현 상태](#구현-상태) | 챗봇 영속 스키마 완료 범위 |
 | [3.1](#31-사기-유형) | 사기 유형 코드 |
 | [3.2](#32-관련-테이블) | 관련 테이블 목록 |
 | [3.3](#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 |
@@ -307,6 +323,9 @@ customer_email: str | None = Field(
 마이그레이션은 필요 없다.
 
 ### 3.10 마이그레이션 적용 순서
+
+아래 1~4번은 Alembic revision `c4f7a2b9d810`까지 완료됐다. 5~6번은 영속 스키마 완료
+범위 밖의 후속 리포지토리·거래 수집 작업이다.
 
 1. `app/domain/customer_action_codes.py`, `app/domain/fraud_circumstance_codes.py` —
    나머지가 전부 여기 의존한다.
