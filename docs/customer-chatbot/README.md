@@ -31,10 +31,18 @@ SQLAlchemy, SQLModel, langchain-openai.
 
 ### 1.3 현재 구현 상태
 
-`chat_sessions` / `chat_messages` / `fraud_type_score_after_chat`은
-[app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 테이블 정의와 마이그레이션이
-이미 있으나, **비즈니스 로직에서 참조하는 코드는 없다.** 챗봇 리포지토리도 없고
-[app/api/chat.py](../../app/api/chat.py)는 세션 개념이 없는 `POST /chat/ask` 하나뿐이다.
+**챗봇 영속 스키마 작업은 완료됐다.**
+[app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 `chat_sessions`,
+`chat_messages`, `chat_answers`, `chat_customer_actions`,
+`chat_fraud_circumstances`, `fraud_type_score_after_chat` 모델이 정의되어 있고,
+[app/data/model/__init__.py](../../app/data/model/__init__.py)에 모두 등록되어 있다.
+도메인 코드와 점수표는 `app/domain/`에 있으며, Alembic revision
+`c4f7a2b9d810`이 테이블 생성·변경과 기존 데이터 백필을 담당한다. 자세한 완료 범위는
+[스키마 문서](schema.md#구현-상태)를 따른다.
+
+영속 스키마만 완료된 상태이며, **이를 사용하는 비즈니스 로직은 아직 없다.** 챗봇
+리포지토리도 없고 [app/api/chat.py](../../app/api/chat.py)는 세션 개념이 없는
+`POST /chat/ask` 하나뿐이다.
 
 RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
@@ -453,7 +461,7 @@ response = assemble(fragments)
 | [prompts.md](prompts.md) | LLM 프롬프트 A.1~A.3 |
 | [messages.md](messages.md) | 고객 안내 문구 B.1~B.6 |
 | [scoring.md](scoring.md) | 사기 정황 내부 채점표 (20종 × 4유형) |
-| [schema.md](schema.md) | 테이블·컬럼 정의 3.1~3.10 |
+| [schema.md](schema.md) | 스키마 구현 상태와 테이블·컬럼 정의 3.1~3.10 |
 | [erd.md](erd.md) | 챗봇 테이블 관계 Mermaid ERD |
 
 ### [LLM 프롬프트](prompts.md)
