@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.dto.ml_prediction import MLTransactionFeatures
+from app.dto.ml_features import MLTransactionFeatures
 
 
 class StrictMLOpsDTO(BaseModel):

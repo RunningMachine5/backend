@@ -9,7 +9,7 @@ from app.data.model.account import Account
 from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
-from app.dto.ml_prediction import LOCATION_PATTERN, MLTransactionFeatures
+from app.dto.ml_features import LOCATION_PATTERN, MLTransactionFeatures
 
 
 class FeatureAssemblyError(ValueError):
