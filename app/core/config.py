@@ -14,6 +14,11 @@ ML_SERVING_RETRY_DELAY_SECONDS = max(
     float(os.getenv("ML_SERVING_RETRY_DELAY_SECONDS", "0.25")),
 )
 
+CHAT_BASE_URL = os.getenv("CHAT_BASE_URL", "http://localhost:8000").rstrip("/")
+CHAT_FALLBACK_EMAIL = os.getenv("CHAT_FALLBACK_EMAIL", "abcd@kosa.com").strip()
+CHAT_LLM_TIMEOUT_SECONDS = float(os.getenv("CHAT_LLM_TIMEOUT_SECONDS", "5"))
+CHAT_LLM_MAX_ATTEMPTS = max(1, int(os.getenv("CHAT_LLM_MAX_ATTEMPTS", "2")))
+
 # Backend가 Cloud Run Training Job과 Serving Service를 제어할 때 사용하는 설정입니다.
 # 운영 VM에서는 연결된 서비스 계정의 ADC(메타데이터 자격 증명)를 사용합니다.
 GCP_PROJECT_ID = os.getenv(

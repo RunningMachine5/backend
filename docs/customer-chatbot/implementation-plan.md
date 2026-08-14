@@ -74,7 +74,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 **참조**: [PRD 2.1 발송 폴백](README.md#발송-구현과-기본-주소-폴백), [PRD 3.1 평가 LLM 실패](README.md#31-흐름),
 [스키마 3.8](schema.md#38-appdomain-enum-코드-상수화)
 
-- [ ] [app/core/config.py](../../app/core/config.py)에 env var 추가 (`ML_SERVING_*` 패턴 복제,
+- [x] [app/core/config.py](../../app/core/config.py)에 env var 추가 (`ML_SERVING_*` 패턴 복제,
   settings 클래스 없음) + `.env.example` 갱신
   - `CHAT_BASE_URL` (기본 `http://localhost:8000`)
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
