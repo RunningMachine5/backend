@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from functools import lru_cache
@@ -172,6 +173,11 @@ class CloudRunAdminClient:
     @property
     def _service_name(self) -> str:
         return f"{self._parent}/services/{self.serving_service}"
+
+    def _revision_resource(self, revision: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", revision):
+            raise CloudRunAdminError("올바르지 않은 Cloud Run revision 이름입니다.")
+        return f"{self._service_name}/revisions/{revision}"
 
     def _request(
         self,
@@ -352,29 +358,16 @@ class CloudRunAdminClient:
         """Cloud Run live 상태에서 특정 모델의 100% 전환 완료 여부를 판정한다.
 
         확정 ERD에는 serving revision/operation 컬럼이 없으므로 DB의 과거
-        operation을 신뢰하지 않습니다. 최신 Ready 리비전, 그 리비전의 모델
-        환경변수, 현재 traffic을 한 번의 Service 조회 결과로 함께 검증합니다.
+        operation을 신뢰하지 않습니다. Service template이나 latestCreated는 이후
+        준비된 0% 후보를 가리킬 수 있으므로, 실제 100% 트래픽 리비전을 찾아 그
+        구체 Revision 리소스의 Ready 상태와 모델 환경변수를 검증합니다.
         """
 
         self._deployment_tag(model_version)
         service = self.get_serving_status()
-        latest_created = self._revision_name(service.get("latestCreatedRevision"))
-        latest_ready = self._revision_name(service.get("latestReadyRevision"))
-
-        template = self._copy_template(service)
-        container = self._target_container(template)
-        env = container.get("env", [])
-        if not isinstance(env, list):
-            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
-        env_by_name = {
-            item.get("name"): item.get("value")
-            for item in env
-            if isinstance(item, dict) and isinstance(item.get("name"), str)
-        }
-        revision_model_version = env_by_name.get("ML_MODEL_VERSION")
-
-        traffic_to_ready = 0
         total_traffic = 0
+        traffic_by_revision: dict[str, int] = {}
+        latest_created = self._revision_name(service.get("latestCreatedRevision"))
         statuses = service.get("trafficStatuses", [])
         if isinstance(statuses, list):
             for target in statuses:
@@ -387,35 +380,89 @@ class CloudRunAdminClient:
                 revision = self._revision_name(target.get("revision"))
                 if revision is None and target.get("type") == TRAFFIC_LATEST:
                     revision = latest_created
-                if revision and revision == latest_ready:
-                    traffic_to_ready += percent
+                if revision and percent > 0:
+                    traffic_by_revision[revision] = (
+                        traffic_by_revision.get(revision, 0) + percent
+                    )
+
+        live_revisions = [
+            revision
+            for revision, percent in traffic_by_revision.items()
+            if percent == 100
+        ]
+        live_revision = live_revisions[0] if len(live_revisions) == 1 else None
+        revision: dict[str, Any] | None = None
+        revision_model_version: Any = None
+        revision_model_name: Any = None
+        revision_predictor_mode: Any = None
+        revision_ready = False
+        revision_contract_error: str | None = None
+        if live_revision is not None and total_traffic == 100:
+            revision = self._request(
+                "GET",
+                self._revision_resource(live_revision),
+            )
+            container = self._target_container(revision)
+            env = container.get("env", [])
+            if not isinstance(env, list):
+                raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+            env_by_name = {
+                item.get("name"): item.get("value")
+                for item in env
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            }
+            revision_model_version = env_by_name.get("ML_MODEL_VERSION")
+            revision_model_name = env_by_name.get("ML_MODEL_NAME")
+            revision_predictor_mode = env_by_name.get("ML_PREDICTOR_MODE")
+            image = container.get("image")
+            if not isinstance(image, str) or not re.search(
+                r"@sha256:[0-9a-f]{64}$",
+                image,
+            ):
+                revision_contract_error = "트래픽 100% 리비전 이미지가 digest로 고정되지 않았습니다."
+            elif "ML_FRAUD_THRESHOLD" in env_by_name:
+                revision_contract_error = "트래픽 100% 리비전에 레거시 임계값 설정이 남아 있습니다."
+            elif revision_predictor_mode != "mlflow":
+                revision_contract_error = "트래픽 100% 리비전이 mlflow 추론 모드가 아닙니다."
+            elif revision_model_name != self.model_name:
+                revision_contract_error = "트래픽 100% 리비전의 모델 이름이 승인 대상과 다릅니다."
+            elif revision_model_version != model_version:
+                revision_contract_error = "트래픽 100% 리비전의 모델 버전이 학습 실행과 다릅니다."
+            conditions = revision.get("conditions", [])
+            revision_ready = any(
+                isinstance(condition, dict)
+                and condition.get("type") == "Ready"
+                and condition.get("state") == "CONDITION_SUCCEEDED"
+                for condition in conditions
+            ) and not bool(revision.get("reconciling", False))
 
         reconciling = bool(service.get("reconciling", False))
         ready = (
             not reconciling
-            and latest_created is not None
-            and latest_created == latest_ready
-            and revision_model_version == model_version
-            and traffic_to_ready == 100
+            and live_revision is not None
+            and revision_ready
+            and revision_contract_error is None
             and total_traffic == 100
         )
         reason: str | None = None
         if reconciling:
             reason = "Serving Service가 아직 조정 중입니다."
-        elif latest_created is None or latest_created != latest_ready:
-            reason = "최신 Serving 리비전이 아직 Ready 상태가 아닙니다."
-        elif revision_model_version != model_version:
-            reason = "최신 Ready 리비전의 모델 버전이 학습 실행과 다릅니다."
-        elif traffic_to_ready != 100 or total_traffic != 100:
-            reason = "승격 대상 리비전에 트래픽 100%가 반영되지 않았습니다."
+        elif live_revision is None or total_traffic != 100:
+            reason = "하나의 Serving 리비전에 트래픽 100%가 반영되지 않았습니다."
+        elif not revision_ready:
+            reason = "트래픽 100% Serving 리비전이 Ready 상태가 아닙니다."
+        elif revision_contract_error is not None:
+            reason = revision_contract_error
 
         return {
             "ready": ready,
             "reason": reason,
             "modelVersion": model_version,
             "revisionModelVersion": revision_model_version,
-            "revision": latest_ready,
-            "trafficPercent": traffic_to_ready,
+            "revisionModelName": revision_model_name,
+            "revisionPredictorMode": revision_predictor_mode,
+            "revision": live_revision,
+            "trafficPercent": traffic_by_revision.get(live_revision or "", 0),
             "totalTrafficPercent": total_traffic,
             "reconciling": reconciling,
             "service": service.get("name"),
@@ -423,8 +470,8 @@ class CloudRunAdminClient:
 
     @staticmethod
     def _deployment_tag(model_version: str) -> str:
-        if not model_version.isdigit():
-            raise CloudRunAdminError("MLflow model_version은 숫자여야 합니다.")
+        if not re.fullmatch(r"[1-9][0-9]*", model_version):
+            raise CloudRunAdminError("MLflow model_version은 1 이상의 ASCII 숫자여야 합니다.")
         return f"model-v{model_version}"
 
     @staticmethod
@@ -478,16 +525,25 @@ class CloudRunAdminClient:
     @staticmethod
     def _pinned_current_traffic(service: Mapping[str, Any]) -> list[dict[str, Any]]:
         by_revision: dict[str, int] = {}
+        latest_created = CloudRunAdminClient._revision_name(
+            service.get("latestCreatedRevision")
+        )
         statuses = service.get("trafficStatuses", [])
         if isinstance(statuses, list):
             for target in statuses:
-                revision = target.get("revision")
+                if not isinstance(target, dict):
+                    continue
+                revision = CloudRunAdminClient._revision_name(target.get("revision"))
+                if revision is None and target.get("type") == TRAFFIC_LATEST:
+                    revision = latest_created
                 percent = target.get("percent", 0)
                 if revision and isinstance(percent, int) and percent > 0:
                     by_revision[revision] = by_revision.get(revision, 0) + percent
 
         if not by_revision:
-            latest_ready = service.get("latestReadyRevision")
+            latest_ready = CloudRunAdminClient._revision_name(
+                service.get("latestReadyRevision")
+            )
             if not latest_ready:
                 raise CloudRunAdminError("현재 서비스 중인 Serving 리비전이 없습니다.")
             by_revision[latest_ready] = 100
@@ -504,11 +560,12 @@ class CloudRunAdminClient:
             for revision, percent in by_revision.items()
         ]
 
-    def create_model_revision(self, model_version: str) -> dict[str, Any]:
-        """기존 트래픽을 고정한 채 새 모델 리비전과 태그 URL만 만든다."""
-
+    def _create_model_revision_from_service(
+        self,
+        model_version: str,
+        service: Mapping[str, Any],
+    ) -> dict[str, Any]:
         tag = self._deployment_tag(model_version)
-        service = self.get_serving_status()
         template = self._copy_template(service)
         container = self._target_container(template)
         # 판정 임계값은 모델 artifact와 Registry 버전 태그에 저장된다. 이전
@@ -552,18 +609,150 @@ class CloudRunAdminClient:
             "operation": operation,
             "tag": tag,
             "previousTraffic": traffic[:-1],
+            "reused": False,
         }
+
+    def create_model_revision(self, model_version: str) -> dict[str, Any]:
+        """기존 트래픽을 고정한 채 새 모델 리비전과 태그 URL만 만든다."""
+
+        service = self.get_serving_status()
+        return self._create_model_revision_from_service(model_version, service)
+
+    @staticmethod
+    def _find_tagged_target(
+        service: Mapping[str, Any],
+        tag: str,
+    ) -> dict[str, Any] | None:
+        statuses = service.get("trafficStatuses", [])
+        if not isinstance(statuses, list):
+            return None
+        matches = [
+            target
+            for target in statuses
+            if isinstance(target, dict) and target.get("tag") == tag
+        ]
+        if len(matches) > 1:
+            raise CloudRunAdminError(
+                f"Serving Service에 {tag} 트래픽 태그가 중복되어 있습니다."
+            )
+        return matches[0] if matches else None
+
+    def _validate_prepared_model_revision(
+        self,
+        *,
+        service: Mapping[str, Any],
+        target: Mapping[str, Any],
+        model_version: str,
+        tag: str,
+    ) -> dict[str, Any]:
+        """CD가 미리 만든 0% 리비전이 관리자 승격 계약을 만족하는지 검증한다."""
+
+        if service.get("reconciling"):
+            raise CloudRunAdminError("Serving Service가 아직 리비전을 준비 중입니다.")
+
+        latest_created = self._revision_name(service.get("latestCreatedRevision"))
+        latest_ready = self._revision_name(service.get("latestReadyRevision"))
+        revision = self._revision_name(target.get("revision"))
+        if revision is None and target.get("type") == TRAFFIC_LATEST:
+            revision = latest_created
+        if not revision or revision != latest_created:
+            raise CloudRunAdminError(
+                "CD가 준비한 Serving 리비전이 가장 최근에 생성된 리비전이 아닙니다."
+            )
+        if revision != latest_ready:
+            raise CloudRunAdminError(
+                "CD가 준비한 최신 Serving 리비전이 아직 Ready 상태가 아닙니다."
+            )
+
+        # Cloud Run v2 JSON은 기본값인 0을 응답에서 생략할 수 있다.
+        percent = target.get("percent", 0)
+        if not isinstance(percent, int) or isinstance(percent, bool) or percent != 0:
+            raise CloudRunAdminError(
+                "CD가 준비한 Serving 리비전의 트래픽이 0%가 아닙니다."
+            )
+        tagged_url = target.get("uri")
+        if not isinstance(tagged_url, str) or not tagged_url.strip():
+            raise CloudRunAdminError("CD가 준비한 Serving 리비전의 태그 URL이 없습니다.")
+
+        template = self._copy_template(service)
+        container = self._target_container(template)
+        image = container.get("image")
+        if not isinstance(image, str) or not re.search(
+            r"@sha256:[0-9a-f]{64}$",
+            image,
+        ):
+            raise CloudRunAdminError(
+                "CD가 준비한 Serving 리비전 이미지가 digest로 고정되지 않았습니다."
+            )
+
+        env = container.get("env", [])
+        if not isinstance(env, list):
+            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+        env_by_name = {
+            item.get("name"): item.get("value")
+            for item in env
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        expected_env = {
+            "ML_PREDICTOR_MODE": "mlflow",
+            "ML_MODEL_NAME": self.model_name,
+            "ML_MODEL_VERSION": model_version,
+        }
+        mismatched = [
+            name
+            for name, expected in expected_env.items()
+            if env_by_name.get(name) != expected
+        ]
+        if "ML_FRAUD_THRESHOLD" in env_by_name:
+            mismatched.append("ML_FRAUD_THRESHOLD")
+        if mismatched:
+            raise CloudRunAdminError(
+                "CD가 준비한 Serving 리비전의 모델 설정이 승인 대상과 다릅니다: "
+                + ", ".join(mismatched)
+            )
+
+        current_traffic = self._pinned_current_traffic(service)
+        if any(item["revision"] == revision for item in current_traffic):
+            raise CloudRunAdminError(
+                "CD가 준비한 Serving 리비전에 운영 트래픽이 연결되어 있습니다."
+            )
+
+        return {
+            "operation": None,
+            "tag": tag,
+            "revision": revision,
+            "image": image,
+            "taggedUrl": tagged_url,
+            "previousTraffic": current_traffic,
+            "reused": True,
+        }
+
+    def stage_model_revision(self, model_version: str) -> dict[str, Any]:
+        """ML Serving CD가 준비한 검증된 0% 리비전만 재사용한다."""
+
+        tag = self._deployment_tag(model_version)
+        service = self.get_serving_status()
+        target = self._find_tagged_target(service, tag)
+        if target is None:
+            raise CloudRunAdminError(
+                f"{tag} 태그의 0% Serving 리비전이 없습니다. "
+                "ML Serving CD를 먼저 실행해 후보 리비전을 준비하세요."
+            )
+        return self._validate_prepared_model_revision(
+            service=service,
+            target=target,
+            model_version=model_version,
+            tag=tag,
+        )
 
     @staticmethod
     def _tagged_target(
         service: Mapping[str, Any],
         tag: str,
     ) -> dict[str, Any]:
-        statuses = service.get("trafficStatuses", [])
-        if isinstance(statuses, list):
-            for target in statuses:
-                if target.get("tag") == tag:
-                    return target
+        target = CloudRunAdminClient._find_tagged_target(service, tag)
+        if target is not None:
+            return target
         raise CloudRunAdminError(
             "새 모델의 태그 URL이 아직 준비되지 않았습니다. operation을 먼저 확인하세요."
         )
@@ -576,6 +765,58 @@ class CloudRunAdminClient:
         if not normalized:
             return None
         return normalized.rsplit("/", maxsplit=1)[-1]
+
+    def _validate_concrete_model_revision(
+        self,
+        revision: Mapping[str, Any],
+        *,
+        model_version: str,
+        context: str,
+    ) -> dict[str, Any]:
+        if revision.get("reconciling"):
+            raise CloudRunAdminError(f"{context} 리비전이 아직 준비 중입니다.")
+        conditions = revision.get("conditions", [])
+        ready = any(
+            isinstance(condition, dict)
+            and condition.get("type") == "Ready"
+            and condition.get("state") == "CONDITION_SUCCEEDED"
+            for condition in conditions
+        )
+        if not ready:
+            raise CloudRunAdminError(f"{context} 리비전이 Ready 상태가 아닙니다.")
+
+        concrete = dict(revision)
+        container = self._target_container(concrete)
+        image = container.get("image")
+        if not isinstance(image, str) or not re.search(
+            r"@sha256:[0-9a-f]{64}$",
+            image,
+        ):
+            raise CloudRunAdminError(f"{context} 리비전 이미지가 digest로 고정되지 않았습니다.")
+        env = container.get("env", [])
+        if not isinstance(env, list):
+            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+        env_by_name = {
+            item.get("name"): item.get("value")
+            for item in env
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        expected = {
+            "ML_PREDICTOR_MODE": "mlflow",
+            "ML_MODEL_NAME": self.model_name,
+            "ML_MODEL_VERSION": model_version,
+        }
+        mismatched = [
+            name for name, value in expected.items() if env_by_name.get(name) != value
+        ]
+        if "ML_FRAUD_THRESHOLD" in env_by_name:
+            mismatched.append("ML_FRAUD_THRESHOLD")
+        if mismatched:
+            raise CloudRunAdminError(
+                f"{context} 리비전의 모델 설정이 승인 대상과 다릅니다: "
+                + ", ".join(mismatched)
+            )
+        return {"container": container, "env": env_by_name, "image": image}
 
     def promote_model_revision(
         self,
@@ -609,6 +850,19 @@ class CloudRunAdminClient:
             raise CloudRunAdminError("승격 대상이 가장 최근에 생성된 리비전이 아닙니다.")
         if revision != latest_ready_revision:
             raise CloudRunAdminError("가장 최근 리비전이 아직 Ready 상태가 아닙니다.")
+        percent = target.get("percent", 0)
+        if not isinstance(percent, int) or isinstance(percent, bool) or percent != 0:
+            raise CloudRunAdminError("승격 대상 후보 리비전의 트래픽이 0%가 아닙니다.")
+
+        concrete_revision = self._request(
+            "GET",
+            self._revision_resource(revision),
+        )
+        self._validate_concrete_model_revision(
+            concrete_revision,
+            model_version=model_version,
+            context="승격 대상",
+        )
 
         smoke_client = self._smoke_client_factory(tagged_url, service_uri)
         prediction: MLPredictionResponse = smoke_client.predict(
@@ -627,6 +881,7 @@ class CloudRunAdminClient:
                     "type": TRAFFIC_REVISION,
                     "revision": revision,
                     "percent": 100,
+                    "tag": tag,
                 }
             ],
         }
