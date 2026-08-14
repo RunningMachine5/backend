@@ -7,9 +7,9 @@ from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.transaction import (
-    TransactionRequestDTO,
     TransactionLabelResponseDTO,
     TransactionLabelUpdateDTO,
+    TransactionRequestDTO,
     TransactionResponseDTO,
 )
 from app.pipelines.fraud_detection_pipeline import (
@@ -19,6 +19,7 @@ from app.pipelines.fraud_detection_pipeline import (
 from app.repositories.transaction import (
     AccountIdentifierConflictError,
     AccountOwnershipConflictError,
+    CustomerReferenceNotFoundError,
     PredictionResultRepository,
     TransactionLabelRepository,
 )
@@ -43,18 +44,13 @@ def _transaction_response(
             # 세션 상태와 관계없이 같은 응답을 만든다.
             "transaction_id": transaction.id,
             "created_at": transaction.created_at,
-            "prediction_status": prediction_status or (
-                "COMPLETED" if prediction_result else "NOT_AVAILABLE"
-            ),
+            "prediction_status": prediction_status
+            or ("COMPLETED" if prediction_result else "NOT_AVAILABLE"),
             "predict_result": (
-                prediction_result.predict_result
-                if prediction_result
-                else None
+                prediction_result.predict_result if prediction_result else None
             ),
             "predict_proba": (
-                prediction_result.predict_proba
-                if prediction_result
-                else None
+                prediction_result.predict_proba if prediction_result else None
             ),
             "confirmed_is_fraud": (label.confirmed_is_fraud if label else None),
             "labeled_at": label.labeled_at if label else None,
@@ -92,13 +88,16 @@ def create_transaction(
             status_code=status.HTTP_409_CONFLICT,
             detail="이미 다른 고객에 사용 중인 identification_number입니다.",
         ) from exc
+    except CustomerReferenceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="고객 원장에서 customer_id를 찾을 수 없습니다.",
+        ) from exc
     return _transaction_response(
         result.transaction,
         result.prediction_result,
         result.score_result,
-        TransactionLabelRepository(session).get(
-            result.transaction.id
-        ),
+        TransactionLabelRepository(session).get(result.transaction.id),
         prediction_status=result.prediction_status,
     )
 
@@ -128,17 +127,13 @@ def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
             FraudTypeScoreResult.transaction_id.in_(transaction_ids)
         )
     ).all()
-    score_by_transaction_id = {
-        item.transaction_id: item for item in score_results
-    }
+    score_by_transaction_id = {item.transaction_id: item for item in score_results}
     labels = session.exec(
         select(TransactionLabel).where(
             TransactionLabel.transaction_id.in_(transaction_ids)
         )
     ).all()
-    label_by_transaction_id = {
-        item.transaction_id: item for item in labels
-    }
+    label_by_transaction_id = {item.transaction_id: item for item in labels}
     return [
         _transaction_response(
             tx,
@@ -194,9 +189,9 @@ def get_transaction(
             FraudTypeScoreResult.transaction_id == transaction_id
         )
     ).first()
-    prediction_result = PredictionResultRepository(
-        session
-    ).latest_for_transaction(transaction_id)
+    prediction_result = PredictionResultRepository(session).latest_for_transaction(
+        transaction_id
+    )
     label = TransactionLabelRepository(session).get(transaction_id)
     return _transaction_response(
         transaction,

@@ -16,10 +16,6 @@ from app.dto.transaction import TransactionRequestDTO
 from app.services.features.ml_feature_assembler import (
     FeatureAssemblyError,
     assemble_ml_features,
-    build_account_fields,
-    build_customer_fields,
-    build_derived_features_fields,
-    build_transaction_fields,
 )
 
 
@@ -72,6 +68,14 @@ class AccountOwnershipConflictError(CustomerIdentificationConflictError):
         )
 
 
+class CustomerReferenceNotFoundError(RuntimeError):
+    """거래가 참조한 고객이 고객 원장에 아직 등록되지 않은 경우."""
+
+    def __init__(self, customer_id: str) -> None:
+        self.customer_id = customer_id
+        super().__init__(f"고객 원장에서 customer_id를 찾을 수 없습니다: {customer_id}")
+
+
 class TransactionRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -90,14 +94,16 @@ class TransactionRepository:
         """
 
         derived = self.session.get(DerivedFeatures, transaction.id)
-        customer = self.session.get(Customer, transaction.customer_id)
-        source_account = self.session.get(Account, transaction.id)
-        if derived is None or customer is None or source_account is None:
-            source_account = self.session.exec(
-                select(Account).where(
-                    Account.account_number == transaction.source_account_number
-                )
-            ).first()
+        customer = (
+            self.session.get(Customer, transaction.customer_id)
+            if transaction.customer_id is not None
+            else None
+        )
+        source_account = self.session.exec(
+            select(Account).where(
+                Account.account_number == transaction.source_account_number
+            )
+        ).first()
         recipient_account = (
             self.session.exec(
                 select(Account).where(
@@ -127,98 +133,76 @@ class TransactionRepository:
             return None
 
     def add_received(self, payload: TransactionRequestDTO) -> Transaction:
-        features = payload.raw_features
-
-        customer = self._upsert_customer(payload, features)
-        # 새 고객을 기존 수취 계좌의 소유자로 연결하는 UPDATE가 먼저 flush되면
-        # accounts.customer_id FK가 실패한다. 계좌 조회가 일으키는 autoflush보다
-        # 고객 INSERT를 앞세운다.
-        self.session.flush()
-        source_account_number = self._upsert_source_account(payload, features)
+        customer = self._find_customer(payload.customer_id)
+        source_account_number = self._upsert_source_account(payload, customer)
         recipient_account_number = self._upsert_recipient_account(payload)
         # Transaction은 출금·수취 계좌 FK를 모두 참조한다. ORM relationship이
         # 없는 mapper들의 순서에 기대지 않고 계좌 INSERT/UPDATE를 먼저 확정한다.
         self.session.flush()
 
         transaction = Transaction(
-            customer_id=customer.id,
+            customer_id=(customer.id if customer is not None else None),
             source_account_number=source_account_number,
             recipient_account_number=recipient_account_number,
+            transaction_datetime=payload.transaction_datetime,
+            transaction_amount=payload.transaction_amount,
+            channel=payload.channel.lower(),
+            type_general_automatic=payload.type_general_automatic.lower(),
+            access_medium=(
+                payload.access_medium.lower() if payload.access_medium else None
+            ),
+            error_code=None,
+            num_connection_failure=payload.num_connection_failure,
+            another_person_account=False,
+            initial_balance=None,
+            balance=None,
+            remaining_amount_daily_limit_exceeded=None,
+            operating_system=payload.operating_system,
             ip_address=payload.ip_address,
             mac_address=payload.mac_address,
-            **build_transaction_fields(features),
+            location=f"{payload.location_lat} {payload.location_lon}",
+            location_lat=payload.location_lat,
+            location_lon=payload.location_lon,
+            rooting_jailbreak_indicator=(payload.customer_rooting_jailbreak_indicator),
+            mobile_roaming_indicator=payload.customer_mobile_roaming_indicator,
+            vpn_indicator=payload.customer_vpn_indicator,
+            flag_terminal_malicious_behavior_1=(
+                payload.customer_flag_terminal_malicious_behavior_1
+            ),
+            flag_terminal_malicious_behavior_2=(
+                payload.customer_flag_terminal_malicious_behavior_2
+            ),
+            flag_terminal_malicious_behavior_3=(
+                payload.customer_flag_terminal_malicious_behavior_3
+            ),
+            flag_terminal_malicious_behavior_5=(
+                payload.customer_flag_terminal_malicious_behavior_5
+            ),
+            flag_terminal_malicious_behavior_6=(
+                payload.customer_flag_terminal_malicious_behavior_6
+            ),
         )
         self.session.add(transaction)
-
-        # DerivedFeatures는 Transaction FK를 가지지만 두 모델 사이에 ORM
-        # relationship이 없어 Unit of Work가 mapper INSERT 순서를 보장하지
-        # 않는다. 실제 PostgreSQL에서는 derived_features가 먼저 INSERT되어
-        # 즉시 FK 위반이 날 수 있으므로 부모 거래를 같은 트랜잭션 안에서 먼저
-        # flush한다. 이후 오류가 발생해도 Pipeline rollback이 전체를 되돌린다.
         self.session.flush()
         assert transaction.id is not None
-        self.session.add(
-            DerivedFeatures(
-                id=transaction.id,
-                **build_derived_features_fields(features),
-            )
-        )
         return transaction
 
-    def _upsert_customer(
-        self,
-        payload: TransactionRequestDTO,
-        features: MLTransactionFeatures,
-    ) -> Customer:
-        customer = self.session.get(Customer, payload.customer_id)
+    def _find_customer(self, customer_id: str | None) -> Customer | None:
+        if customer_id is None:
+            return None
+        customer = self.session.get(Customer, customer_id)
         if customer is None:
-            customer_with_identification = self.session.exec(
-                select(Customer).where(
-                    Customer.identification_number
-                    == payload.customer_identification_number
-                )
-            ).first()
-            if customer_with_identification is not None:
-                raise CustomerIdentificationConflictError(
-                    payload.customer_identification_number
-                )
-            customer = Customer(
-                id=payload.customer_id,
-                name=payload.customer_personal_identifier,
-                identification_number=payload.customer_identification_number,
-                **build_customer_fields(features),
-            )
-            self.session.add(customer)
-            return customer
-
-        if customer.identification_number != payload.customer_identification_number:
-            raise CustomerIdentificationConflictError(
-                payload.customer_identification_number
-            )
-
-        latest_customer_fields = {
-            "name": payload.customer_personal_identifier,
-            **build_customer_fields(features),
-        }
-        for field_name, value in latest_customer_fields.items():
-            setattr(customer, field_name, value)
-        customer.updated_at = datetime.now(UTC)
-        self.session.add(customer)
+            raise CustomerReferenceNotFoundError(customer_id)
         return customer
 
     def _upsert_source_account(
         self,
         payload: TransactionRequestDTO,
-        features: MLTransactionFeatures,
+        customer: Customer | None,
     ) -> str:
-        """출금 계좌를 만들거나 마지막으로 처리된 요청값으로 갱신한다.
-
-        생성 데이터는 같은 계좌의 공통 Feature가 항상 일관되지는 않으므로
-        계좌번호와 소유 고객만 충돌을 막고 나머지 값은 최신 입력을 반영한다.
-        """
+        """출금 계좌 식별자를 보존하고 알려진 고객 소유권만 검증한다."""
 
         source_account_id = _account_id(payload.source_account_number)
-        account_fields = build_account_fields(features)
         source_account = self.session.exec(
             select(Account).where(
                 Account.account_number == payload.source_account_number
@@ -233,22 +217,22 @@ class TransactionRepository:
                 )
             source_account = Account(
                 id=source_account_id,
-                customer_id=payload.customer_id,
+                customer_id=(customer.id if customer is not None else None),
                 account_number=payload.source_account_number,
-                **account_fields,
             )
         else:
-            if source_account.customer_id is None:
-                source_account.customer_id = payload.customer_id
-            elif source_account.customer_id != payload.customer_id:
+            if source_account.customer_id is None and customer is not None:
+                source_account.customer_id = customer.id
+            elif (
+                customer is not None
+                and source_account.customer_id is not None
+                and source_account.customer_id != customer.id
+            ):
                 raise AccountOwnershipConflictError(
                     source_account_id,
                     stored_customer_id=source_account.customer_id,
-                    requested_customer_id=payload.customer_id,
+                    requested_customer_id=customer.id,
                 )
-
-            for field_name, value in account_fields.items():
-                setattr(source_account, field_name, value)
             source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
         return source_account.account_number
@@ -263,7 +247,6 @@ class TransactionRepository:
             return None
 
         recipient_account_id = _account_id(payload.recipient_account_number)
-        suspend_status = payload.raw_features.recipient_account_suspend_status
         recipient_account = self.session.exec(
             select(Account).where(
                 Account.account_number == payload.recipient_account_number
@@ -281,13 +264,8 @@ class TransactionRepository:
                     id=recipient_account_id,
                     customer_id=None,
                     account_number=payload.recipient_account_number,
-                    suspend_status=suspend_status,
                 )
             )
-        else:
-            recipient_account.suspend_status = suspend_status
-            recipient_account.updated_at = datetime.now(UTC)
-            self.session.add(recipient_account)
         return payload.recipient_account_number
 
 
@@ -441,6 +419,7 @@ __all__ = [
     "AccountIdentifierConflictError",
     "AccountOwnershipConflictError",
     "CustomerIdentificationConflictError",
+    "CustomerReferenceNotFoundError",
     "PredictionResultRepository",
     "TransactionLabelRepository",
     "TransactionRepository",
