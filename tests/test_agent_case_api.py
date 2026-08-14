@@ -86,7 +86,10 @@ class AgentCaseApiTest(unittest.TestCase):
             workflow,
         )
 
-        self.assertEqual(response.case_id, "CASE-20260813-TEST0001")
+        self.assertTrue(response.success)
+        self.assertIsNotNone(response.data)
+        self.assertEqual(response.data.case_id, "CASE-20260813-TEST0001")
+        self.assertIsNone(response.error)
         self.assertEqual(workflow.agent_input.fraud_type_score_result_id, 7)
         self.assertEqual(workflow.agent_input.risk_score, 84)
         self.assertEqual(workflow.agent_input.risk_grade, RiskGrade.VERY_HIGH)
@@ -110,7 +113,10 @@ class AgentCaseApiTest(unittest.TestCase):
             FakeCaseService(),
         )
 
-        self.assertEqual(response.transaction_id, 1)
+        self.assertTrue(response.success)
+        self.assertIsNotNone(response.data)
+        self.assertEqual(response.data.transaction_id, 1)
+        self.assertIsNone(response.error)
 
 
 if __name__ == "__main__":
