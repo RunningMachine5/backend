@@ -45,10 +45,6 @@ class Transaction(SQLModel, table=True):
             name="ck_transactions_access_medium",
         ),
         CheckConstraint(
-            "error_code IN ('a', 'b', 'c', 'd', 'e', 'f')",
-            name="ck_transactions_error_code",
-        ),
-        CheckConstraint(
             "location_lat IS NULL OR location_lat BETWEEN -90 AND 90",
             name="ck_transactions_location_lat",
         ),
@@ -79,10 +75,12 @@ class Transaction(SQLModel, table=True):
             autoincrement=True,
         ),
     )
-    customer_id: str = Field(
+    customer_id: str | None = Field(
+        default=None,
         foreign_key="customers.id",
         ondelete="RESTRICT",
         max_length=64,
+        nullable=True,
     )
     source_account_number: str = Field(
         foreign_key="accounts.account_number",
@@ -106,10 +104,8 @@ class Transaction(SQLModel, table=True):
     type_general_automatic: str = Field(max_length=16)
     access_medium: str | None = Field(max_length=8, nullable=True)
     error_code: str | None = Field(max_length=8, nullable=True)
-    num_connection_failure: int = Field(
-        sa_column=Column(SmallInteger, nullable=False)
-    )
-    another_person_account: bool
+    num_connection_failure: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    another_person_account: bool = Field(default=False, nullable=False)
 
     # 거래 시점 계좌 상태 스냅샷
     initial_balance: int | None = Field(default=None, sa_type=BigInteger)

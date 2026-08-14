@@ -48,6 +48,28 @@ def upgrade() -> None:
     _drop_transaction_foreign_keys()
     _renumber_legacy_transaction_ids()
 
+    # 최신 거래 요청은 ATM·지점 거래에서 고객 ID를 보내지 않을 수 있고,
+    # 입출금 부호를 원본 그대로 보존한다.
+    op.alter_column(
+        "transactions",
+        "customer_id",
+        existing_type=sa.String(length=64),
+        nullable=True,
+    )
+    op.execute(
+        "ALTER TABLE transactions DROP CONSTRAINT IF EXISTS "
+        "ck_transactions_transaction_amount_positive"
+    )
+    op.execute(
+        "ALTER TABLE transactions DROP CONSTRAINT IF EXISTS ck_transactions_error_code"
+    )
+    op.alter_column(
+        "transactions",
+        "error_code",
+        existing_type=sa.String(length=8),
+        nullable=True,
+    )
+
     op.alter_column(
         "transactions",
         "id",
@@ -63,9 +85,7 @@ def upgrade() -> None:
             existing_type=sa.String(length=128),
             type_=sa.BigInteger(),
             existing_nullable=False,
-            postgresql_using=(
-                f"replace({column_name}, '__int__:', '')::bigint"
-            ),
+            postgresql_using=(f"replace({column_name}, '__int__:', '')::bigint"),
         )
 
     op.execute("CREATE SEQUENCE transactions_id_seq OWNED BY transactions.id")
@@ -99,6 +119,32 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     _drop_transaction_foreign_keys()
+
+    # 구형 계약은 오류 코드가 필수였으므로 새 요청에서 비어 있던 값만
+    # 허용 범주의 기본 코드로 되돌린 뒤 NOT NULL 제약을 복원한다.
+    op.execute("UPDATE transactions SET error_code = 'a' WHERE error_code IS NULL")
+    op.alter_column(
+        "transactions",
+        "error_code",
+        existing_type=sa.String(length=8),
+        nullable=False,
+    )
+    op.alter_column(
+        "transactions",
+        "customer_id",
+        existing_type=sa.String(length=64),
+        nullable=False,
+    )
+    op.create_check_constraint(
+        "ck_transactions_transaction_amount_positive",
+        "transactions",
+        "transaction_amount > 0",
+    )
+    op.create_check_constraint(
+        "ck_transactions_error_code",
+        "transactions",
+        "error_code IN ('a', 'b', 'c', 'd', 'e', 'f')",
+    )
 
     op.execute("ALTER TABLE transactions ALTER COLUMN id DROP DEFAULT")
     op.execute("DROP SEQUENCE IF EXISTS transactions_id_seq")
@@ -152,8 +198,7 @@ def _renumber_legacy_transaction_ids() -> None:
         """
     )
     op.execute(
-        "ALTER TABLE transaction_id_map "
-        "ADD PRIMARY KEY (old_id), ADD UNIQUE (new_id)"
+        "ALTER TABLE transaction_id_map ADD PRIMARY KEY (old_id), ADD UNIQUE (new_id)"
     )
 
     # ID 교환 충돌을 피하려고 먼저 모든 값을 임시 prefix 공간으로 이동한다.
@@ -173,8 +218,7 @@ def _renumber_legacy_transaction_ids() -> None:
             existing_nullable=False,
         )
         op.execute(
-            f"UPDATE {table_name} "
-            f"SET {column_name} = '__legacy__:' || {column_name}"
+            f"UPDATE {table_name} SET {column_name} = '__legacy__:' || {column_name}"
         )
     op.execute("UPDATE transactions SET id = '__legacy__:' || id")
 

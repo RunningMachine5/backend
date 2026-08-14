@@ -93,9 +93,11 @@ def build_transaction_fields(
     return {
         "transaction_datetime": features.transaction_datetime,
         "transaction_amount": features.transaction_amount,
-        "channel": features.channel,
-        "type_general_automatic": features.type_general_automatic,
-        "access_medium": features.access_medium,
+        "channel": features.channel.lower(),
+        "type_general_automatic": features.type_general_automatic.lower(),
+        "access_medium": (
+            features.access_medium.lower() if features.access_medium else None
+        ),
         "error_code": features.error_code,
         "num_connection_failure": features.transaction_num_connection_failure,
         "another_person_account": features.another_person_account,
@@ -201,7 +203,6 @@ def assemble_ml_features(
         raise FeatureAssemblyError(
             "recipient account is required by the raw59 contract"
         )
-
     return MLTransactionFeatures(
         customer_birth_date=customer.birth_date,
         customer_gender=customer.gender,
@@ -263,7 +264,7 @@ def assemble_ml_features(
         transaction_amount=transaction.transaction_amount,
         channel=transaction.channel,
         operating_system=transaction.operating_system,
-        error_code=transaction.error_code,
+        error_code=transaction.error_code or "",
         type_general_automatic=transaction.type_general_automatic,
         ip_address=(str(transaction.ip_address) if transaction.ip_address else None),
         mac_address=(str(transaction.mac_address) if transaction.mac_address else None),
@@ -279,9 +280,7 @@ def assemble_ml_features(
         last_bank_branch_transaction_datetime=(
             derived.last_bank_branch_transaction_datetime
         ),
-        flag_deposit_more_than_ten_million=(
-            derived.flag_deposit_more_than_tenMillion
-        ),
+        flag_deposit_more_than_ten_million=(derived.flag_deposit_more_than_tenMillion),
         unused_account_status=derived.unused_account_status,
         recipient_account_suspend_status=(derived.recipient_account_suspend_status),
         number_of_transaction_with_the_account=(
