@@ -141,7 +141,8 @@ def _add_resolved_case(
     customer_id = f"DEMO-CUSTOMER-{suffix}"
     source_account_id = f"DEMO-SOURCE-{suffix}"
     recipient_account_id = f"DEMO-RECIPIENT-{suffix}"
-    transaction_id = f"DEMO-TX-{suffix}"
+    source_account_number = f"DEMO-SOURCE-NUMBER-{suffix}"
+    recipient_account_number = f"DEMO-RECIPIENT-NUMBER-{suffix}"
     case_id = _case_id(type_index, case_index)
     occurred_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC) + timedelta(
         days=type_index * CASES_PER_TYPE + case_index
@@ -149,10 +150,10 @@ def _add_resolved_case(
 
     session.add(
         Customer(
-            customer_id=customer_id,
+            id=customer_id,
             birth_date=date(1960 + case_index * 5, 1, 1),
             gender="female" if case_index % 2 == 0 else "male",
-            personal_identifier=f"시연고객-{suffix}",
+            name=f"시연고객-{suffix}",
             identification_number=f"DEMO-ID-{suffix}",
             registration_datetime=occurred_at - timedelta(days=365),
             credit_rating=3 + case_index,
@@ -164,9 +165,9 @@ def _add_resolved_case(
     session.add_all(
         [
             Account(
-                account_id=source_account_id,
+                id=source_account_id,
                 customer_id=customer_id,
-                account_number=f"DEMO-SOURCE-NUMBER-{suffix}",
+                account_number=source_account_number,
                 account_type="a",
                 creation_datetime=occurred_at - timedelta(days=300),
                 amount_daily_limit=50_000_000,
@@ -174,8 +175,8 @@ def _add_resolved_case(
                 remaining_daily_limit=20_000_000,
             ),
             Account(
-                account_id=recipient_account_id,
-                account_number=f"DEMO-RECIPIENT-NUMBER-{suffix}",
+                id=recipient_account_id,
+                account_number=recipient_account_number,
                 account_type="a",
                 creation_datetime=occurred_at - timedelta(days=30),
             ),
@@ -186,41 +187,42 @@ def _add_resolved_case(
     amounts = (15_000_000, 12_000_000, 9_000_000, 6_000_000)
     channels = ("mobile", "internet", "atm", "mobile")
     transaction_amount = amounts[case_index]
-    session.add(
-        Transaction(
-            transaction_id=transaction_id,
-            customer_id=customer_id,
-            source_account_id=source_account_id,
-            recipient_account_id=recipient_account_id,
-            transaction_datetime=occurred_at,
-            transaction_amount=transaction_amount,
-            channel=channels[case_index],
-            type_general_automatic="general",
-            access_medium="a",
-            error_code="a",
-            num_connection_failure=case_index,
-            another_person_account=True,
-            initial_balance=30_000_000,
-            balance=30_000_000 - transaction_amount,
-            remaining_amount_daily_limit_exceeded=0,
-            operating_system="Android",
-            location="시연용 거래 위치",
-            rooting_jailbreak_indicator=False,
-            mobile_roaming_indicator=False,
-            vpn_indicator=case_index == 2,
-            flag_terminal_malicious_behavior_1=False,
-            flag_terminal_malicious_behavior_2=(fraud_type == ACCOUNT_TAKEOVER),
-            flag_terminal_malicious_behavior_3=False,
-            flag_terminal_malicious_behavior_5=False,
-            flag_terminal_malicious_behavior_6=False,
-        )
+    transaction = Transaction(
+        customer_id=customer_id,
+        source_account_number=source_account_number,
+        recipient_account_number=recipient_account_number,
+        transaction_datetime=occurred_at,
+        transaction_amount=transaction_amount,
+        channel=channels[case_index],
+        type_general_automatic="general",
+        access_medium="a",
+        error_code="a",
+        num_connection_failure=case_index,
+        another_person_account=True,
+        initial_balance=30_000_000,
+        balance=30_000_000 - transaction_amount,
+        remaining_amount_daily_limit_exceeded=0,
+        operating_system="Android",
+        location="시연용 거래 위치",
+        rooting_jailbreak_indicator=False,
+        mobile_roaming_indicator=False,
+        vpn_indicator=case_index == 2,
+        flag_terminal_malicious_behavior_1=False,
+        flag_terminal_malicious_behavior_2=(fraud_type == ACCOUNT_TAKEOVER),
+        flag_terminal_malicious_behavior_3=False,
+        flag_terminal_malicious_behavior_5=False,
+        flag_terminal_malicious_behavior_6=False,
     )
+    session.add(transaction)
     session.flush()
+    if transaction.id is None:
+        raise RuntimeError("시연용 거래 정수 ID를 생성하지 못했다.")
+    transaction_id = transaction.id
     session.add(
         MLPredictionResult(
             transaction_id=transaction_id,
-            prediction_is_fraud=True,
-            fraud_probability=(0.96, 0.91, 0.86, 0.80)[case_index],
+            predict_result=True,
+            predict_proba=(0.96, 0.91, 0.86, 0.80)[case_index],
             model_name="demo-fraud-model",
             model_version="seed-1.0",
             latency_ms=25 + case_index,
