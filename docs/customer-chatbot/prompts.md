@@ -27,9 +27,7 @@ QUALITY_CHECK_PROMPT = """
 당신은 금융 이상거래 상담 챗봇에서 고객 응답의 충실도를 평가합니다.
 
 직전 질문: {question_text}
-이 질문의 목적: {target_hint}
 고객 응답: {customer_answer}
-직전 대화 맥락: {conversation_context}
 
 다음 중 하나로 분류하세요.
 
@@ -45,8 +43,6 @@ QUALITY_CHECK_PROMPT = """
 - 고객이 되묻는 경우, 질문 목적과 관련된 되물음이면 NON_ANSWER,
   회피성 되물음("그건 왜 물어봐요?")이면 REFUSAL로 분류합니다.
 - 침묵/무응답은 이 노드에 들어오지 않으므로 고려하지 않습니다.
-
-{few_shot_examples}
 
 출력은 JSON만 반환하세요.
 """
@@ -131,9 +127,6 @@ open_banking_or_external_finance_linked
 
 crypto_purchased_or_transferred
 : 탐지 거래와 관련해 가상자산을 구매하거나 외부 지갑으로 전송함
-
-거래 정보:
-{{transaction_context}}
 
 사용자 답변:
 {{user_answers}}
@@ -269,9 +262,6 @@ incoming_funds_withdrawn_or_handed_over
 third_party_payment_followed_by_asset_delivery
 : 실제 거래 상대방과 다른 제3자가 거래대금을 입금했고, 사용자가 그 대가로 거래 상대방 또는 대리인에게 금·외화·상품 등 자산을 실제로 전달했다고 명확히 말함
 : 입금자와 거래 상대방이 다르다는 사실 및 자산 전달이 모두 확인되어야 함
-
-거래 정보:
-{{transaction_context}}
 
 사용자 답변:
 {{user_answers}}

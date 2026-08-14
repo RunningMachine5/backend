@@ -342,7 +342,7 @@ class FraudRuleReplayComponentImpactResponse(BaseModel):
 
 
 class FraudRuleReplayChangedTransactionResponse(BaseModel):
-    transaction_id: str = Field(min_length=1, max_length=64)
+    transaction_id: int = Field(gt=0)
     transaction_datetime: datetime
     score_changed: bool
     evidence_changed: bool
@@ -425,7 +425,7 @@ class FraudRuleReplayChangedTransactionResponse(BaseModel):
 
 
 class FraudRuleReplayErrorDetailResponse(BaseModel):
-    transaction_id: str = Field(min_length=1, max_length=64)
+    transaction_id: int = Field(gt=0)
     transaction_datetime: datetime
     error: str = Field(min_length=1, max_length=1000)
 

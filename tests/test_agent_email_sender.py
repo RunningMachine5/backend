@@ -15,7 +15,7 @@ class FakeEmailRepository:
     def __init__(self, context: FraudAlertEmailContext | None) -> None:
         self.context = context
 
-    def get_email_context(self, transaction_id: str):
+    def get_email_context(self, transaction_id: int):
         del transaction_id
         return self.context
 
@@ -75,7 +75,7 @@ class FraudAlertEmailServiceTest(unittest.TestCase):
     @staticmethod
     def _command() -> FraudAlertEmailCommand:
         return FraudAlertEmailCommand(
-            transaction_id="TX-001",
+            transaction_id=1,
             primary_suspected_type="ACCOUNT_TAKEOVER",
             secondary_suspected_type="MESSENGER_PHISHING",
             classification_status=ClassificationStatus.AMBIGUOUS,

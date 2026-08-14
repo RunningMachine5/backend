@@ -30,7 +30,7 @@ from app.services.rules.feature_builder import RuleFeatureError
 
 @dataclass(frozen=True, slots=True)
 class _RuleReplayTransaction:
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: datetime
     active_type_scores: dict[str, float]
     draft_type_scores: dict[str, float]
@@ -52,7 +52,7 @@ class _RuleReplayTransaction:
 
 @dataclass(frozen=True, slots=True)
 class RuleReplayChangedTransaction:
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: datetime
     score_changed: bool
     evidence_changed: bool
@@ -66,7 +66,7 @@ class RuleReplayChangedTransaction:
 
 @dataclass(frozen=True, slots=True)
 class RuleReplayErrorDetail:
-    transaction_id: str
+    transaction_id: int
     transaction_datetime: datetime
     error: str
 

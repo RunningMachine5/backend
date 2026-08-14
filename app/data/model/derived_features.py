@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Float
 from sqlmodel import Field, SQLModel
 
-from app.data.model.types import INTERVAL_COLUMN
+from app.data.model.types import BIGINT_PRIMARY_KEY, INTERVAL_COLUMN
 
 
 class DerivedFeatures(SQLModel, table=True):
@@ -50,11 +50,11 @@ class DerivedFeatures(SQLModel, table=True):
         ),
     )
 
-    id: str = Field(
+    id: int = Field(
         primary_key=True,
         foreign_key="transactions.id",
         ondelete="CASCADE",
-        max_length=64,
+        sa_type=BIGINT_PRIMARY_KEY,
     )
 
     # TXN 직전 1건
