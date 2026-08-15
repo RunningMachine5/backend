@@ -124,6 +124,16 @@ class ChatHandoffEventPayload(BaseModel):
     transaction_id: str = Field(min_length=1, max_length=64)
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievedChatbotGuideChunkDTO:
+    """챗봇 고객 대응 가이드 검색 결과 청크."""
+
+    content: str
+    source_title: str
+    page: int | None
+    distance: float
+
+
 # 이거 밑에 있는건 기존 파이프라인 유지하려고 만든거라 일단 유지, 6단계 진행시 삭제예정입니당
 
 @dataclass(frozen=True)
@@ -170,5 +180,6 @@ __all__ = [
     "FraudCircumstanceCode",
     "FraudCircumstanceExtractionResult",
     "FraudTypeCode",
+    "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",
 ]
