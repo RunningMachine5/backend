@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.data.model.fraud_rule import FraudTypeScoreResult
@@ -12,44 +11,11 @@ from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.dto.transaction import TransactionRequestDTO
 from app.repositories.transaction import (
-    CustomerIdentificationConflictError,
     PredictionResultRepository,
     TransactionRepository,
 )
 from app.services.ml_serving.client import MLServingClient, MLServingError
 from app.services.rules.scoring import score_transaction_fraud_types
-
-_MASTER_RACE_CONSTRAINTS = {
-    "customers_pkey",
-    "pk_customers",
-    "accounts_pkey",
-    "pk_accounts",
-    "uq_accounts_account_number",
-}
-
-
-def _integrity_error_details(exc: IntegrityError) -> tuple[str | None, str]:
-    """PostgreSQL constraint 이름과 SQLite 회귀 테스트 메시지를 정규화한다."""
-
-    constraint_name = getattr(
-        getattr(exc.orig, "diag", None),
-        "constraint_name",
-        None,
-    )
-    return constraint_name, str(exc.orig)
-
-
-def _is_retryable_master_race(
-    constraint_name: str | None,
-    error_message: str,
-) -> bool:
-    return (
-        constraint_name in _MASTER_RACE_CONSTRAINTS
-        or "customers.id" in error_message
-        or "accounts.id" in error_message
-        or "accounts.account_number" in error_message
-    )
-
 
 @dataclass(frozen=True)
 class FraudDetectionResult:
@@ -76,37 +42,13 @@ class FraudDetectionPipeline:
         """거래 원본을 보존한 뒤 ML 예측과 선택적 룰 점수를 저장한다.
 
         처리 상태:
-        - NOT_AVAILABLE: 저장된 필수 원천 데이터가 손상돼 raw59를 만들 수 없음
         - FAILED: raw59는 완성됐지만 ML Serving 호출에 실패함
         - COMPLETED: ML 예측을 저장함. 사기 판정일 때만 룰 점수도 저장함
         """
 
         # 1. ML 장애와 관계없이 수신한 거래 원본을 먼저 확정한다.
-        transaction: Transaction | None = None
-        for attempt in range(2):
-            try:
-                # add_received 내부의 조회가 pending INSERT를 autoflush할 수 있으므로
-                # 저장 구성부터 commit까지 같은 IntegrityError 경계로 묶는다.
-                transaction = self.transaction_repository.add_received(payload)
-                self.session.commit()
-                break
-            except CustomerIdentificationConflictError:
-                self.session.rollback()
-                raise
-            except IntegrityError as exc:
-                self.session.rollback()
-                constraint_name, error_message = _integrity_error_details(exc)
-
-                if not _is_retryable_master_race(
-                    constraint_name,
-                    error_message,
-                ):
-                    raise
-
-                if attempt == 1:
-                    raise
-
-        assert transaction is not None
+        transaction = self.transaction_repository.add_received(payload)
+        self.session.commit()
         self.session.refresh(transaction)
         assert transaction.id is not None
 
@@ -114,14 +56,6 @@ class FraudDetectionPipeline:
         # 현재는 실시간 파생 계산기가 없어 거래 저장 시 생성한 임시 기본값을
         # 사용한다. 고객 원장이나 수취 계좌가 없으면 각각 임시값을 사용한다.
         assembled = self.transaction_repository.load_ml_features(transaction)
-        if assembled is None:
-            return FraudDetectionResult(
-                transaction=transaction,
-                prediction_status="NOT_AVAILABLE",
-                prediction_result=None,
-                score_result=None,
-                ml_features=None,
-            )
         raw_features = assembled.model_dump(mode="json", by_alias=True)
 
         score_result: FraudTypeScoreResult | None = None
@@ -156,13 +90,10 @@ class FraudDetectionPipeline:
             # 정상 거래에는 룰 점수를 만들지 않으며, 룰 결과가 ML 판정을
             # 사기 또는 정상으로 다시 바꾸지도 않는다.
             if prediction.is_fraud:
-                # ML 전송용 JSON에서는 timedelta가 ``PT0S``처럼 직렬화된다.
-                # 룰 계산에는 원래 Python timedelta를 넘겨 초 단위로 정확히 읽는다.
-                rule_features = assembled.model_dump(mode="python", by_alias=True)
                 score_result = score_transaction_fraud_types(
                     session=self.session,
                     transaction_id=transaction.id,
-                    raw_data=rule_features,
+                    features=assembled,
                 )
                 if score_result is not None:
                     self.session.add(score_result)
@@ -181,7 +112,6 @@ class FraudDetectionPipeline:
 
 
 __all__ = [
-    "CustomerIdentificationConflictError",
     "FraudDetectionPipeline",
     "FraudDetectionResult",
 ]

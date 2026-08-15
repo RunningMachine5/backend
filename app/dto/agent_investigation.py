@@ -1,7 +1,8 @@
 """애매한 사기 유형을 과거 완료 사건과 비교할 때 사용하는 DTO."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class InvestigationAction(str, Enum):
@@ -27,6 +28,7 @@ class SimilarResolvedCaseDTO:
     """유사도 계산을 통과한 과거 완료 사건 한 건."""
 
     case_id: str
+    confirmed_fraud_type: str
     similarity_score: float
     common_evidence_codes: tuple[str, ...]
 
@@ -37,6 +39,10 @@ class ResolvedCaseDetailDTO:
 
     case_id: str
     confirmed_fraud_type: str
+    decision: str = ""
+    performed_actions: list[dict[str, Any]] = field(default_factory=list)
+    checklist_results: list[dict[str, Any]] = field(default_factory=list)
+    resolution_summary: str | None = None
 
 
 __all__ = [

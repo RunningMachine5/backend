@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.services.rules.defaults import DEFAULT_RULE_SET
 from app.services.rules.engine import (
@@ -8,7 +9,7 @@ from app.services.rules.engine import (
     RuleSetDefinition,
     RuleSetValidationError,
 )
-from tests.test_rule_feature_builder import valid_rule_raw_data
+from tests.test_rule_feature_builder import valid_rule_features, valid_rule_raw_data
 
 FINAL_TYPE_CODES = {
     "VOICE_PHISHING",
@@ -21,6 +22,13 @@ FINAL_TYPE_CODES = {
 class RuleEngineTest(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = RuleEngine()
+
+    def score(
+        self,
+        raw_data: dict[str, object],
+        rule_set: RuleSetDefinition | None = None,
+    ):
+        return self.engine.score(valid_rule_features(raw_data), rule_set)
 
     def test_default_rule_set_contains_final_four_fraud_types(self) -> None:
         self.engine.validate_rule_set(DEFAULT_RULE_SET)
@@ -75,6 +83,39 @@ class RuleEngineTest(unittest.TestCase):
         }
         self.assertEqual(actual_weights, expected_weights)
 
+    def test_validates_each_expression_once_before_scoring(self) -> None:
+        component_count = sum(
+            len(rule.components) for rule in DEFAULT_RULE_SET.rules if rule.enabled
+        )
+        evaluator = self.engine.expression_evaluator
+
+        with (
+            patch.object(
+                evaluator,
+                "validate",
+                wraps=evaluator.validate,
+            ) as validate,
+            patch.object(
+                evaluator,
+                "evaluate_validated",
+                wraps=evaluator.evaluate_validated,
+            ) as evaluate_validated,
+        ):
+            result = self.engine.score(valid_rule_features(), DEFAULT_RULE_SET)
+
+        self.assertEqual(validate.call_count, component_count)
+        self.assertEqual(evaluate_validated.call_count, component_count)
+        self.assertEqual(set(result.type_scores), FINAL_TYPE_CODES)
+
+    def test_validated_scoring_returns_the_same_result(self) -> None:
+        features = valid_rule_features()
+
+        regular = self.engine.score(features, DEFAULT_RULE_SET)
+        self.engine.validate_rule_set(DEFAULT_RULE_SET)
+        validated = self.engine.score_validated(features, DEFAULT_RULE_SET)
+
+        self.assertEqual(validated, regular)
+
     def test_voice_phishing_uses_final_weighted_signals(self) -> None:
         raw_data = valid_rule_raw_data()
         raw_data.update(
@@ -91,7 +132,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["VOICE_PHISHING"], 1.0)
         self.assertEqual(
@@ -121,7 +162,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["VOICE_PHISHING"], 0.0)
         self.assertEqual(result.matched_components["VOICE_PHISHING"], [])
@@ -144,7 +185,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["MESSENGER_PHISHING"], 1.0)
         self.assertEqual(len(result.matched_components["MESSENGER_PHISHING"]), 6)
@@ -162,7 +203,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["MESSENGER_PHISHING"], 0.0)
         self.assertEqual(result.matched_components["MESSENGER_PHISHING"], [])
@@ -185,7 +226,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["ACCOUNT_TAKEOVER"], 1.0)
         self.assertEqual(len(result.matched_components["ACCOUNT_TAKEOVER"]), 7)
@@ -202,7 +243,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["ACCOUNT_TAKEOVER"], 0.0)
         self.assertEqual(result.matched_components["ACCOUNT_TAKEOVER"], [])
@@ -220,7 +261,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["FRAUD_USED_ACCOUNT"], 0.70)
         self.assertEqual(
@@ -234,7 +275,7 @@ class RuleEngineTest(unittest.TestCase):
         )
 
     def test_returns_every_type_even_when_all_scores_are_zero(self) -> None:
-        result = self.engine.score(valid_rule_raw_data())
+        result = self.score(valid_rule_raw_data())
 
         self.assertEqual(set(result.type_scores), FINAL_TYPE_CODES)
         self.assertTrue(all(score == 0.0 for score in result.type_scores.values()))
@@ -252,7 +293,7 @@ class RuleEngineTest(unittest.TestCase):
             }
         )
 
-        result = self.engine.score(raw_data)
+        result = self.score(raw_data)
 
         self.assertEqual(result.type_scores["MESSENGER_PHISHING"], 0.5)
         self.assertEqual(result.type_scores["ACCOUNT_TAKEOVER"], 0.5)
@@ -281,7 +322,7 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data["account_indicator_openbanking"] = 1
 
-        result = self.engine.score(raw_data, custom_rule_set)
+        result = self.score(raw_data, custom_rule_set)
 
         self.assertEqual(result.type_scores["NEW_FRAUD_TYPE"], 1.0)
 

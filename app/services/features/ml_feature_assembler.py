@@ -2,53 +2,13 @@
 
 from __future__ import annotations
 
-import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from app.data.model.account import Account
 from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.dto.ml_features import LOCATION_PATTERN, MLTransactionFeatures
-
-
-class FeatureAssemblyError(ValueError):
-    """저장된 행에서 raw59 계약을 복원하지 못한 경우."""
-
-
-_TIME_DIFFERENCE_PATTERN = re.compile(
-    r"^\s*(?P<sign>-)?(?:(?P<days>\d+)\s+days?\s+)?"
-    r"(?P<hours>\d+):(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)\s*$"
-)
-
-
-def parse_time_difference(value: str) -> timedelta:
-    """``N days HH:MM:SS`` 문자열을 DB interval로 바꾼다."""
-
-    match = _TIME_DIFFERENCE_PATTERN.fullmatch(value)
-    if match is None:
-        raise FeatureAssemblyError(
-            "time_difference must use the 'N days HH:MM:SS' format"
-        )
-    delta = timedelta(
-        days=int(match.group("days") or 0),
-        hours=int(match.group("hours")),
-        minutes=int(match.group("minutes")),
-        seconds=int(match.group("seconds")),
-    )
-    return -delta if match.group("sign") else delta
-
-
-def format_time_difference(value: timedelta) -> str:
-    """DB interval을 ML 원본 CSV와 같은 문자열로 되돌린다."""
-
-    total_seconds = int(value.total_seconds())
-    sign = "-" if total_seconds < 0 else ""
-    total_seconds = abs(total_seconds)
-    days, remainder = divmod(total_seconds, 86_400)
-    hours, remainder = divmod(remainder, 3_600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{sign}{days} days {hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def parse_location(value: str) -> tuple[float | None, float | None]:
@@ -284,7 +244,11 @@ def assemble_ml_features(
         transaction_datetime=transaction.transaction_datetime,
         transaction_amount=transaction.transaction_amount,
         channel=transaction.channel,
-        operating_system=transaction.operating_system,
+        operating_system=(
+            transaction.operating_system.lower()
+            if transaction.operating_system is not None
+            else None
+        ),
         error_code=transaction.error_code or "",
         type_general_automatic=transaction.type_general_automatic,
         ip_address=(str(transaction.ip_address) if transaction.ip_address else None),
@@ -316,13 +280,10 @@ def assemble_ml_features(
 
 
 __all__ = [
-    "FeatureAssemblyError",
     "assemble_ml_features",
     "build_account_fields",
     "build_customer_fields",
     "build_derived_features_fields",
     "build_transaction_fields",
-    "format_time_difference",
     "parse_location",
-    "parse_time_difference",
 ]

@@ -25,6 +25,7 @@ class DashboardSimilarCaseServiceTest(unittest.TestCase):
             [
                 SimilarResolvedCaseDTO(
                     case_id=f"CASE-{index}",
+                    confirmed_fraud_type="ACCOUNT_TAKEOVER",
                     similarity_score=score,
                     common_evidence_codes=(
                         "ACCOUNT_TAKEOVER:REMOTE_CONTROL",

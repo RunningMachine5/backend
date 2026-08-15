@@ -199,15 +199,21 @@ class AgentWorkflow:
             self._route_after_start,
             {
                 "existing": END,
-                "confident": "use_rule_type",
-                "ambiguous": "investigate_type",
+                "continue": "build_email_command",
                 "failed": "fail_case",
             },
         )
-        self._add_failure_route(graph, "use_rule_type", "build_email_command")
-        self._add_failure_route(graph, "investigate_type", "build_email_command")
         self._add_failure_route(graph, "build_email_command", "send_alert_email")
-        graph.add_edge("send_alert_email", "load_policy")
+        graph.add_conditional_edges(
+            "send_alert_email",
+            self._route_by_confidence,
+            {
+                "confident": "use_rule_type",
+                "ambiguous": "investigate_type",
+            },
+        )
+        self._add_failure_route(graph, "use_rule_type", "load_policy")
+        self._add_failure_route(graph, "investigate_type", "load_policy")
         self._add_failure_route(graph, "load_policy", "search_guides")
         self._add_failure_route(graph, "search_guides", "generate_plan")
         self._add_failure_route(graph, "generate_plan", "find_similar_cases")
@@ -301,12 +307,11 @@ class AgentWorkflow:
             "email_command": build_fraud_alert_email_command(
                 transaction_id=state["agent_input"].transaction_id,
                 type_confidence=state["type_confidence"],
-                investigation_result=state["investigation_result"],
             )
         }
 
     def _send_alert_email(self, state: AgentGraphState) -> dict[str, object]:
-        """발송 장애가 뒤의 정책·RAG 흐름을 중단시키지 않도록 분리한다."""
+        """발송 장애가 후속 조사·정책·RAG 흐름을 중단시키지 않도록 한다."""
 
         try:
             self.email_notifier.send(state["email_command"])
@@ -430,8 +435,16 @@ class AgentWorkflow:
             return "failed"
         if not state.get("case_created"):
             return "existing"
+        return "continue"
+
+    @staticmethod
+    def _route_by_confidence(state: AgentGraphState) -> str:
         status = state["type_confidence"].classification_status
-        return "ambiguous" if status is ClassificationStatus.AMBIGUOUS else "confident"
+        return (
+            "ambiguous"
+            if status is ClassificationStatus.AMBIGUOUS
+            else "confident"
+        )
 
 
 __all__ = [

@@ -198,12 +198,20 @@ class FakeGuideSearchService:
 
 
 class FakeInvestigator:
-    def __init__(self, recommended_type: str) -> None:
+    def __init__(
+        self,
+        recommended_type: str,
+        *,
+        events: list[str] | None = None,
+    ) -> None:
         self.recommended_type = recommended_type
         self.call_count = 0
+        self.events = events
 
     def investigate(self, *, confidence, **_kwargs) -> InvestigationResultDTO:
         self.call_count += 1
+        if self.events is not None:
+            self.events.append("investigate")
         return InvestigationResultDTO(
             classification_status=ClassificationStatus.AMBIGUOUS,
             score_margin=confidence.score_margin,
@@ -217,12 +225,20 @@ class FakeInvestigator:
 
 
 class FakeEmailNotifier:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        events: list[str] | None = None,
+    ) -> None:
         self.error = error
         self.commands = []
+        self.events = events
 
     def send(self, command) -> None:
         self.commands.append(command)
+        if self.events is not None:
+            self.events.append("email")
         if self.error is not None:
             raise self.error
 
@@ -278,8 +294,13 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertFalse(response.generation_metadata["fallback_used"])
         self.assertIsNone(response.generation_metadata["fallback_reason"])
 
-    def test_ambiguous_case_uses_investigator_recommendation(self) -> None:
-        investigator = FakeInvestigator("MESSENGER_PHISHING")
+    def test_ambiguous_case_emails_rule_types_before_investigation(self) -> None:
+        events: list[str] = []
+        investigator = FakeInvestigator(
+            "MESSENGER_PHISHING",
+            events=events,
+        )
+        email_notifier = FakeEmailNotifier(events=events)
         policy_repository = FakePolicyRepository()
         guide_search = FakeGuideSearchService()
         workflow = AgentWorkflow(
@@ -287,13 +308,22 @@ class AgentWorkflowTest(unittest.TestCase):
             policy_repository=policy_repository,
             guide_search_service=guide_search,  # type: ignore[arg-type]
             investigator=investigator,
+            email_notifier=email_notifier,
         )
 
         state = workflow.run_state(self._input())
 
         self.assertEqual(investigator.call_count, 1)
+        self.assertEqual(events, ["email", "investigate"])
         self.assertEqual(state["applied_fraud_type"], "MESSENGER_PHISHING")
-        self.assertEqual(state["email_command"].primary_suspected_type, "MESSENGER_PHISHING")
+        self.assertEqual(
+            state["email_command"].primary_suspected_type,
+            "ACCOUNT_TAKEOVER",
+        )
+        self.assertEqual(
+            state["email_command"].secondary_suspected_type,
+            "MESSENGER_PHISHING",
+        )
         self.assertEqual(policy_repository.requested_fraud_type, "MESSENGER_PHISHING")
         self.assertEqual(guide_search.last_request.fraud_type, "MESSENGER_PHISHING")
 
@@ -303,16 +333,19 @@ class AgentWorkflowTest(unittest.TestCase):
             created=False,
         )
         policy_repository = FakePolicyRepository()
+        email_notifier = FakeEmailNotifier()
         workflow = AgentWorkflow(
             case_service=case_service,  # type: ignore[arg-type]
             policy_repository=policy_repository,
             guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            email_notifier=email_notifier,
         )
 
         response = workflow.run(self._input())
 
         self.assertEqual(response.execution_status, AgentExecutionStatus.PROCESSING)
         self.assertIsNone(policy_repository.requested_fraud_type)
+        self.assertEqual(email_notifier.commands, [])
         self.assertEqual(case_service.complete_calls, 0)
 
     def test_node_error_marks_created_case_as_failed(self) -> None:
