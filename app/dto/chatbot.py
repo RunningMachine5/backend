@@ -116,12 +116,19 @@ class ChatMessageResponse(BaseModel):
     message_text: str
     sent_at: datetime
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758592055&cot=14
-class ChatHandoffEventPayload(BaseModel):
-    """담당자 화면에 전달하는 상담사 연결 SSE 이벤트."""
 
+class ChatSessionStatusChangedEventPayload(BaseModel):
+    """담당자 화면에 전달하는 채팅 세션 상태 변경 SSE 이벤트."""
+
+    transaction_id: int = Field(gt=0)
     chat_session_id: str = Field(min_length=1, max_length=64)
-    transaction_id: str = Field(min_length=1, max_length=64)
+    status: Literal[
+        "URL_SENT",
+        "IN_PROGRESS",
+        "HANDOFF_REQUESTED",
+        "DONE",
+        "FAILED",
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,8 +173,8 @@ __all__ = [
     "AnswerQualityVerdict",
     "ChatButtonAction",
     "ChatButtonActionRequest",
-    "ChatHandoffEventPayload",
     "ChatMessageResponse",
+    "ChatSessionStatusChangedEventPayload",
     "ChatbotRequestDTO",
     "ChatbotResponseDTO",
     "CreateChatRequest",

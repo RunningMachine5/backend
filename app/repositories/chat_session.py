@@ -280,6 +280,17 @@ class ChatSessionRepository:
             index_elements=["transaction_id"],
         )
 
+    def get_status_by_transaction(
+        self,
+        transaction_id: int,
+    ) -> ChatSessionStatus | None:
+        """거래에 연결된 채팅 세션의 현재 상태를 조회한다."""
+
+        chat_session = self.find_by_transaction(transaction_id)
+        if chat_session is None:
+            return None
+        return ChatSessionStatus(chat_session.status)
+
     def _source_answer_id(
         self,
         chat_session: ChatSession,

@@ -438,6 +438,22 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         self.assertEqual(score.type_scores, type_scores)
         self.assertIsInstance(score.scored_at, datetime)
 
+    def test_gets_session_status_by_transaction(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-STATUS",
+            transaction_id=118,
+        )
+        self.repository.update_status(
+            chat_session,
+            ChatSessionStatus.HANDOFF_REQUESTED,
+        )
+
+        self.assertEqual(
+            self.repository.get_status_by_transaction(118),
+            ChatSessionStatus.HANDOFF_REQUESTED,
+        )
+        self.assertIsNone(self.repository.get_status_by_transaction(999))
+
 
 if __name__ == "__main__":
     unittest.main()
