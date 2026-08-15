@@ -10,6 +10,7 @@ from app.domain.fraud_type_codes import MESSENGER_PHISHING, VOICE_PHISHING
 from app.dto.chatbot import (
     AnswerEvaluationResult,
     AnswerQualityVerdict,
+    ChatSessionStatusChangedEventPayload,
     CreateChatRequest,
     CustomerActionExtractionResult,
     FraudCircumstanceExtractionResult,
@@ -96,6 +97,27 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
 
         result = AnswerEvaluationResult.model_validate({"verdict": "SUFFICIENT"})
         self.assertEqual(result.verdict, AnswerQualityVerdict.SUFFICIENT)
+
+    def test_validates_session_status_changed_event(self) -> None:
+        event = ChatSessionStatusChangedEventPayload.model_validate(
+            {
+                "transaction_id": 123,
+                "chat_session_id": "CHAT-123",
+                "status": "HANDOFF_REQUESTED",
+            }
+        )
+
+        self.assertEqual(event.transaction_id, 123)
+        self.assertEqual(event.status, "HANDOFF_REQUESTED")
+
+        with self.assertRaises(ValidationError):
+            ChatSessionStatusChangedEventPayload.model_validate(
+                {
+                    "transaction_id": 123,
+                    "chat_session_id": "CHAT-123",
+                    "status": "UNKNOWN",
+                }
+            )
 
 
 class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
