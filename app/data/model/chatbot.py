@@ -83,6 +83,12 @@ class ChatSession(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False),
     )
+    # 룰 채점 점수 내림차순 상위 2개 사기유형 코드. 1step 유형판별 질문 선택에 쓴다.
+    # 룰 채점 실패로 값이 없으면(NULL) 유형판별 질문 대신 일반 질문 폴백을 쓴다.
+    top_fraud_types: list[str] | None = Field(
+        default=None,
+        sa_column=Column(JSON_COLUMN, nullable=True),
+    )
     # 질문 스텝
     # 걍 여기 보는게 설명 빠름 https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680707158286&cot=14
     question_step: int = Field(

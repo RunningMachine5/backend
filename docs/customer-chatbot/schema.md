@@ -16,6 +16,8 @@
   [app/data/model/__init__.py](../../app/data/model/__init__.py)에 등록했다.
 - Alembic revision `c4f7a2b9d810`에 기존 `agent_chat_*` 테이블 이름 변경, 신규 테이블 생성,
   채점 결과 백필, FK·CHECK·UNIQUE·부분 유니크 인덱스 적용과 downgrade를 구현했다.
+- Alembic revision `d94b7e31a5c2`가 [유형판별 질문](README.md#유형판별-질문) 도입으로
+  사용처가 생긴 `chat_sessions.top_fraud_types`를 재추가했다 (2026-08-15).
 
 이 완료 표시는 이 문서의 챗봇 영속 구조(3.1~3.8)에 한정한다. 리포지토리·DTO·LLM·API와
 [3.9의 이메일 확보 경로](#39-customersemail-확보-경로)는 후속 애플리케이션 작업이다.
@@ -88,10 +90,16 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 시퀀스에서도 `agent_` 접두사를 제거한다.
 
 기존 컬럼(`chat_session_id`, `transaction_id`, `status`, `last_message_id`, `is_older`,
-`created_at`)은 그대로 두고 다음을 추가한다. 사용처가 없는 `top_fraud_types`는 삭제한다.
+`created_at`)은 그대로 두고 다음을 추가한다.
+
+`top_fraud_types`는 `c4f7a2b9d810`이 사용처 없음을 이유로 삭제했으나,
+[2.4 유형판별 질문](README.md#유형판별-질문) 도입으로 사용처가 생겨 `d94b7e31a5c2`에서
+같은 형태(`jsonb NULL`)로 재추가한다. 세션 생성 시점([2.1](README.md#21-채팅-세션-생성-및-이메일-전송))과
+고객이 "챗봇 상담" 버튼을 누르는 시점 사이에 값이 살아 있어야 하므로 DB에 저장한다.
 
 | 컬럼 | 타입 | 설명 |
 | --- | --- | --- |
+| `top_fraud_types` | `jsonb NULL` | 룰 채점 점수 내림차순 상위 2개 사기유형 코드([3.1](#31-사기-유형)). [유형판별 질문](README.md#유형판별-질문) 선택에 쓰고, `NULL`이면 일반 질문 폴백 |
 | `question_step` | `integer NOT NULL DEFAULT 0` | 현재 질문 단계. 담당자 화면에서 "이 세션이 몇 번 질문에서 멈춰 있는지"를 세션 목록 조회 한 번으로 보기 위한 값 |
 | `email_sent_at` | `timestamptz NULL` | 챗봇 URL 메일을 보낸 시각 |
 | `notified_email` | `varchar(255) NULL` | 실제로 보낸 수신 주소. 기본 주소 폴백이 있어 `customers.email`과 다를 수 있으므로 보낸 값을 그대로 남긴다 |
@@ -282,7 +290,7 @@ app/domain/fraud_circumstance_codes.py
 
 - ML 54개 입력 계약에 이메일 컬럼이 없고,
   `build_customer_fields`([ml_feature_assembler.py:75-84](../../app/services/features/ml_feature_assembler.py#L75-L84))도
-  `birthyear` / `gender` / `registration_datetime` / `credit_rating` / `loan_type`만 뽑는다.
+  `birth_date` / `gender` / `registration_datetime` / `credit_rating` / `loan_type`만 뽑는다.
 - 마이그레이션 `b21f6a97c4d1`이 "Allow contacts omitted by the transaction CSV contract"라는
   이유로 `email` / `phone_number`를 nullable로 바꿨다.
 - `Customer.email`에 값을 쓰는 곳은 [app/data/fake_data.py](../../app/data/fake_data.py)뿐이고,
@@ -324,7 +332,8 @@ customer_email: str | None = Field(
 
 ### 3.10 마이그레이션 적용 순서
 
-아래 1~4번은 Alembic revision `c4f7a2b9d810`까지 완료됐다. 5~6번은 영속 스키마 완료
+아래 1~4번은 Alembic revision `c4f7a2b9d810`까지 완료됐고, 유형판별 질문 도입에 따른
+`top_fraud_types` 재추가는 `d94b7e31a5c2`로 완료됐다. 5~6번은 영속 스키마 완료
 범위 밖의 후속 리포지토리·거래 수집 작업이다.
 
 1. `app/domain/customer_action_codes.py`, `app/domain/fraud_circumstance_codes.py` —
