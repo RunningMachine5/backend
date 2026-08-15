@@ -133,16 +133,16 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 프롬프트 렌더링은 [prompts.py](../../app/services/chatbot/prompts.py)에 이미 있으므로
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
 
-- [ ] `app/services/chatbot/answer_evaluator.py` — A.1 평가 호출.
+- [x] `app/services/chatbot/answer_evaluator.py` — A.1 평가 호출.
   structured output으로 판정 5종을 강제(프롬프트 지시에 의존하지 않는다, PRD 3.2).
   타임아웃·재시도는 1단계 env var 사용.
   - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한, 상한 소진 시
     `REFUSAL`과 동일하게 다음 질문으로 진행하고 `verdict_skip_reason = EVALUATOR_FAILED`로
     기록. LLM 실패는 `attempt_no`를 소모하지 않는다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
-- [ ] `app/services/chatbot/extractors.py` — A.2 고객 행동 / A.3 사기 정황 추출 호출.
+- [x] `app/services/chatbot/extractors.py` — A.2 고객 행동 / A.3 사기 정황 추출 호출.
   structured output 스키마는 1단계 DTO. `evidence`가 답변 원문에 연속 문자열로 존재하는지
   저장 전 대조하고, 불일치 항목은 로그를 남긴 뒤 저장하지 않음
-- [ ] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
+- [x] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 5종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
 
