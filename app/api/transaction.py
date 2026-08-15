@@ -1,5 +1,4 @@
-# 거래 적재·ML·Rule 처리 완료 후 Broker에 대시보드 갱신 요청
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from sqlmodel import select
 
 from app.core.db import SessionDep
@@ -7,6 +6,8 @@ from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
+from app.domain.agent_status import RuleFilterStatus
+from app.dto.agent import AgentInputDTO
 from app.dto.transaction import (
     TransactionLabelResponseDTO,
     TransactionLabelUpdateDTO,
@@ -16,6 +17,7 @@ from app.dto.transaction import (
 from app.pipelines.fraud_detection_pipeline import (
     CustomerIdentificationConflictError,
     FraudDetectionPipeline,
+    FraudDetectionResult,
 )
 from app.repositories.transaction import (
     AccountIdentifierConflictError,
@@ -24,6 +26,8 @@ from app.repositories.transaction import (
     PredictionResultRepository,
     TransactionLabelRepository,
 )
+from app.services.agent.task_runner import AgentTaskRunnerDep
+from app.services.analysis.risk_grader import RiskGrader
 from app.services.ml_serving.client import MLServingClientDep
 
 from app.services.dashboard.dashboard_event_broker import(
@@ -32,6 +36,37 @@ from app.services.dashboard.dashboard_event_broker import(
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
+
+
+def _build_agent_input(
+    result: FraudDetectionResult,
+) -> AgentInputDTO | None:
+    """이상거래의 Rule 결과와 위험등급을 Agent 실행 입력으로 묶는다."""
+
+    prediction = result.prediction_result
+    score_result = result.score_result
+    transaction_id = result.transaction.id
+    if (
+        prediction is None
+        or not prediction.predict_result
+        or score_result is None
+        or score_result.rule_filter_status != RuleFilterStatus.APPLIED.value
+        or transaction_id is None
+        or score_result.id is None
+    ):
+        return None
+
+    risk = RiskGrader().assess(
+        result.transaction.transaction_amount,
+        prediction.predict_proba,
+    )
+    return AgentInputDTO(
+        transaction_id=transaction_id,
+        fraud_type_score_result_id=score_result.id,
+        risk_score=risk.risk_score,
+        risk_grade=risk.risk_grade,
+    )
+
 
 def _transaction_response(
     transaction: Transaction,
@@ -72,8 +107,10 @@ def _transaction_response(
 
 def create_transaction(
     payload: TransactionRequestDTO,
+    background_tasks: BackgroundTasks,
     session: SessionDep,
     ml_client: MLServingClientDep,
+    agent_task_runner: AgentTaskRunnerDep,
 ) -> TransactionResponseDTO:
     """HTTP 요청을 실제 사기 탐지 Pipeline에 전달한다."""
 
@@ -100,6 +137,11 @@ def create_transaction(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="고객 원장에서 customer_id를 찾을 수 없습니다.",
         ) from exc
+
+    agent_input = _build_agent_input(result)
+    if agent_input is not None:
+        background_tasks.add_task(agent_task_runner, agent_input)
+
     if (
         result.prediction_result is not None
         and result.prediction_result.predict_result
