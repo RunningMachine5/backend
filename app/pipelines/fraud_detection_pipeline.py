@@ -114,14 +114,6 @@ class FraudDetectionPipeline:
         # 현재는 실시간 파생 계산기가 없어 거래 저장 시 생성한 임시 기본값을
         # 사용한다. 고객 원장이나 수취 계좌가 없으면 각각 임시값을 사용한다.
         assembled = self.transaction_repository.load_ml_features(transaction)
-        if assembled is None:
-            return FraudDetectionResult(
-                transaction=transaction,
-                prediction_status="NOT_AVAILABLE",
-                prediction_result=None,
-                score_result=None,
-                ml_features=None,
-            )
         raw_features = assembled.model_dump(mode="json", by_alias=True)
 
         score_result: FraudTypeScoreResult | None = None

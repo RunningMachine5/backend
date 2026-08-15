@@ -161,6 +161,20 @@ class TransactionRepositoryTest(unittest.TestCase):
 
         self.assertEqual(second.id, first.id + 1)
 
+    def test_fractional_dawn_std_dev_is_preserved_in_ml_features(self) -> None:
+        transaction = self._save(_payload())
+        derived = self.session.get(DerivedFeatures, transaction.id)
+        self.assertIsNotNone(derived)
+        assert derived is not None
+        derived.dawn_one_month_std_dev = 12_345.67
+        self.session.add(derived)
+        self.session.commit()
+
+        features = self.repository.load_ml_features(transaction)
+
+        self.assertEqual(features.account_dawn_one_month_std_dev, 12_345.67)
+        self.assertIsInstance(features.account_dawn_one_month_std_dev, float)
+
 
 if __name__ == "__main__":
     unittest.main()
