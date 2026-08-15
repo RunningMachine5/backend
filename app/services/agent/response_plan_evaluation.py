@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
+from math import ceil
 from pathlib import Path
 from statistics import mean
 from typing import Protocol
@@ -39,6 +40,7 @@ class ResponsePlanEvaluationResult:
     """평가 시나리오 한 건의 전략별 측정 결과이다."""
 
     case_id: str
+    run_number: int
     strategy: str
     fraud_type: str
     risk_grade: str
@@ -49,6 +51,7 @@ class ResponsePlanEvaluationResult:
     output_contract_passed: bool
     fallback_used: bool
     guide_count: int
+    guide_context_char_count: int
     search_latency_ms: int
     generation_latency_ms: int
 
@@ -66,6 +69,8 @@ class ResponsePlanEvaluationMetrics:
     fallback_rate: float
     average_search_latency_ms: float
     average_generation_latency_ms: float
+    generation_latency_p50_ms: int
+    generation_latency_p95_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +124,13 @@ def evaluate_response_plans(
     guide_searcher: GuideSearcher,
     policy_generator: ResponsePlanGenerator,
     rag_generator: ResponsePlanGenerator,
+    repeat: int = 1,
+    top_k: int = 5,
 ) -> ResponsePlanEvaluationReport:
     """동일한 정책을 기준으로 정책-only와 RAG·LLM 생성 결과를 비교한다."""
+
+    if repeat < 1 or top_k < 1:
+        raise ValueError("repeat와 top_k는 1 이상이어야 한다.")
 
     results: list[ResponsePlanEvaluationResult] = []
     for case in cases:
@@ -128,17 +138,6 @@ def evaluate_response_plans(
             fraud_type=case.fraud_type,
             risk_grade=case.risk_grade,
         )
-        results.append(
-            _generate_and_measure(
-                case,
-                policy,
-                strategy="POLICY_ONLY",
-                generator=policy_generator,
-                guides=[],
-                search_latency_ms=0,
-            )
-        )
-
         search_started_at = time.perf_counter()
         guides = guide_searcher.search(
             GuideSearchRequestDTO(
@@ -147,22 +146,37 @@ def evaluate_response_plans(
                 audience="MONITORING",
                 risk_grade=case.risk_grade,
                 action_codes=tuple(action.action_code for action in policy.actions),
-                top_k=5,
+                top_k=top_k,
             )
         )
         search_latency_ms = round((time.perf_counter() - search_started_at) * 1000)
-        results.append(
-            _generate_and_measure(
-                case,
-                policy,
-                strategy="RAG_LLM",
-                generator=rag_generator,
-                guides=guides,
-                search_latency_ms=search_latency_ms,
+        for run_number in range(1, repeat + 1):
+            results.append(
+                _generate_and_measure(
+                    case,
+                    policy,
+                    run_number=run_number,
+                    strategy="POLICY_ONLY",
+                    generator=policy_generator,
+                    guides=[],
+                    search_latency_ms=0,
+                )
             )
-        )
+            results.append(
+                _generate_and_measure(
+                    case,
+                    policy,
+                    run_number=run_number,
+                    strategy="RAG_LLM",
+                    generator=rag_generator,
+                    guides=guides,
+                    search_latency_ms=search_latency_ms,
+                )
+            )
 
-    policy_only = tuple(result for result in results if result.strategy == "POLICY_ONLY")
+    policy_only = tuple(
+        result for result in results if result.strategy == "POLICY_ONLY"
+    )
     rag_llm = tuple(result for result in results if result.strategy == "RAG_LLM")
     return ResponsePlanEvaluationReport(
         policy_only=_calculate_metrics(policy_only),
@@ -175,6 +189,7 @@ def _generate_and_measure(
     case: ResponsePlanEvaluationCase,
     policy: ResponsePolicy,
     *,
+    run_number: int,
     strategy: str,
     generator: ResponsePlanGenerator,
     guides: list[RetrievedGuideChunkDTO],
@@ -214,6 +229,7 @@ def _generate_and_measure(
 
     return ResponsePlanEvaluationResult(
         case_id=case.case_id,
+        run_number=run_number,
         strategy=strategy,
         fraud_type=case.fraud_type,
         risk_grade=case.risk_grade,
@@ -227,6 +243,7 @@ def _generate_and_measure(
         ),
         fallback_used=fallback_used,
         guide_count=len(guides),
+        guide_context_char_count=sum(len(guide.content) for guide in guides),
         search_latency_ms=search_latency_ms,
         generation_latency_ms=generation_latency_ms,
     )
@@ -235,17 +252,32 @@ def _generate_and_measure(
 def _calculate_metrics(
     results: tuple[ResponsePlanEvaluationResult, ...],
 ) -> ResponsePlanEvaluationMetrics:
+    generation_latencies = sorted(r.generation_latency_ms for r in results)
     return ResponsePlanEvaluationMetrics(
         case_count=len(results),
-        required_action_coverage=round(mean(r.required_action_coverage for r in results), 4),
+        required_action_coverage=round(
+            mean(r.required_action_coverage for r in results), 4
+        ),
         action_code_precision=round(mean(r.action_code_precision for r in results), 4),
         procedure_coverage=round(mean(r.procedure_coverage for r in results), 4),
         caution_coverage=round(mean(r.caution_coverage for r in results), 4),
-        output_contract_pass_rate=round(mean(r.output_contract_passed for r in results), 4),
+        output_contract_pass_rate=round(
+            mean(r.output_contract_passed for r in results), 4
+        ),
         fallback_rate=round(mean(r.fallback_used for r in results), 4),
         average_search_latency_ms=round(mean(r.search_latency_ms for r in results), 2),
-        average_generation_latency_ms=round(mean(r.generation_latency_ms for r in results), 2),
+        average_generation_latency_ms=round(
+            mean(r.generation_latency_ms for r in results), 2
+        ),
+        generation_latency_p50_ms=_percentile(generation_latencies, 0.50),
+        generation_latency_p95_ms=_percentile(generation_latencies, 0.95),
     )
+
+
+def _percentile(values: list[int], percentile: float) -> int:
+    """작은 평가 세트에서도 해석하기 쉬운 nearest-rank 값을 반환한다."""
+
+    return values[max(ceil(len(values) * percentile) - 1, 0)]
 
 
 __all__ = [

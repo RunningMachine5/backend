@@ -18,7 +18,11 @@ from app.services.agent.response_policy import (
 
 
 class FakeGuideSearcher:
+    def __init__(self) -> None:
+        self.requests = []
+
     def search(self, request):
+        self.requests.append(request)
         return [
             RetrievedGuideChunkDTO(
                 document_id="GUIDE-001",
@@ -73,6 +77,7 @@ class FakePlanGenerator:
 
 class ResponsePlanEvaluationTest(unittest.TestCase):
     def test_policy_only_and_rag_llm_metrics_are_compared(self) -> None:
+        searcher = FakeGuideSearcher()
         report = evaluate_response_plans(
             (
                 ResponsePlanEvaluationCase(
@@ -83,9 +88,11 @@ class ResponsePlanEvaluationTest(unittest.TestCase):
                 ),
             ),
             policy_repository=YamlPolicyRepository((self._policy(),)),
-            guide_searcher=FakeGuideSearcher(),
+            guide_searcher=searcher,
             policy_generator=FakePlanGenerator(enriched=False),
             rag_generator=FakePlanGenerator(enriched=True),
+            repeat=3,
+            top_k=3,
         )
 
         self.assertEqual(report.policy_only.procedure_coverage, 0.0)
@@ -94,7 +101,13 @@ class ResponsePlanEvaluationTest(unittest.TestCase):
         self.assertEqual(report.rag_llm.required_action_coverage, 1.0)
         self.assertEqual(report.rag_llm.action_code_precision, 1.0)
         self.assertEqual(report.rag_llm.fallback_rate, 0.0)
-        self.assertEqual(len(report.results), 2)
+        self.assertEqual(report.rag_llm.case_count, 3)
+        self.assertEqual(len(report.results), 6)
+        self.assertEqual(searcher.requests[0].top_k, 3)
+        self.assertEqual(
+            [result.run_number for result in report.results if result.strategy == "RAG_LLM"],
+            [1, 2, 3],
+        )
 
     def test_evaluation_cases_are_loaded_from_yaml(self) -> None:
         content = """
