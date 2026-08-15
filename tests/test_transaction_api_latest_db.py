@@ -24,6 +24,9 @@ from app.data.model.fraud_rule import (
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
+from app.domain.enums import RiskGrade
+from app.dto.agent import AgentInputDTO
+from app.services.agent.task_runner import get_agent_task_runner
 from app.services.ml_serving.client import MLPredictionResponse, get_ml_serving_client
 from app.services.rules.defaults import DEFAULT_RULE_SET
 
@@ -155,7 +158,11 @@ class TransactionApiLatestDBTest(unittest.TestCase):
 
         app.dependency_overrides[get_session] = override_session
         self.ml_client = StubMLClient()
+        self.agent_inputs: list[AgentInputDTO] = []
         app.dependency_overrides[get_ml_serving_client] = lambda: self.ml_client
+        app.dependency_overrides[get_agent_task_runner] = (
+            lambda: self.agent_inputs.append
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -178,6 +185,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertIsNone(body["rule_set_id"])
         self.assertIsNone(body["rule_scores"])
         self.assertEqual(self.ml_client.calls, 1)
+        self.assertEqual(self.agent_inputs, [])
         assert self.ml_client.last_features is not None
         self.assertEqual(len(self.ml_client.last_features), 59)
         self.assertEqual(self.ml_client.last_features["distance"], 0.0)
@@ -224,11 +232,20 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                 "FRAUD_USED_ACCOUNT",
             },
         )
+        self.assertEqual(len(self.agent_inputs), 1)
+        agent_input = self.agent_inputs[0]
+        self.assertEqual(agent_input.transaction_id, body["transaction_id"])
+        self.assertEqual(agent_input.risk_score, 42)
+        self.assertEqual(agent_input.risk_grade, RiskGrade.MEDIUM)
 
         with Session(self.engine) as session:
             score = session.exec(select(FraudTypeScoreResult)).one()
             self.assertEqual(score.transaction_id, body["transaction_id"])
             self.assertEqual(score.rule_filter_status, "APPLIED")
+            self.assertEqual(
+                agent_input.fraud_type_score_result_id,
+                score.id,
+            )
 
     def test_atm_transaction_allows_missing_customer_and_recipient(self) -> None:
         response = self.client.post(
