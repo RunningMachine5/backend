@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlmodel import SQLModel
 from sqlmodel import Session, select
 
 from app.data.model.chatbot import (
     ChatAnswer,
+    ChatCustomerAction,
+    ChatFraudCircumstance,
     ChatMessage,
     ChatSenderType,
     ChatSession,
     ChatSessionStatus,
 )
+from app.domain.customer_action_codes import FINAL_CUSTOMER_ACTION_CODES
+from app.domain.fraud_circumstance_codes import FINAL_FRAUD_CIRCUMSTANCE_CODES
 from app.dto.chatbot import AnswerQualityVerdict
 
 
@@ -176,6 +182,95 @@ class ChatSessionRepository:
         )
         self.session.add(answer)
         return answer
+
+    def add_customer_action(
+        self,
+        chat_session: ChatSession,
+        *,
+        action_code: str,
+        evidence: str,
+        source_answer: ChatAnswer | None = None,
+    ) -> bool:
+        """같은 세션에서 같은 고객행동 코드는 한 번만 저장"""
+
+        if action_code not in FINAL_CUSTOMER_ACTION_CODES:
+            return False
+
+        return self._insert_do_nothing(
+            ChatCustomerAction,
+            values={
+                "chat_session_id": chat_session.chat_session_id,
+                "action_code": action_code,
+                "evidence": evidence,
+                "extracted_at": datetime.now(UTC),
+                "source_answer_id": self._source_answer_id(
+                    chat_session,
+                    source_answer,
+                ),
+            },
+            index_elements=["chat_session_id", "action_code"],
+        )
+
+    def add_fraud_circumstance(
+        self,
+        chat_session: ChatSession,
+        *,
+        circumstance_code: str,
+        evidence: str,
+        source_answer: ChatAnswer | None = None,
+    ) -> bool:
+        """같은 세션에서 같은 사기 정황 코드는 한 번만 저장"""
+
+        if circumstance_code not in FINAL_FRAUD_CIRCUMSTANCE_CODES:
+            return False
+
+        return self._insert_do_nothing(
+            ChatFraudCircumstance,
+            values={
+                "chat_session_id": chat_session.chat_session_id,
+                "circumstance_code": circumstance_code,
+                "evidence": evidence,
+                "extracted_at": datetime.now(UTC),
+                "source_answer_id": self._source_answer_id(
+                    chat_session,
+                    source_answer,
+                ),
+            },
+            index_elements=["chat_session_id", "circumstance_code"],
+        )
+
+    def _source_answer_id(
+        self,
+        chat_session: ChatSession,
+        source_answer: ChatAnswer | None,
+    ) -> int | None:
+        """추출된 행동·사기 정황이 어떤 고객 답변에서 나온 것인지 연결할 answer_id를 준비"""
+        if source_answer is None: # source_answer가 없으면 None 반환
+            return None
+        if source_answer.chat_session_id != chat_session.chat_session_id: # 다른 채팅 세션의 답변이면 오류 발생
+            raise ValueError("다른 세션의 답변을 추출 근거로 연결할 수 없습니다")
+        if source_answer.answer_id is None: # 아직 DB에서 answer_id가 발급되지 않았다면 flush() 실행
+            self.session.flush()
+        if source_answer.answer_id is None: # 그럼에도 없다면
+            raise ValueError("저장되지 않은 답변은 추출 근거로 연결할 수 없습니다")
+        return source_answer.answer_id
+
+    def _insert_do_nothing(
+        self,
+        model: type[SQLModel],
+        *,
+        values: dict[str, object],
+        index_elements: list[str],
+    ) -> bool:
+        """중복 삽입 안되게 하는 로직"""
+        statement = (
+            postgresql_insert(model)
+            .values(**values)
+            # index_elements 컬럼 조합이 이미 존재하면 예외를 내지 않고 INSERT를 건너뜀
+            .on_conflict_do_nothing(index_elements=index_elements)
+        )
+        result = self.session.exec(statement)
+        return result.rowcount == 1
 
 
 __all__ = ["ChatSessionRepository"]
