@@ -81,7 +81,7 @@ def _transaction_response(
             "transaction_id": transaction.id,
             "created_at": transaction.created_at,
             "prediction_status": prediction_status
-            or ("COMPLETED" if prediction_result else "NOT_AVAILABLE"),
+            or ("COMPLETED" if prediction_result else "FAILED"),
             "predict_result": (
                 prediction_result.predict_result if prediction_result else None
             ),
