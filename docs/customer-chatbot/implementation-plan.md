@@ -118,8 +118,8 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 - [x] 메시지 저장(순수 로그) + `chat_answers` 기록 — `attempt_no` 1~3,
   `quality_verdict`/`verdict_skip_reason`, 질문당 `is_adopted = true` 정확히 하나
   (부분 유니크 인덱스 준수)
-- [ ] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
-  `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러내고 로그), `evidence_verified` 기록
+- [x] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
+  `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러냄)
 - [ ] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
   `fraud_type_score_after_chat` 저장(`ON CONFLICT DO NOTHING`, 거래당 1행)
 - [ ] SSE 스냅샷용 조회 — `status = HANDOFF_REQUESTED` 세션 목록 (PRD 2.7)
@@ -128,7 +128,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 ## 4단계 — 평가·추출 LLM 서비스
 
 **참조**: [prompts.md A.1~A.3](prompts.md), [PRD 2.4 조건 2](README.md#조건-2-고객응답-평가-llm),
-[PRD 3.1](README.md#31-흐름), [스키마 3.6 `evidence_verified`](schema.md#36-추출-결과-테이블--신규)
+[PRD 3.1](README.md#31-흐름), [스키마 3.6](schema.md#36-추출-결과-테이블--신규)
 
 프롬프트 렌더링은 [prompts.py](../../app/services/chatbot/prompts.py)에 이미 있으므로
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
@@ -141,7 +141,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
     기록. LLM 실패는 `attempt_no`를 소모하지 않는다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
 - [ ] `app/services/chatbot/extractors.py` — A.2 고객 행동 / A.3 사기 정황 추출 호출.
   structured output 스키마는 1단계 DTO. `evidence`가 답변 원문에 연속 문자열로 존재하는지
-  저장 전 대조해 `evidence_verified`를 산출
+  저장 전 대조하고, 불일치 항목은 로그를 남긴 뒤 저장하지 않음
 - [ ] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 5종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패

@@ -7,10 +7,16 @@ from sqlmodel import Session, create_engine, func, select
 
 from app.data.model.chatbot import (
     ChatAnswer,
+    ChatCustomerAction,
+    ChatFraudCircumstance,
     ChatMessage,
     ChatSenderType,
     ChatSession,
     ChatSessionStatus,
+)
+from app.domain.customer_action_codes import PHISHING_LINK_OPENED
+from app.domain.fraud_circumstance_codes import (
+    ACCOUNT_REAUTHENTICATION_PHISHING,
 )
 from app.domain.fraud_type_codes import (
     ACCOUNT_TAKEOVER,
@@ -32,6 +38,8 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         ChatSession.__table__.create(self.engine)
         ChatMessage.__table__.create(self.engine)
         ChatAnswer.__table__.create(self.engine)
+        ChatCustomerAction.__table__.create(self.engine)
+        ChatFraudCircumstance.__table__.create(self.engine)
         self.session = Session(self.engine)
         self.repository = ChatSessionRepository(self.session)
 
@@ -263,6 +271,104 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         with self.assertRaises(IntegrityError):
             self.session.flush()
         self.session.rollback()
+
+    def test_saves_customer_action_once_per_session(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-ACTION",
+            transaction_id=112,
+        )
+
+        first_inserted = self.repository.add_customer_action(
+            chat_session,
+            action_code=PHISHING_LINK_OPENED,
+            evidence="링크를 눌렀어요",
+        )
+        duplicate_inserted = self.repository.add_customer_action(
+            chat_session,
+            action_code=PHISHING_LINK_OPENED,
+            evidence="같은 행동의 다른 근거",
+        )
+
+        self.assertIs(first_inserted, True)
+        self.assertIs(duplicate_inserted, False)
+        actions = list(
+            self.session.exec(
+                select(ChatCustomerAction).where(
+                    ChatCustomerAction.chat_session_id
+                    == chat_session.chat_session_id
+                )
+            ).all()
+        )
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].evidence, "링크를 눌렀어요")
+
+    def test_saves_fraud_circumstance_with_source_answer(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-CIRCUMSTANCE",
+            transaction_id=113,
+        )
+        message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="재인증 링크라고 했어요",
+        )
+        answer = self.repository.add_answer(
+            chat_session,
+            message=message,
+            question_step=1,
+            attempt_no=1,
+            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
+            is_adopted=True,
+        )
+
+        inserted = self.repository.add_fraud_circumstance(
+            chat_session,
+            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
+            evidence="재인증 링크라고 했어요",
+            source_answer=answer,
+        )
+        duplicate_inserted = self.repository.add_fraud_circumstance(
+            chat_session,
+            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
+            evidence="중복 근거",
+            source_answer=answer,
+        )
+
+        self.assertIs(inserted, True)
+        self.assertIs(duplicate_inserted, False)
+        circumstances = list(
+            self.session.exec(select(ChatFraudCircumstance)).all()
+        )
+        self.assertEqual(len(circumstances), 1)
+        self.assertEqual(circumstances[0].source_answer_id, answer.answer_id)
+
+    def test_filters_invalid_extraction_codes(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-INVALID-EXTRACTION",
+            transaction_id=114,
+        )
+
+        action_inserted = self.repository.add_customer_action(
+            chat_session,
+            action_code="unknown_customer_action",
+            evidence="잘못된 행동",
+        )
+        circumstance_inserted = self.repository.add_fraud_circumstance(
+            chat_session,
+            circumstance_code="unknown_fraud_circumstance",
+            evidence="잘못된 정황",
+        )
+
+        self.assertIs(action_inserted, False)
+        self.assertIs(circumstance_inserted, False)
+        action_count = self.session.exec(
+            select(func.count()).select_from(ChatCustomerAction)
+        ).one()
+        circumstance_count = self.session.exec(
+            select(func.count()).select_from(ChatFraudCircumstance)
+        ).one()
+        self.assertEqual(action_count, 0)
+        self.assertEqual(circumstance_count, 0)
 
 
 if __name__ == "__main__":

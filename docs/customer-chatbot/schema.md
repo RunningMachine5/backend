@@ -187,7 +187,6 @@ CREATE UNIQUE INDEX uq_chat_answers_adopted
 | --- | --- | --- |
 | `chat_session_id` | `varchar(64)` FK → `chat_sessions.chat_session_id`, `ON DELETE CASCADE` | |
 | `evidence` | `text NOT NULL` | |
-| `evidence_verified` | `boolean NOT NULL` | 고객 답변 원문 대조 통과 여부 |
 | `source_answer_id` | `bigint NULL` FK → `chat_answers.answer_id`, `ON DELETE SET NULL` | 어느 턴의 답변에서 나왔는지 |
 | `extracted_at` | `timestamptz NOT NULL` | |
 
@@ -197,9 +196,8 @@ CREATE UNIQUE INDEX uq_chat_answers_adopted
 `fraud_type_score_results.type_scores`가 유형 코드를 JSON으로 담고 CHECK 없이 코드로
 관리하는 것과 같은 선택이다.
 
-`evidence_verified`는 프롬프트의 "evidence는 사용자 답변에 실제로 존재하는 연속된 원문
-문자열이어야 합니다" 규칙이 지켜졌는지를 저장 직전에 대조한 결과다. 이 규칙은 LLM에 대한
-요청일 뿐 강제가 아니므로, 대조에 실패한 항목은 `false`로 저장해 담당자가 걸러낼 수 있게 한다.
+`evidence`는 저장 직전에 고객 답변에 실제로 존재하는 연속된 원문 문자열인지 대조한다.
+대조에 실패한 추출 항목은 로그를 남기고 저장하지 않는다.
 
 ### 3.7 `fraud_type_score_after_chat` — 구조 변경
 

@@ -276,8 +276,6 @@ class ChatCustomerAction(SQLModel, table=True):
     action_code: str = Field(max_length=64)
     # 추출 판단의 근거가 된 고객 답변의 연속된 원문이다.
     evidence: str = Field(sa_column=Column(Text, nullable=False))
-    # evidence가 실제 고객 답변 원문에 포함되는지 대조한 결과다.
-    evidence_verified: bool = Field(sa_column=Column(Boolean, nullable=False))
     # 어떤 채택 답변에서 추출했는지 연결하며, 답변 삭제 시 추출 기록은 보존한다.
     source_answer_id: int | None = Field(
         default=None,
@@ -326,8 +324,6 @@ class ChatFraudCircumstance(SQLModel, table=True):
     circumstance_code: str = Field(max_length=64)
     # 추출 판단의 근거가 된 고객 답변의 연속된 원문이다.
     evidence: str = Field(sa_column=Column(Text, nullable=False))
-    # evidence가 실제 고객 답변 원문에 포함되는지 대조한 결과다.
-    evidence_verified: bool = Field(sa_column=Column(Boolean, nullable=False))
     # 어떤 채택 답변에서 추출했는지 연결하며, 답변 삭제 시 추출 기록은 보존한다.
     source_answer_id: int | None = Field(
         default=None,
