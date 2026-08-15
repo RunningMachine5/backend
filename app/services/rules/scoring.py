@@ -8,7 +8,7 @@ from sqlmodel import Session
 
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.dto.ml_features import MLTransactionFeatures
-from app.services.rules.engine import RuleEngine, RuleSetValidationError
+from app.services.rules.engine import RuleEngine
 from app.services.rules.expression_evaluator import RuleExpressionError
 from app.services.rules.repository import get_active_rule_set
 
@@ -39,8 +39,8 @@ def score_transaction_fraud_types(
 
     persisted_rule_set, definition = active
     try:
-        scored = (engine or RuleEngine()).score(features, definition)
-    except (RuleSetValidationError, RuleExpressionError):
+        scored = (engine or RuleEngine()).score_validated(features, definition)
+    except RuleExpressionError:
         logger.exception(
             "거래 %s의 유형별 룰 점수 계산에 실패했습니다.",
             transaction_id,

@@ -1085,7 +1085,8 @@ def test_rule_set(
     session: SessionDep,
 ) -> FraudRuleTestResponse:
     rule_set = _get_rule_set(session, rule_set_id)
-    issues = _validation_issues(session, rule_set)
+    definition = rule_set_definition_from_database(session, rule_set)
+    issues = _definition_validation_issues(definition)
     if issues:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1095,10 +1096,9 @@ def test_rule_set(
             },
         )
 
-    definition = rule_set_definition_from_database(session, rule_set)
     try:
-        result = RuleEngine().score(payload.raw_data, definition)
-    except (RuleSetValidationError, RuleExpressionError) as exc:
+        result = RuleEngine().score_validated(payload.raw_data, definition)
+    except RuleExpressionError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),

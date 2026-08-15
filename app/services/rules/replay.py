@@ -23,7 +23,6 @@ from app.services.rules.engine import (
     RuleComponentDefinition,
     RuleEngine,
     RuleSetDefinition,
-    RuleSetValidationError,
 )
 from app.services.rules.expression_evaluator import RuleExpressionError
 
@@ -217,10 +216,7 @@ def _score_transaction(
         # 두 룰셋은 반드시 위에서 한 번 만든 동일 컨텍스트를 평가한다.
         active_result = engine.score_validated_context(context, active_definition)
         draft_result = engine.score_validated_context(context, draft_definition)
-    except (
-        RuleSetValidationError,
-        RuleExpressionError,
-    ) as exc:
+    except RuleExpressionError as exc:
         return _RuleReplayTransaction(
             transaction_id=transaction.id,
             transaction_datetime=transaction.transaction_datetime,
@@ -405,7 +401,7 @@ def replay_rule_sets(
     sample_size: int,
     detail_limit: int,
 ) -> RuleReplayResult:
-    """한 번 고정한 표본을 두 룰셋으로 평가하며 어떤 DB 행도 변경하지 않는다."""
+    """검증 완료된 두 룰셋을 고정 표본에 적용하며 DB는 변경하지 않는다."""
 
     selected, has_more = PredictionResultRepository(
         session
@@ -415,10 +411,6 @@ def replay_rule_sets(
         draft_definition,
     )
     engine = RuleEngine()
-    # RuleSetDefinition은 frozen dataclass이므로 표본 전체에서 안전하게 재사용한다.
-    # 행마다 두 번 재검증하지 않고 실행 시작 시 각 정의를 한 번만 검증한다.
-    engine.validate_rule_set(active_definition)
-    engine.validate_rule_set(draft_definition)
     results = [
         _score_transaction(
             engine=engine,

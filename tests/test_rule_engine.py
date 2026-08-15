@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.services.rules.defaults import DEFAULT_RULE_SET
 from app.services.rules.engine import (
@@ -81,6 +82,39 @@ class RuleEngineTest(unittest.TestCase):
             for rule in DEFAULT_RULE_SET.rules
         }
         self.assertEqual(actual_weights, expected_weights)
+
+    def test_validates_each_expression_once_before_scoring(self) -> None:
+        component_count = sum(
+            len(rule.components) for rule in DEFAULT_RULE_SET.rules if rule.enabled
+        )
+        evaluator = self.engine.expression_evaluator
+
+        with (
+            patch.object(
+                evaluator,
+                "validate",
+                wraps=evaluator.validate,
+            ) as validate,
+            patch.object(
+                evaluator,
+                "evaluate_validated",
+                wraps=evaluator.evaluate_validated,
+            ) as evaluate_validated,
+        ):
+            result = self.engine.score(valid_rule_features(), DEFAULT_RULE_SET)
+
+        self.assertEqual(validate.call_count, component_count)
+        self.assertEqual(evaluate_validated.call_count, component_count)
+        self.assertEqual(set(result.type_scores), FINAL_TYPE_CODES)
+
+    def test_validated_scoring_returns_the_same_result(self) -> None:
+        features = valid_rule_features()
+
+        regular = self.engine.score(features, DEFAULT_RULE_SET)
+        self.engine.validate_rule_set(DEFAULT_RULE_SET)
+        validated = self.engine.score_validated(features, DEFAULT_RULE_SET)
+
+        self.assertEqual(validated, regular)
 
     def test_voice_phishing_uses_final_weighted_signals(self) -> None:
         raw_data = valid_rule_raw_data()
