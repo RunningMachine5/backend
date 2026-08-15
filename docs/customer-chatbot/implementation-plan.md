@@ -9,15 +9,15 @@
 
 ---
 
-## 0. 현재 상태 (2026-08-14 기준)
+## 0. 현재 상태 (2026-08-15 기준)
 
 ### 이미 완료된 것 — 다시 만들지 않는다
 
 | 완료 항목 | 위치 |
 | --- | --- |
-| 도메인 상수: `customer_action` 19종, `fraud_circumstance` 20종, 검색 질의 매핑, 채점표 | [customer_action_codes.py](../../app/domain/customer_action_codes.py), [fraud_circumstance_codes.py](../../app/domain/fraud_circumstance_codes.py) |
+| 도메인 상수: `fraud_circumstance` 20종과 채점표 | [fraud_circumstance_codes.py](../../app/domain/fraud_circumstance_codes.py) |
 | 테이블 6종 모델 + 등록 | [chatbot.py](../../app/data/model/chatbot.py), [\_\_init\_\_.py](../../app/data/model/__init__.py) |
-| 마이그레이션 (이름 변경·신규 생성·백필·부분 유니크 인덱스, `top_fraud_types` 재추가) | `migrations/versions/…c4f7a2b9d810…`, `…d94b7e31a5c2…` |
+| 마이그레이션 (대화 스키마, `top_fraud_types`, 가이드 검색 질의 저장 구조) | `migrations/versions/…c4f7a2b9d810…`, `…d94b7e31a5c2…`, `…f8a1b2c3d4e5…` |
 | 프롬프트 A.1~A.3 렌더링 함수 (도메인 상수에서 조립) | [prompts.py](../../app/services/chatbot/prompts.py) |
 | pgvector 코사인 검색 + `MAX_DISTANCE = 0.6` | [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py) |
 | 의존성: `langgraph`, `langchain`, `langchain-openai` | `pyproject.toml` |
@@ -86,13 +86,12 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) /
     `CreateChatResponse`(세션 id) — PRD 2.1의 표 그대로
   - 평가 판정 결과 DTO — `SUFFICIENT`/`TOO_VAGUE`/`NON_ANSWER`/`REFUSAL`/`WANT_END`
-  - 추출 구조화 출력 스키마 — `type` 필드를
-    `Literal[*FINAL_CUSTOMER_ACTION_CODES]` / `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로
-    선언해 파서 단계에서 화이트리스트를 강제 (스키마 3.8)
+  - 가이드 검색 질의 구조화 출력 — `title`, `search_query`, `evidence`와 최대 5개 제한
+  - 사기 정황 `type`은 `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로 화이트리스트 강제
   - 메시지 송수신·버튼 액션·세션 상태 변경 SSE 이벤트 DTO (7단계에서 확장 가능)
   - 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`는 6단계 정리에서
     Fake 파이프라인과 함께 삭제 완료
-- [x] 테스트 `tests/test_chatbot_dto.py`: 화이트리스트 밖 enum이 파싱 실패하는지
+- [x] 테스트 `tests/test_chatbot_dto.py`: 가이드 검색 질의 길이·개수와 사기 정황 enum 검증
 
 ## 2단계 — 리트리버 구조화 (선결 조건)
 
@@ -142,7 +141,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한, 상한 소진 시
     `REFUSAL`과 동일하게 다음 질문으로 진행하고 `verdict_skip_reason = EVALUATOR_FAILED`로
     기록. LLM 실패는 `attempt_no`를 소모하지 않는다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
-- [x] `app/services/chatbot/extractors.py` — A.2 고객 행동 / A.3 사기 정황 추출 호출.
+- [x] `app/services/chatbot/extractors.py` — A.2 가이드 검색 질의 분해 / A.3 사기 정황 추출 호출.
   structured output 스키마는 1단계 DTO. `evidence`가 답변 원문에 연속 문자열로 존재하는지
   저장 전 대조하고, 불일치 항목은 로그를 남긴 뒤 저장하지 않음
 - [x] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
@@ -152,22 +151,21 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 ## 5단계 — RAG 응답 조립 + 채점 집계
 
 **참조**: [PRD 2.5](README.md#25-정보-응답--rag-대응-가이드-4-1), [PRD 2.6](README.md#26-사기-정황-추출과-채점-4-2),
-[messages.md B.5](messages.md#b5-안내를-만들지-못한-액션-안내), [scoring.md](scoring.md)
+[messages.md B.5](messages.md#b5-안내를-만들지-못한-정보-요구-안내), [scoring.md](scoring.md)
 
 - [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) 신설 — Generate 프롬프트가
   설계 문서에 없었다. 소제목·목록 조립은 LLM이 하지 않고 코드가 한다는 것을 문서에 못박고,
   [prompts.py](../../app/services/chatbot/prompts.py)의 `render_guide_response_prompt`로 옮겼다
 - [x] [guide_responder.py](../../app/services/chatbot/guide_responder.py) — PRD 2.5의 의사코드 그대로:
-  - 검색 질의 = `CUSTOMER_ACTION_SEARCH_QUERIES[action.type] + " " + action.evidence`
-  - Retrieve는 액션당 독립, `top_k = 3` 고정
+  - 검색 질의 = 분해 결과의 독립적인 `guide_search_query.search_query`
+  - Retrieve는 가이드 검색 질의당 독립, `top_k = 3` 고정
   - `grounded` / `ungrounded` 분리 → **Generate는 grounded만으로 1회 호출**
-    (0건 액션을 프롬프트에 넣지 않아 교차 오염 차단)
-  - `assemble`: ungrounded 액션은 `CUSTOMER_ACTION_DESCRIPTIONS` 소제목 + B.5 고정 문구.
-    고객이 말한 행동은 근거 유무와 무관하게 전부 목록에 나타난다
+    (0건 요구를 프롬프트에 넣지 않아 교차 오염 차단)
+  - `assemble`: ungrounded 요구는 분해 결과의 `title` 소제목 + B.5 고정 문구.
   - **`GuideResponder`는 상태 전이 신호를 내지 않는다.** 전체 0건이면 Generate를 건너뛰고
-    모든 액션을 B.5로 채운다. 액션이 하나도 없으면 빈 본문을 돌려주고 파이프라인이
+    모든 요구를 B.5로 채운다. 요구가 하나도 없으면 빈 본문을 돌려주고 파이프라인이
     메시지를 보내지 않는다 (README 2.5 4번)
-  - 검색·생성 실패 폴백을 확정하고 README 2.5에 반영했다(액션별 검색 실패는 그 액션만 0건,
+  - 검색·생성 실패 폴백을 확정하고 README 2.5에 반영했다(요구별 검색 실패는 그 요구만 0건,
     Generate 실패·전원 빈 안내도 B.5로 채우고 상담 계속)
   - B.5 문구는 [messages.py](../../app/services/chatbot/messages.py)로 옮겼다(B.1~B.4·B.6은 6단계)
 - [x] [chat_scoring.py](../../app/services/chatbot/chat_scoring.py) — 상담 종료 시 1회 집계:
@@ -176,7 +174,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 - [x] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
 - [x] 테스트 `tests/test_chatbot_guide_responder.py` / `tests/test_chatbot_scoring.py`:
   리트리버·LLM 모킹, 전체 0건 → LLM 미호출 + 전원 B.5, 일부 0건 → B.5 삽입 및
-  Generate 입력에서 제외, 생성 실패 → B.5 폴백, 액션 0개 → 빈 본문,
+  Generate 입력에서 제외, 생성 실패 → B.5 폴백, 가이드 검색 질의 0개 → 빈 본문,
   집계 합산·동점·최고점 0 분기
 - [ ] (선택, 저비용) PRD 3.2 코퍼스 과제 1번: `docs/agent_guides/internal_demo/*_customer.md`
   4종을 `cs_guide_documents`에도 적재해 0건 비율을 낮춘다. 챗봇 로직과 독립이라
@@ -200,7 +198,8 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   3. 답변 평가 — 4단계 서비스 호출. 판정별 전이는 PRD 2.4 표 그대로
      (`TOO_VAGUE`/`NON_ANSWER`는 재질문 최대 2회, 초과 시 마지막 응답 채택
      `is_adopted = true` 후 다음 질문)
-  4. `SUFFICIENT` → 추출(A.2·A.3) 저장 + RAG 응답(5단계) → 다음 질문 루프
+  4. `SUFFICIENT` → 가이드 검색 질의 분해·저장·RAG와 사기 정황 추출·저장을 독립 실행한다.
+     한 경로가 재시도 후 실패해도 성공한 경로는 반영하고 다음 질문으로 진행한다
   5. `WANT_END` → 채점 집계(5단계) + `HANDOFF_REQUESTED` + `completed_at`
      + 상태 변경 SSE 발행(7단계 훅). 문구는 B.6
   6. `HANDOFF_REQUESTED` 진입 경로는 1번 버튼과 5번 둘뿐이다. 검색 0건·LLM 실패는
@@ -291,7 +290,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 - 본인인증 보호장치: 실패 횟수 제한·URL 토큰·세션 TTL (PRD 3.3)
 - 고령자 전용 UI (프론트 영역, `is_older` 값 반환까지만)
 - 담당자 접수·처리 중 상태 (`HANDOFF_REQUESTED` 이후 확장, PRD 3.3)
-- history-aware retriever, 액션 수 상한, 청킹 개선, `MAX_DISTANCE` 튜닝 (PRD 3.1~3.2)
+- history-aware retriever, 청킹 개선, `MAX_DISTANCE` 튜닝 (PRD 3.1~3.2)
 - `customers.email` 실주소 확보 경로(스키마 3.9의 `customer_email` DTO 필드) — 거래 수집
   영역 변경이라 챗봇 단계와 분리해 별도 작업으로 진행 가능. 폴백만으로 데모는 동작한다
 
