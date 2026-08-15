@@ -148,13 +148,10 @@ class FraudDetectionPipeline:
             # 정상 거래에는 룰 점수를 만들지 않으며, 룰 결과가 ML 판정을
             # 사기 또는 정상으로 다시 바꾸지도 않는다.
             if prediction.is_fraud:
-                # ML 전송용 JSON에서는 timedelta가 ``PT0S``처럼 직렬화된다.
-                # 룰 계산에는 원래 Python timedelta를 넘겨 초 단위로 정확히 읽는다.
-                rule_features = assembled.model_dump(mode="python", by_alias=True)
                 score_result = score_transaction_fraud_types(
                     session=self.session,
                     transaction_id=transaction.id,
-                    raw_data=rule_features,
+                    features=assembled,
                 )
                 if score_result is not None:
                     self.session.add(score_result)

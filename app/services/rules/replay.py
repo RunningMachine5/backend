@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from pydantic import ValidationError
 from sqlmodel import Session
 
 from app.data.model.account import Account
@@ -19,10 +18,7 @@ from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.repositories.transaction import PredictionResultRepository
-from app.services.features.ml_feature_assembler import (
-    FeatureAssemblyError,
-    assemble_ml_features,
-)
+from app.services.features.ml_feature_assembler import assemble_ml_features
 from app.services.rules.engine import (
     RuleComponentDefinition,
     RuleEngine,
@@ -30,7 +26,6 @@ from app.services.rules.engine import (
     RuleSetValidationError,
 )
 from app.services.rules.expression_evaluator import RuleExpressionError
-from app.services.rules.feature_builder import RuleFeatureError
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,55 +193,19 @@ def _component_changes(
     return added, removed
 
 
-def _assembly_error(
-    *,
-    transaction: Transaction,
-    customer: Customer | None,
-    source_account: Account | None,
-    recipient_account: Account | None,
-    derived: DerivedFeatures | None,
-) -> FeatureAssemblyError:
-    missing: list[str] = []
-    if customer is None:
-        missing.append("customer")
-    if source_account is None:
-        missing.append("source_account")
-    if recipient_account is None:
-        missing.append("recipient_account")
-    if derived is None:
-        missing.append("derived_features")
-    return FeatureAssemblyError(
-        "raw60 Feature 조립에 필요한 행이 없습니다: "
-        f"{transaction.id} ({', '.join(missing)})"
-    )
-
-
 def _score_transaction(
     *,
     engine: RuleEngine,
     transaction: Transaction,
     customer: Customer | None,
-    source_account: Account | None,
+    source_account: Account,
     recipient_account: Account | None,
-    derived: DerivedFeatures | None,
+    derived: DerivedFeatures,
     active_definition: RuleSetDefinition,
     draft_definition: RuleSetDefinition,
     type_codes: list[str],
 ) -> _RuleReplayTransaction:
     try:
-        if (
-            customer is None
-            or source_account is None
-            or recipient_account is None
-            or derived is None
-        ):
-            raise _assembly_error(
-                transaction=transaction,
-                customer=customer,
-                source_account=source_account,
-                recipient_account=recipient_account,
-                derived=derived,
-            )
         features = assemble_ml_features(
             customer=customer,
             source_account=source_account,
@@ -259,11 +218,8 @@ def _score_transaction(
         active_result = engine.score_validated_context(context, active_definition)
         draft_result = engine.score_validated_context(context, draft_definition)
     except (
-        FeatureAssemblyError,
-        ValidationError,
         RuleSetValidationError,
         RuleExpressionError,
-        RuleFeatureError,
     ) as exc:
         return _RuleReplayTransaction(
             transaction_id=transaction.id,

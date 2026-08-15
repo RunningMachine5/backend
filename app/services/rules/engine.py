@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from app.dto.ml_features import MLTransactionFeatures
 from app.services.rules.expression_evaluator import RuleExpressionEvaluator
 from app.services.rules.feature_builder import RuleFeatureBuilder
 
@@ -67,14 +68,14 @@ class RuleEngine:
 
     def score(
         self,
-        raw_data: Mapping[str, Any],
+        features: MLTransactionFeatures,
         rule_set: RuleSetDefinition | None = None,
     ) -> RuleScoreResult:
         if rule_set is None:
             from app.services.rules.defaults import DEFAULT_RULE_SET
 
             rule_set = DEFAULT_RULE_SET
-        context = self.feature_builder.build(raw_data)
+        context = self.feature_builder.build(features)
         return self.score_context(context, rule_set)
 
     def score_context(

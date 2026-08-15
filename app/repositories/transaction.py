@@ -351,9 +351,9 @@ class PredictionResultRepository:
             tuple[
                 Transaction,
                 Customer | None,
+                Account,
                 Account | None,
-                Account | None,
-                DerivedFeatures | None,
+                DerivedFeatures,
             ]
         ],
         bool,
@@ -363,8 +363,8 @@ class PredictionResultRepository:
         양성 예측부터 거르면 과거 양성·최신 음성인 거래가 섞이므로 거래별 최신
         예측을 먼저 확정한다. 거래시각과 거래 ID를 함께 정렬해 같은 데이터에서는
         항상 같은 표본을 고르고, ``limit + 1``건으로 다음 표본 존재 여부를 구한다.
-        고객·출금계좌·파생 피처는 outer join하여 손상된 거래도 조용히 누락하지 않고
-        리플레이 오류 상세로 보고할 수 있게 한다.
+        출금계좌와 파생 피처가 조립된 거래만 고르고, 선택한 행은 별도 누락
+        검증 없이 바로 raw59로 재조립한다.
         """
 
         ranked_predictions = select(
@@ -400,7 +400,7 @@ class PredictionResultRepository:
                 ranked_predictions.c.prediction_result_id == MLPredictionResult.id,
             )
             .outerjoin(Customer, Customer.id == Transaction.customer_id)
-            .outerjoin(
+            .join(
                 source_account,
                 source_account.account_number == Transaction.source_account_number,
             )
@@ -409,7 +409,7 @@ class PredictionResultRepository:
                 recipient_account.account_number
                 == Transaction.recipient_account_number,
             )
-            .outerjoin(
+            .join(
                 DerivedFeatures,
                 DerivedFeatures.id == Transaction.id,
             )

@@ -461,7 +461,7 @@ class FraudRuleReplayApiTest(unittest.TestCase):
         self.assertEqual(impact["no_longer_matched_transaction_count"], 1)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_missing_normalized_feature_row_is_reported_as_error(self) -> None:
+    def test_missing_normalized_feature_row_is_not_selected(self) -> None:
         _, draft = self._active_and_draft()
         base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
         with Session(self.engine) as session:
@@ -489,12 +489,12 @@ class FraudRuleReplayApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(body["selected_count"], 1)
+        self.assertEqual(body["selected_count"], 0)
         self.assertEqual(body["evaluated_count"], 0)
-        self.assertEqual(body["error_count"], 1)
+        self.assertEqual(body["error_count"], 0)
         self.assertEqual(body["summary_denominator"], 0)
         self.assertIsNone(body["changed_transaction_rate"])
-        self.assertIn("derived_features", body["error_details"][0]["error"])
+        self.assertEqual(body["error_details"], [])
         self.assertTrue(
             all(
                 summary["active_average_score"] is None

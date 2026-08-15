@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from typing import Any
 
 from sqlmodel import Session
 
 from app.data.model.fraud_rule import FraudTypeScoreResult
+from app.dto.ml_features import MLTransactionFeatures
 from app.services.rules.engine import RuleEngine, RuleSetValidationError
 from app.services.rules.expression_evaluator import RuleExpressionError
-from app.services.rules.feature_builder import RuleFeatureError
 from app.services.rules.repository import get_active_rule_set
 
 logger = logging.getLogger(__name__)
@@ -21,7 +19,7 @@ def score_transaction_fraud_types(
     *,
     session: Session,
     transaction_id: int,
-    raw_data: Mapping[str, Any],
+    features: MLTransactionFeatures,
     engine: RuleEngine | None = None,
 ) -> FraudTypeScoreResult | None:
     """ACTIVE 룰셋으로 유형 점수를 만들되 ML 결과 저장은 막지 않는다.
@@ -41,8 +39,8 @@ def score_transaction_fraud_types(
 
     persisted_rule_set, definition = active
     try:
-        scored = (engine or RuleEngine()).score(raw_data, definition)
-    except (RuleSetValidationError, RuleExpressionError, RuleFeatureError):
+        scored = (engine or RuleEngine()).score(features, definition)
+    except (RuleSetValidationError, RuleExpressionError):
         logger.exception(
             "거래 %s의 유형별 룰 점수 계산에 실패했습니다.",
             transaction_id,
