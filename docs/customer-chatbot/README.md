@@ -485,7 +485,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 
 | 문서 | 담고 있는 것 |
 | --- | --- |
-| [prompts.md](prompts.md) | LLM 프롬프트 A.1~A.3 |
+| [prompts.md](prompts.md) | LLM 프롬프트 A.1~A.4 |
 | [messages.md](messages.md) | 고객 안내 문구 B.1~B.6 |
 | [scoring.md](scoring.md) | 사기 정황 내부 채점표 (20종 × 4유형) |
 | [schema.md](schema.md) | 스키마 구현 상태와 테이블·컬럼 정의 3.1~3.10 |
@@ -498,6 +498,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [A.1](prompts.md#a1-고객응답-평가-프롬프트) | 고객응답 평가 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
 | [A.2](prompts.md#a2-고객-행동-추출-프롬프트) | 고객 행동 추출 (`customer_action` 19종) | [2.5 고객 행동 추출](#고객-행동-추출) |
 | [A.3](prompts.md#a3-사기-정황-추출-프롬프트) | 사기 정황 추출 (`fraud_circumstance` 20종) | [2.6](#26-사기-정황-추출과-채점-4-2) |
+| [A.4](prompts.md#a4-대응-가이드-생성-프롬프트) | 대응 가이드 생성 (Generate 1회 통합) | [2.5 RAG 단계](#rag-단계-액션별-retrieveaugment-generate는-1회-통합) |
 
 ### [고객 안내 문구](messages.md)
 

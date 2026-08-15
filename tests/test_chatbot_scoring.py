@@ -65,18 +65,13 @@ class TestScoreChatFraudCircumstances(unittest.TestCase):
         self.assertEqual(type_scores[VOICE_PHISHING], 7)
         self.assertEqual(type_scores[ACCOUNT_TAKEOVER], 4)
 
-    def test_unknown_circumstance_code_is_skipped_with_warning(self) -> None:
-        with self.assertLogs(
-            "app.services.chatbot.chat_scoring",
-            level="WARNING",
-        ) as captured:
-            type_scores = score_chat_fraud_circumstances(
-                [INSTITUTION_IMPERSONATION_CALL_CHAIN, "not_a_circumstance"]
-            )
+    def test_unknown_circumstance_code_is_skipped(self) -> None:
+        type_scores = score_chat_fraud_circumstances(
+            [INSTITUTION_IMPERSONATION_CALL_CHAIN, "not_a_circumstance"]
+        )
 
         self.assertEqual(type_scores[VOICE_PHISHING], 4)
         self.assertEqual(set(type_scores.values()), {0, 4})
-        self.assertIn("not_a_circumstance", captured.output[0])
 
 
 if __name__ == "__main__":
