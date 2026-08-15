@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from langchain_openai import ChatOpenAI
-
 from app.core.config import CHAT_LLM_MAX_ATTEMPTS, CHAT_LLM_TIMEOUT_SECONDS
 from app.dto.chatbot import AnswerEvaluationResult, AnswerQualityVerdict
+from app.services.chatbot.llm import build_structured_llm
 from app.services.chatbot.prompts import render_quality_check_prompt
 
 
@@ -38,16 +36,10 @@ class AnswerEvaluator:
         timeout_seconds: float = CHAT_LLM_TIMEOUT_SECONDS,
         max_attempts: int = CHAT_LLM_MAX_ATTEMPTS,
     ) -> None:
-        self.structured_llm = structured_llm or ChatOpenAI(
-            model=model or os.getenv("OPENAI_MODEL", "gpt-5"),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            timeout=timeout_seconds,
-            # 호출 횟수는 서비스에서 직접 관리해 상한을 정확히 지킨다.
-            max_retries=0,
-        ).with_structured_output(
+        self.structured_llm = structured_llm or build_structured_llm(
             AnswerEvaluationResult,
-            method="json_schema",
-            strict=True,
+            model=model,
+            timeout_seconds=timeout_seconds,
         )
         self.max_attempts = max(1, max_attempts)
 

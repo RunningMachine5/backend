@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
-
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel
 
 from app.core.config import CHAT_LLM_MAX_ATTEMPTS, CHAT_LLM_TIMEOUT_SECONDS
 from app.dto.chatbot import (
     CustomerActionExtractionResult,
     FraudCircumstanceExtractionResult,
 )
+from app.services.chatbot.llm import build_structured_llm
 from app.services.chatbot.prompts import (
     render_customer_action_extraction_prompt,
     render_fraud_circumstance_extraction_prompt,
@@ -35,25 +32,6 @@ class FraudCircumstanceExtractionError(ChatbotExtractionError):
     """사기 정황 추출에 실패한 경우."""
 
 
-def _build_structured_llm(
-    schema: type[BaseModel],
-    *,
-    model: str | None,
-    timeout_seconds: float,
-) -> Any:
-    return ChatOpenAI(
-        model=model or os.getenv("OPENAI_MODEL", "gpt-5"),
-        api_key=os.getenv("OPENAI_API_KEY"),
-        timeout=timeout_seconds,
-        # 호출 횟수는 서비스에서 직접 관리
-        max_retries=0,
-    ).with_structured_output(
-        schema,
-        method="json_schema",
-        strict=True,
-    )
-
-
 class CustomerActionExtractor:
     """프롬프트로 고객 행동을 추출"""
 
@@ -65,7 +43,7 @@ class CustomerActionExtractor:
         timeout_seconds: float = CHAT_LLM_TIMEOUT_SECONDS,
         max_attempts: int = CHAT_LLM_MAX_ATTEMPTS,
     ) -> None:
-        self.structured_llm = structured_llm or _build_structured_llm(
+        self.structured_llm = structured_llm or build_structured_llm(
             CustomerActionExtractionResult,
             model=model,
             timeout_seconds=timeout_seconds,
@@ -125,7 +103,7 @@ class FraudCircumstanceExtractor:
         timeout_seconds: float = CHAT_LLM_TIMEOUT_SECONDS,
         max_attempts: int = CHAT_LLM_MAX_ATTEMPTS,
     ) -> None:
-        self.structured_llm = structured_llm or _build_structured_llm(
+        self.structured_llm = structured_llm or build_structured_llm(
             FraudCircumstanceExtractionResult,
             model=model,
             timeout_seconds=timeout_seconds,
