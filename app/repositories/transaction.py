@@ -25,16 +25,7 @@ def _account_id(account_number: str) -> str:
     return f"ACC_{digest[:32]}"
 
 
-class CustomerIdentificationConflictError(RuntimeError):
-    """거래 원장 참조값 충돌의 API 호환 기준 예외.
-
-    기존 Pipeline이 이 예외를 409로 변환하므로 고객·계좌 원장의 다른 충돌도
-    하위 예외로 표현한다. 호출자는 하위 타입과 ``conflicting_fields``로 실제
-    원인을 구분할 수 있다.
-    """
-
-
-class AccountIdentifierConflictError(CustomerIdentificationConflictError):
+class AccountIdentifierConflictError(RuntimeError):
     """하나의 내부 계좌 ID가 서로 다른 원본 계좌번호를 가리키는 경우."""
 
     def __init__(self, account_id: str, conflicting_fields: list[str]) -> None:
@@ -44,33 +35,6 @@ class AccountIdentifierConflictError(CustomerIdentificationConflictError):
             f"계좌 식별값이 기존 원장과 다릅니다: {account_id} "
             f"({', '.join(conflicting_fields)})"
         )
-
-
-class AccountOwnershipConflictError(CustomerIdentificationConflictError):
-    """이미 다른 고객이 소유한 계좌를 출금 계좌로 사용한 경우."""
-
-    def __init__(
-        self,
-        account_id: str,
-        *,
-        stored_customer_id: str,
-        requested_customer_id: str,
-    ) -> None:
-        self.account_id = account_id
-        self.stored_customer_id = stored_customer_id
-        self.requested_customer_id = requested_customer_id
-        super().__init__(
-            "계좌 소유 고객이 기존 원장과 다릅니다: "
-            f"{account_id} ({stored_customer_id} != {requested_customer_id})"
-        )
-
-
-class CustomerReferenceNotFoundError(RuntimeError):
-    """거래가 참조한 고객이 고객 원장에 아직 등록되지 않은 경우."""
-
-    def __init__(self, customer_id: str) -> None:
-        self.customer_id = customer_id
-        super().__init__(f"고객 원장에서 customer_id를 찾을 수 없습니다: {customer_id}")
 
 
 class TransactionRepository:
@@ -213,17 +177,14 @@ class TransactionRepository:
     def _find_customer(self, customer_id: str | None) -> Customer | None:
         if customer_id is None:
             return None
-        customer = self.session.get(Customer, customer_id)
-        if customer is None:
-            raise CustomerReferenceNotFoundError(customer_id)
-        return customer
+        return self.session.get(Customer, customer_id)
 
     def _upsert_source_account(
         self,
         payload: TransactionRequestDTO,
         customer: Customer | None,
     ) -> str:
-        """출금 계좌 식별자를 보존하고 알려진 고객 소유권만 검증한다."""
+        """출금 계좌를 준비하고 마지막 요청의 고객 연결을 반영한다."""
 
         source_account_id = _account_id(payload.source_account_number)
         source_account = self.session.exec(
@@ -244,18 +205,7 @@ class TransactionRepository:
                 account_number=payload.source_account_number,
             )
         else:
-            if source_account.customer_id is None and customer is not None:
-                source_account.customer_id = customer.id
-            elif (
-                customer is not None
-                and source_account.customer_id is not None
-                and source_account.customer_id != customer.id
-            ):
-                raise AccountOwnershipConflictError(
-                    source_account_id,
-                    stored_customer_id=source_account.customer_id,
-                    requested_customer_id=customer.id,
-                )
+            source_account.customer_id = customer.id if customer is not None else None
             source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
         return source_account.account_number
@@ -440,9 +390,6 @@ class PredictionResultRepository:
 
 __all__ = [
     "AccountIdentifierConflictError",
-    "AccountOwnershipConflictError",
-    "CustomerIdentificationConflictError",
-    "CustomerReferenceNotFoundError",
     "PredictionResultRepository",
     "TransactionLabelRepository",
     "TransactionRepository",
