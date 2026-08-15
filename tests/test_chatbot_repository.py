@@ -1,9 +1,10 @@
 import unittest
+from datetime import UTC, datetime
 
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, func, select
 
-from app.data.model.chatbot import ChatSession
+from app.data.model.chatbot import ChatSession, ChatSessionStatus
 from app.domain.fraud_type_codes import (
     ACCOUNT_TAKEOVER,
     FRAUD_USED_ACCOUNT,
@@ -60,6 +61,67 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         self.session.flush()
 
         self.assertIsNone(chat_session.top_fraud_types)
+
+    def test_updates_status_and_question_step(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-PROGRESS",
+            transaction_id=103,
+        )
+
+        self.repository.update_status(
+            chat_session,
+            ChatSessionStatus.IN_PROGRESS,
+        )
+        self.repository.update_question_step(chat_session, 2)
+        self.session.flush()
+
+        self.assertEqual(chat_session.status, ChatSessionStatus.IN_PROGRESS.value)
+        self.assertEqual(chat_session.question_step, 2)
+
+    def test_rejects_negative_question_step(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-INVALID-STEP",
+            transaction_id=104,
+        )
+
+        with self.assertRaisesRegex(ValueError, "0 이상"):
+            self.repository.update_question_step(chat_session, -1)
+
+        self.assertEqual(chat_session.question_step, 0)
+
+    def test_records_url_sent_metadata(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-URL-SENT",
+            transaction_id=105,
+        )
+        sent_at = datetime(2026, 8, 15, 12, 0, tzinfo=UTC)
+
+        self.repository.record_url_sent(
+            chat_session,
+            notified_email="customer@example.com",
+            email_sent_at=sent_at,
+        )
+        self.session.flush()
+
+        self.assertEqual(chat_session.status, ChatSessionStatus.URL_SENT.value)
+        self.assertEqual(chat_session.notified_email, "customer@example.com")
+        self.assertEqual(chat_session.email_sent_at, sent_at)
+
+    def test_marks_session_completed(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-DONE",
+            transaction_id=106,
+        )
+        completed_at = datetime(2026, 8, 15, 13, 0, tzinfo=UTC)
+
+        self.repository.mark_completed(
+            chat_session,
+            completed_at=completed_at,
+        )
+        self.session.flush()
+
+        self.assertEqual(chat_session.status, ChatSessionStatus.DONE.value)
+        self.assertEqual(chat_session.completed_at, completed_at)
 
 
 if __name__ == "__main__":
