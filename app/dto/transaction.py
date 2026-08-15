@@ -1,12 +1,8 @@
-import re
 from dataclasses import dataclass
 from datetime import datetime
-from ipaddress import ip_address
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-MAC_ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TransactionRequestDTO(BaseModel):
@@ -29,9 +25,9 @@ class TransactionRequestDTO(BaseModel):
     transaction_datetime: datetime
     transaction_amount: int
 
-    channel: str = Field(min_length=1, max_length=32)
-    type_general_automatic: str = Field(min_length=1, max_length=16)
-    access_medium: str | None = Field(default=None, max_length=8)
+    channel: str
+    type_general_automatic: str
+    access_medium: str | None = None
     num_connection_failure: int = Field(ge=0)
 
     operating_system: str | None = Field(default=None, max_length=32)
@@ -49,21 +45,6 @@ class TransactionRequestDTO(BaseModel):
     customer_flag_terminal_malicious_behavior_3: bool = Field(default=0)
     customer_flag_terminal_malicious_behavior_5: bool = Field(default=0)
     customer_flag_terminal_malicious_behavior_6: bool = Field(default=0)
-
-    @field_validator("ip_address")
-    @classmethod
-    def validate_ip_address(cls, value: str | None) -> str | None:
-        if value is not None:
-            ip_address(value)
-        return value
-
-    @field_validator("mac_address")
-    @classmethod
-    def validate_mac_address(cls, value: str | None) -> str | None:
-        if value is not None and MAC_ADDRESS_PATTERN.fullmatch(value) is None:
-            raise ValueError("mac_address must be a valid MAC address")
-        return value
-
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
@@ -124,7 +105,6 @@ class TransactionFeaturesDTO:
 
 
 __all__ = [
-    "MAC_ADDRESS_PATTERN",
     "TransactionLabelResponseDTO",
     "TransactionLabelUpdateDTO",
     "TransactionRequestDTO",

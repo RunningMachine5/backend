@@ -13,10 +13,7 @@ from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.ml_features import MLTransactionFeatures
 from app.dto.transaction import TransactionRequestDTO
-from app.services.features.ml_feature_assembler import (
-    FeatureAssemblyError,
-    assemble_ml_features,
-)
+from app.services.features.ml_feature_assembler import assemble_ml_features
 
 
 def _account_id(account_number: str) -> str:
@@ -86,12 +83,8 @@ class TransactionRepository:
     def load_ml_features(
         self,
         transaction: Transaction,
-    ) -> MLTransactionFeatures | None:
-        """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다.
-
-        고객 또는 수취 계좌가 없어 계약을 복원할 수 없는 경우에는
-        호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
-        """
+    ) -> MLTransactionFeatures:
+        """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다."""
 
         derived = self.session.get(DerivedFeatures, transaction.id)
         customer = (
@@ -113,19 +106,13 @@ class TransactionRepository:
             if transaction.recipient_account_number
             else None
         )
-        if derived is None or source_account is None:
-            return None
-
-        try:
-            return assemble_ml_features(
-                customer=customer,
-                source_account=source_account,
-                recipient_account=recipient_account,
-                transaction=transaction,
-                derived=derived,
-            )
-        except FeatureAssemblyError:
-            return None
+        return assemble_ml_features(
+            customer=customer,
+            source_account=source_account,
+            recipient_account=recipient_account,
+            transaction=transaction,
+            derived=derived,
+        )
 
     def add_received(self, payload: TransactionRequestDTO) -> Transaction:
         customer = self._find_customer(payload.customer_id)

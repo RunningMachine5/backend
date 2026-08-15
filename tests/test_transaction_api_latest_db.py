@@ -353,10 +353,8 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(detail.json()["transaction_id"], transaction_id)
         self.assertIs(detail.json()["confirmed_is_fraud"], True)
 
-    def test_invalid_network_location_and_connection_values_return_422(self) -> None:
+    def test_invalid_location_and_connection_values_return_422(self) -> None:
         cases = (
-            {"ip_address": "999.1.1.1"},
-            {"mac_address": "not-a-mac"},
             {"location_lat": 91},
             {"location_lon": -181},
             {"num_connection_failure": -1},
