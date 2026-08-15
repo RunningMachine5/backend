@@ -149,24 +149,32 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 ## 5단계 — RAG 응답 조립 + 채점 집계
 
 **참조**: [PRD 2.5](README.md#25-정보-응답--rag-대응-가이드-4-1), [PRD 2.6](README.md#26-사기-정황-추출과-채점-4-2),
-[messages.md B.5·B.6](messages.md#b5-근거를-찾지-못한-액션-안내), [scoring.md](scoring.md)
+[messages.md B.5](messages.md#b5-안내를-만들지-못한-액션-안내), [scoring.md](scoring.md)
 
-- [ ] `app/services/chatbot/guide_responder.py` (가칭) — PRD 2.5의 의사코드 그대로:
+- [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) 신설 — Generate 프롬프트가
+  설계 문서에 없었다. 소제목·목록 조립은 LLM이 하지 않고 코드가 한다는 것을 문서에 못박고,
+  [prompts.py](../../app/services/chatbot/prompts.py)의 `render_guide_response_prompt`로 옮겼다
+- [x] [guide_responder.py](../../app/services/chatbot/guide_responder.py) — PRD 2.5의 의사코드 그대로:
   - 검색 질의 = `CUSTOMER_ACTION_SEARCH_QUERIES[action.type] + " " + action.evidence`
   - Retrieve는 액션당 독립, `top_k = 3` 고정
   - `grounded` / `ungrounded` 분리 → **Generate는 grounded만으로 1회 호출**
     (0건 액션을 프롬프트에 넣지 않아 교차 오염 차단)
   - `assemble`: ungrounded 액션은 `CUSTOMER_ACTION_DESCRIPTIONS` 소제목 + B.5 고정 문구.
     고객이 말한 행동은 근거 유무와 무관하게 전부 목록에 나타난다
-  - **전체 액션이 0건이면** handoff 신호를 반환 (B.6 문구, 상태 전이는 파이프라인이 수행)
-- [ ] `app/services/chatbot/chat_scoring.py` (가칭) — 상담 종료 시 1회 집계:
+  - **`GuideResponder`는 상태 전이 신호를 내지 않는다.** 전체 0건이면 Generate를 건너뛰고
+    모든 액션을 B.5로 채운다. 액션이 하나도 없으면 빈 본문을 돌려주고 파이프라인이
+    메시지를 보내지 않는다 (README 2.5 4번)
+  - 검색·생성 실패 폴백을 확정하고 README 2.5에 반영했다(액션별 검색 실패는 그 액션만 0건,
+    Generate 실패·전원 빈 안내도 B.5로 채우고 상담 계속)
+  - B.5 문구는 [messages.py](../../app/services/chatbot/messages.py)로 옮겼다(B.1~B.4·B.6은 6단계)
+- [x] [chat_scoring.py](../../app/services/chatbot/chat_scoring.py) — 상담 종료 시 1회 집계:
   `chat_fraud_circumstances` 전체 × `FRAUD_CIRCUMSTANCE_SCORES` → 4개 유형 점수 전부
-  `type_scores`로. 대표 유형·동점·정황 없음은 저장하지도, 백엔드가 계산하지도 않는다
-  (스키마 3.7). 사용처가 없어 `dict[str, int]` 하나만 반환한다
-- [ ] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
-- [ ] 테스트 `tests/test_chatbot_guide_responder.py` / `test_chatbot_scoring.py`:
-  리트리버·LLM 모킹, 전체 0건 → handoff, 일부 0건 → B.5 삽입 및 Generate 입력에서 제외,
-  집계 합산·정황 0건·채점표에 없는 코드
+  `type_scores`로. 대표 유형·동점·정황 없음은 저장하지 않는다 (스키마 3.7)
+- [x] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
+- [x] 테스트 `tests/test_chatbot_guide_responder.py` / `tests/test_chatbot_scoring.py`:
+  리트리버·LLM 모킹, 전체 0건 → LLM 미호출 + 전원 B.5, 일부 0건 → B.5 삽입 및
+  Generate 입력에서 제외, 생성 실패 → B.5 폴백, 액션 0개 → 빈 본문,
+  집계 합산·동점·최고점 0 분기
 - [ ] (선택, 저비용) PRD 3.2 코퍼스 과제 1번: `docs/agent_guides/internal_demo/*_customer.md`
   4종을 `cs_guide_documents`에도 적재해 0건 비율을 낮춘다. 챗봇 로직과 독립이라
   아무 때나 끼워 넣을 수 있다
@@ -190,13 +198,16 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
      (`TOO_VAGUE`/`NON_ANSWER`는 재질문 최대 2회, 초과 시 마지막 응답 채택
      `is_adopted = true` 후 다음 질문)
   4. `SUFFICIENT` → 추출(A.2·A.3) 저장 + RAG 응답(5단계) → 다음 질문 루프
-  5. `WANT_END` → 채점 집계(5단계) + `DONE` + `completed_at`
-  6. 전체 액션 0건 → `HANDOFF_REQUESTED` + 상태 변경 SSE 발행(7단계 훅)
+  5. `WANT_END` → 채점 집계(5단계) + `HANDOFF_REQUESTED` + `completed_at`
+     + 상태 변경 SSE 발행(7단계 훅). 문구는 B.6
+  6. `HANDOFF_REQUESTED` 진입 경로는 1번 버튼과 5번 둘뿐이다. 검색 0건·LLM 실패는
+     상태를 전이시키지 않는다 (PRD 2.5)
 - [ ] 트랜잭션 소유: 턴 단위로 파이프라인이 `commit`/`rollback`. `question_step`은 턴 종료 시 갱신
 - [ ] Fake 참조 제거 및 구 DTO 삭제. `fake_llm`·`fake_vector_db` 등은 다른 사용처(Agent)가
   없는지 확인 후 삭제
 - [ ] 테스트 `tests/test_chatbot_pipeline.py`: LLM·RAG 서비스 모킹으로 그래프 분기 검증
-  (버튼 3종, 재시도 초과 채택, WANT_END 종료·집계 1회, 전체 0건 handoff)
+  (버튼 3종, 재시도 초과 채택, WANT_END 집계 1회 + `HANDOFF_REQUESTED` 전이,
+  전체 0건이어도 상태 불변)
 
 ## 7단계 — API + 세션 생성·이메일 발송 + 거래별 세션 상태 조회·변경 SSE
 
@@ -248,6 +259,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 | 갱신 대상 | 내용 |
 | --- | --- |
 | README 2.4 / 3.1 | 평가 LLM 실패 폴백 확정 (env var 이름, `EVALUATOR_FAILED` 진행) |
+| ~~README 2.5~~ | ~~검색·생성 실패 폴백~~ — 5단계에서 반영 완료 |
 | README 2.1 / 신규 절 | API 엔드포인트 형태 확정본 |
 | README 3.3 | FDS 결합 방식 확정 (동기 + 실패 무시 + 멱등), 미해결에서 제거 |
 | README 3.4 | `transaction_amount` 부호 제약 해소 반영 (`ml_prediction.py:69` 참조도 갱신) |

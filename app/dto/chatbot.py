@@ -94,6 +94,21 @@ class FraudCircumstanceExtractionResult(BaseModel):
     fraud_circumstances: list[ExtractedFraudCircumstance]
 
 
+class GeneratedActionGuide(BaseModel):
+    """대응 가이드 생성 LLM이 액션 하나에 대해 만든 안내."""
+
+    type: CustomerActionCode
+    # 근거만으로 안내를 쓸 수 없으면 빈 문자열이며, 호출부가 B.5 문구로 대체한다.
+    guidance: str
+
+
+# 프롬프트 A.4의 출력 형식
+class GuideResponseGenerationResult(BaseModel):
+    """대응 가이드 생성 LLM의 구조화 출력."""
+
+    guides: list[GeneratedActionGuide]
+
+
 class ChatButtonAction(StrEnum):
     """최초 알림 뒤 고객이 선택할 수 있는 버튼 액션."""
 
@@ -187,6 +202,8 @@ __all__ = [
     "FraudCircumstanceCode",
     "FraudCircumstanceExtractionResult",
     "FraudTypeCode",
+    "GeneratedActionGuide",
+    "GuideResponseGenerationResult",
     "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",
 ]
