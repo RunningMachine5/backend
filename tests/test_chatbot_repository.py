@@ -1,16 +1,24 @@
 import unittest
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, func, select
 
-from app.data.model.chatbot import ChatSession, ChatSessionStatus
+from app.data.model.chatbot import (
+    ChatAnswer,
+    ChatMessage,
+    ChatSenderType,
+    ChatSession,
+    ChatSessionStatus,
+)
 from app.domain.fraud_type_codes import (
     ACCOUNT_TAKEOVER,
     FRAUD_USED_ACCOUNT,
     MESSENGER_PHISHING,
     VOICE_PHISHING,
 )
+from app.dto.chatbot import AnswerQualityVerdict
 from app.repositories.chat_session import ChatSessionRepository
 
 
@@ -22,6 +30,8 @@ class ChatSessionRepositoryTest(unittest.TestCase):
             poolclass=StaticPool,
         )
         ChatSession.__table__.create(self.engine)
+        ChatMessage.__table__.create(self.engine)
+        ChatAnswer.__table__.create(self.engine)
         self.session = Session(self.engine)
         self.repository = ChatSessionRepository(self.session)
 
@@ -114,7 +124,7 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         )
         completed_at = datetime(2026, 8, 15, 13, 0, tzinfo=UTC)
 
-        self.repository.mark_completed(
+        self.repository.set_session_complete(
             chat_session,
             completed_at=completed_at,
         )
@@ -122,6 +132,137 @@ class ChatSessionRepositoryTest(unittest.TestCase):
 
         self.assertEqual(chat_session.status, ChatSessionStatus.DONE.value)
         self.assertEqual(chat_session.completed_at, completed_at)
+
+    def test_adds_message_and_updates_last_message(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-MESSAGE",
+            transaction_id=107,
+        )
+
+        message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="제가 직접 송금했어요",
+        )
+        self.session.flush()
+
+        self.assertIsNotNone(message.message_id)
+        self.assertEqual(message.sender_type, ChatSenderType.HUMAN.value)
+        self.assertEqual(message.message_text, "제가 직접 송금했어요")
+        self.assertIsInstance(message.sent_at, datetime)
+        self.assertEqual(chat_session.last_message_id, message.message_id)
+
+    def test_adds_answer_metadata(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-ANSWER",
+            transaction_id=108,
+        )
+        message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="제가 직접 송금했어요",
+        )
+
+        answer = self.repository.add_answer(
+            chat_session,
+            message=message,
+            question_step=1,
+            attempt_no=1,
+            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
+            is_adopted=True,
+        )
+        self.session.flush()
+
+        self.assertEqual(answer.message_id, message.message_id)
+        self.assertEqual(answer.question_step, 1)
+        self.assertEqual(answer.attempt_no, 1)
+        self.assertEqual(
+            answer.quality_verdict,
+            AnswerQualityVerdict.SUFFICIENT.value,
+        )
+        self.assertIsNone(answer.verdict_skip_reason)
+        self.assertIs(answer.is_adopted, True)
+
+    def test_records_verdict_skip_reason(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-SKIPPED-ANSWER",
+            transaction_id=109,
+        )
+        message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="잘 모르겠어요",
+        )
+
+        answer = self.repository.add_answer(
+            chat_session,
+            message=message,
+            question_step=1,
+            attempt_no=3,
+            verdict_skip_reason="MAX_RETRY_EXCEEDED",
+            is_adopted=True,
+        )
+        self.session.flush()
+
+        self.assertIsNone(answer.quality_verdict)
+        self.assertEqual(answer.verdict_skip_reason, "MAX_RETRY_EXCEEDED")
+
+    def test_rejects_attempt_number_outside_contract(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-INVALID-ATTEMPT",
+            transaction_id=110,
+        )
+        message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="답변",
+        )
+
+        with self.assertRaisesRegex(ValueError, "1 이상 3 이하"):
+            self.repository.add_answer(
+                chat_session,
+                message=message,
+                question_step=1,
+                attempt_no=4,
+            )
+
+    def test_database_rejects_two_adopted_answers_for_same_question(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-UNIQUE-ADOPTED",
+            transaction_id=111,
+        )
+        first_message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="첫 번째 답변",
+        )
+        self.repository.add_answer(
+            chat_session,
+            message=first_message,
+            question_step=1,
+            attempt_no=1,
+            quality_verdict=AnswerQualityVerdict.TOO_VAGUE,
+            is_adopted=True,
+        )
+        self.session.flush()
+
+        second_message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="두 번째 답변",
+        )
+        self.repository.add_answer(
+            chat_session,
+            message=second_message,
+            question_step=1,
+            attempt_no=2,
+            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
+            is_adopted=True,
+        )
+
+        with self.assertRaises(IntegrityError):
+            self.session.flush()
+        self.session.rollback()
 
 
 if __name__ == "__main__":

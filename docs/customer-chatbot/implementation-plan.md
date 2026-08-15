@@ -115,7 +115,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
   (PRD 3.3의 `rule_replay` 재처리 대비). 요청의 `top_fraud_types`(선택)를 세션에 저장
 - [x] 상태 전이, `question_step` 갱신(턴 종료 시), `email_sent_at`/`notified_email`/
   `completed_at` 기록
-- [ ] 메시지 저장(순수 로그) + `chat_answers` 기록 — `attempt_no` 1~3,
+- [x] 메시지 저장(순수 로그) + `chat_answers` 기록 — `attempt_no` 1~3,
   `quality_verdict`/`verdict_skip_reason`, 질문당 `is_adopted = true` 정확히 하나
   (부분 유니크 인덱스 준수)
 - [ ] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
