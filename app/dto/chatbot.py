@@ -94,6 +94,21 @@ class FraudCircumstanceExtractionResult(BaseModel):
     fraud_circumstances: list[ExtractedFraudCircumstance]
 
 
+class GeneratedActionGuide(BaseModel):
+    """대응 가이드 생성 LLM이 액션 하나에 대해 만든 안내."""
+
+    type: CustomerActionCode
+    # 근거만으로 안내를 쓸 수 없으면 빈 문자열이며, 호출부가 B.5 문구로 대체한다.
+    guidance: str
+
+
+# 프롬프트 A.4의 출력 형식
+class GuideResponseGenerationResult(BaseModel):
+    """대응 가이드 생성 LLM의 구조화 출력."""
+
+    guides: list[GeneratedActionGuide]
+
+
 class ChatButtonAction(StrEnum):
     """최초 알림 뒤 고객이 선택할 수 있는 버튼 액션."""
 
@@ -141,33 +156,6 @@ class RetrievedChatbotGuideChunkDTO:
     distance: float
 
 
-# 이거 밑에 있는건 기존 파이프라인 유지하려고 만든거라 일단 유지, 6단계 진행시 삭제예정입니당
-
-@dataclass(frozen=True)
-class ChatbotRequestDTO:
-    """고객 식별자와 질문을 전달하는 챗봇 요청 DTO."""
-
-    question: str
-
-
-@dataclass(frozen=True)
-class CustomerGuideDTO:
-    """고객 대응 가이드 검색 결과 DTO."""
-
-    title: str
-    content: str
-    source: str
-    similarity_score: float
-
-
-@dataclass(frozen=True)
-class ChatbotResponseDTO:
-    """검색 가이드와 거래정보를 반영한 챗봇 응답 DTO."""
-
-    answer: str
-    source: list[str]
-
-
 __all__ = [
     "AnswerEvaluationResult",
     "AnswerQualityVerdict",
@@ -175,18 +163,17 @@ __all__ = [
     "ChatButtonActionRequest",
     "ChatMessageResponse",
     "ChatSessionStatusChangedEventPayload",
-    "ChatbotRequestDTO",
-    "ChatbotResponseDTO",
     "CreateChatRequest",
     "CreateChatResponse",
     "CustomerActionCode",
     "CustomerActionExtractionResult",
-    "CustomerGuideDTO",
     "ExtractedCustomerAction",
     "ExtractedFraudCircumstance",
     "FraudCircumstanceCode",
     "FraudCircumstanceExtractionResult",
     "FraudTypeCode",
+    "GeneratedActionGuide",
+    "GuideResponseGenerationResult",
     "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",
 ]

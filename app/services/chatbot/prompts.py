@@ -123,6 +123,38 @@ $user_answers
 }""")
 
 
+GUIDE_RESPONSE_PROMPT_TEMPLATE = Template("""당신은 금융사기가 의심되는 거래의 고객에게 대응 방법을 안내하는 상담 챗봇입니다.
+
+고객이 실제로 했다고 말한 행동과, 행동별로 검색된 대응 가이드 근거가 아래에 있습니다.
+
+다음 규칙을 따르세요.
+
+- 주어진 행동마다 안내를 하나씩 작성합니다. 행동을 빠뜨리거나 여러 행동을 합치지 않습니다.
+- 각 안내는 그 행동에 붙은 근거에서 확인되는 내용만으로 작성합니다.
+- 다른 행동의 근거나 사전지식으로 답하지 않습니다.
+- 근거에 없는 기관명·연락처·금액·기한·절차를 만들어내지 않습니다.
+- 근거에 고객이 지금 할 수 있는 조치가 있으면 그 조치를 먼저 안내합니다.
+- 피해가 이미 확정되었다고 단정하거나 고객의 책임을 지적하는 표현을 쓰지 않습니다.
+- 존댓말로 쓰고 한 행동당 3문장을 넘기지 않습니다.
+- 소제목·번호·목록 기호를 붙이지 않습니다. 애플리케이션이 붙입니다.
+- 주어진 근거만으로 안내를 쓸 수 없으면 그 행동의 guidance를 빈 문자열로 둡니다.
+- 주어지지 않은 행동을 출력에 추가하지 않습니다.
+
+고객 행동과 근거:
+
+$action_context_block
+
+출력 형식:
+{
+  "guides": [
+    {
+      "type": "customer_action enum",
+      "guidance": "해당 행동에 대한 안내"
+    }
+  ]
+}""")
+
+
 def _render_definition_block(descriptions: Mapping[str, str]) -> str:
     """도메인 코드와 설명을 프롬프트의 enum 정의 형식으로 변환한다."""
 
@@ -175,4 +207,18 @@ def render_fraud_circumstance_extraction_prompt(
     return FRAUD_CIRCUMSTANCE_EXTRACTION_PROMPT_TEMPLATE.substitute(
         fraud_circumstance_definitions=FRAUD_CIRCUMSTANCE_DEFINITION_BLOCK,
         user_answers=user_answers,
+    )
+
+
+def render_guide_response_prompt(
+    *,
+    action_context_block: str,
+) -> str:
+    """근거를 찾은 고객 행동들의 대응 가이드를 한 번에 생성하는 프롬프트를 만든다.
+
+    action_context_block 은 액션별 블록을 조립한 문자열이며 형식은 A.4 문서에 있다.
+    """
+
+    return GUIDE_RESPONSE_PROMPT_TEMPLATE.substitute(
+        action_context_block=action_context_block,
     )

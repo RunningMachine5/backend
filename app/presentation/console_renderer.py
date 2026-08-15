@@ -1,5 +1,4 @@
 from app.dto.legacy_agent import AgentResultDTO
-from app.dto.chatbot import ChatbotResponseDTO
 from app.dto.fraud import FraudAssessmentDTO
 
 
@@ -53,7 +52,3 @@ class ConsoleRenderer:
         print(f"수행 작업: {result.action.value}")
         print(result.message)
 
-    def print_chatbot_response(self, response: ChatbotResponseDTO) -> None:
-        """고객 대응가이드 챗봇의 최종 답변을 출력한다."""
-        print("\n--- 고객 대응가이드 챗봇 ---")
-        print(response.answer)

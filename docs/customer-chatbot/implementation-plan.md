@@ -29,13 +29,16 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 
 ### 대체·수정 대상
 
-- [app/api/chat.py](../../app/api/chat.py) — 세션 개념 없는 `POST /chat/ask` 하나뿐. 재작성.
-- [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py) — Fake 조립 껍데기. 재작성.
-- [app/dto/chatbot.py](../../app/dto/chatbot.py) — 구 placeholder dataclass. 재정의.
+- [app/api/chat.py](../../app/api/chat.py) — 세션 개념 없는 `POST /chat/ask` 하나뿐.
+  → 6단계 정리에서 엔드포인트를 걷어내고 빈 라우터만 남겼다. 7단계에서 재작성.
+- `customer_chatbot_pipeline.py` — Fake 조립 껍데기. → 6단계 정리에서 삭제. 새로 만든다.
+- [app/dto/chatbot.py](../../app/dto/chatbot.py) — 구 placeholder dataclass. → 재정의 완료.
 - [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py) — 0건일 때 문자열
   `"관련 문서를 찾지 못했습니다."` 반환. **구조화가 선결 조건** ([PRD 2.5](README.md#검색-결과-0건-처리)).
+  → 2단계 완료, 구 `retriever`는 6단계 정리에서 삭제.
 - Fake 5종 (`fake_embedder`, `fake_guide_retriever`, `fake_transaction_repository`,
   `fake_llm`, `fake_vector_db`) — 챗봇 파이프라인 참조 제거. 다른 사용처가 없으면 삭제.
+  → 앞의 3종은 삭제, `fake_llm`·`fake_vector_db`는 Agent가 써서 유지.
 
 ### 확인된 사실 (계획에 반영)
 
@@ -87,8 +90,8 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
     `Literal[*FINAL_CUSTOMER_ACTION_CODES]` / `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로
     선언해 파서 단계에서 화이트리스트를 강제 (스키마 3.8)
   - 메시지 송수신·버튼 액션·세션 상태 변경 SSE 이벤트 DTO (7단계에서 확장 가능)
-  - 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`는 Fake 파이프라인이
-    아직 참조하므로 6단계에서 함께 삭제
+  - 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`는 6단계 정리에서
+    Fake 파이프라인과 함께 삭제 완료
 - [x] 테스트 `tests/test_chatbot_dto.py`: 화이트리스트 밖 enum이 파싱 실패하는지
 
 ## 2단계 — 리트리버 구조화 (선결 조건)
@@ -99,8 +102,8 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 - [x] [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)의 `retriever_source`가
   구조화된 결과(청크 내용·출처 제목·페이지·거리의 리스트)를 반환하도록 변경.
   **0건은 빈 리스트**이며 문장을 컨텍스트로 넣지 않는다. `MAX_DISTANCE`·HNSW 인덱스는 유지.
-- [x] 호출부 [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳 갱신
-  (문자열 조립을 호출부로 이동). 기존 `POST /chat/ask` 동작은 7단계 재작성 전까지 유지.
+- [x] 유일한 호출부였던 `customer_chatbot.py`는 6단계 정리에서 삭제했다. 문자열을 돌려주던
+  옛 `retriever`도 함께 제거해 `retriever_source` 하나만 남았다.
 - [x] 테스트 `tests/test_chatbot_retriever.py`: 임베딩 함수를 모킹해 0건 → 빈 리스트,
   거리 초과 청크 제외 분기
 
@@ -133,38 +136,47 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 프롬프트 렌더링은 [prompts.py](../../app/services/chatbot/prompts.py)에 이미 있으므로
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
 
-- [ ] `app/services/chatbot/answer_evaluator.py` — A.1 평가 호출.
+- [x] `app/services/chatbot/answer_evaluator.py` — A.1 평가 호출.
   structured output으로 판정 5종을 강제(프롬프트 지시에 의존하지 않는다, PRD 3.2).
   타임아웃·재시도는 1단계 env var 사용.
   - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한, 상한 소진 시
     `REFUSAL`과 동일하게 다음 질문으로 진행하고 `verdict_skip_reason = EVALUATOR_FAILED`로
     기록. LLM 실패는 `attempt_no`를 소모하지 않는다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
-- [ ] `app/services/chatbot/extractors.py` — A.2 고객 행동 / A.3 사기 정황 추출 호출.
+- [x] `app/services/chatbot/extractors.py` — A.2 고객 행동 / A.3 사기 정황 추출 호출.
   structured output 스키마는 1단계 DTO. `evidence`가 답변 원문에 연속 문자열로 존재하는지
   저장 전 대조하고, 불일치 항목은 로그를 남긴 뒤 저장하지 않음
-- [ ] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
+- [x] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 5종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
 
 ## 5단계 — RAG 응답 조립 + 채점 집계
 
 **참조**: [PRD 2.5](README.md#25-정보-응답--rag-대응-가이드-4-1), [PRD 2.6](README.md#26-사기-정황-추출과-채점-4-2),
-[messages.md B.5·B.6](messages.md#b5-근거를-찾지-못한-액션-안내), [scoring.md](scoring.md)
+[messages.md B.5](messages.md#b5-안내를-만들지-못한-액션-안내), [scoring.md](scoring.md)
 
-- [ ] `app/services/chatbot/guide_responder.py` (가칭) — PRD 2.5의 의사코드 그대로:
+- [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) 신설 — Generate 프롬프트가
+  설계 문서에 없었다. 소제목·목록 조립은 LLM이 하지 않고 코드가 한다는 것을 문서에 못박고,
+  [prompts.py](../../app/services/chatbot/prompts.py)의 `render_guide_response_prompt`로 옮겼다
+- [x] [guide_responder.py](../../app/services/chatbot/guide_responder.py) — PRD 2.5의 의사코드 그대로:
   - 검색 질의 = `CUSTOMER_ACTION_SEARCH_QUERIES[action.type] + " " + action.evidence`
   - Retrieve는 액션당 독립, `top_k = 3` 고정
   - `grounded` / `ungrounded` 분리 → **Generate는 grounded만으로 1회 호출**
     (0건 액션을 프롬프트에 넣지 않아 교차 오염 차단)
   - `assemble`: ungrounded 액션은 `CUSTOMER_ACTION_DESCRIPTIONS` 소제목 + B.5 고정 문구.
     고객이 말한 행동은 근거 유무와 무관하게 전부 목록에 나타난다
-  - **전체 액션이 0건이면** handoff 신호를 반환 (B.6 문구, 상태 전이는 파이프라인이 수행)
-- [ ] `app/services/chatbot/chat_scoring.py` (가칭) — 상담 종료 시 1회 집계:
+  - **`GuideResponder`는 상태 전이 신호를 내지 않는다.** 전체 0건이면 Generate를 건너뛰고
+    모든 액션을 B.5로 채운다. 액션이 하나도 없으면 빈 본문을 돌려주고 파이프라인이
+    메시지를 보내지 않는다 (README 2.5 4번)
+  - 검색·생성 실패 폴백을 확정하고 README 2.5에 반영했다(액션별 검색 실패는 그 액션만 0건,
+    Generate 실패·전원 빈 안내도 B.5로 채우고 상담 계속)
+  - B.5 문구는 [messages.py](../../app/services/chatbot/messages.py)로 옮겼다(B.1~B.4·B.6은 6단계)
+- [x] [chat_scoring.py](../../app/services/chatbot/chat_scoring.py) — 상담 종료 시 1회 집계:
   `chat_fraud_circumstances` 전체 × `FRAUD_CIRCUMSTANCE_SCORES` → 4개 유형 점수 전부
   `type_scores`로. 대표 유형·동점·정황 없음은 저장하지 않는다 (스키마 3.7)
-- [ ] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
-- [ ] 테스트 `tests/test_chatbot_guide_responder.py` / `test_chatbot_scoring.py`:
-  리트리버·LLM 모킹, 전체 0건 → handoff, 일부 0건 → B.5 삽입 및 Generate 입력에서 제외,
+- [x] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
+- [x] 테스트 `tests/test_chatbot_guide_responder.py` / `tests/test_chatbot_scoring.py`:
+  리트리버·LLM 모킹, 전체 0건 → LLM 미호출 + 전원 B.5, 일부 0건 → B.5 삽입 및
+  Generate 입력에서 제외, 생성 실패 → B.5 폴백, 액션 0개 → 빈 본문,
   집계 합산·동점·최고점 0 분기
 - [ ] (선택, 저비용) PRD 3.2 코퍼스 과제 1번: `docs/agent_guides/internal_demo/*_customer.md`
   4종을 `cs_guide_documents`에도 적재해 0건 비율을 낮춘다. 챗봇 로직과 독립이라
@@ -175,7 +187,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 **참조**: [PRD 2.3~2.6](README.md#23-최초-알림-메시지와-버튼), [스키마 3.4 대화 진행 상태](schema.md#34-chat_sessions--테이블명-변경-및-컬럼-추가),
 [messages.md B.1~B.4](messages.md)
 
-[customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)를 재작성한다.
+`app/pipelines/customer_chatbot_pipeline.py`를 새로 만든다(Fake 껍데기는 삭제됨).
 `StateGraph` + **체크포인터 `InMemorySaver`**, `thread_id = chat_session_id`.
 서버 재시작 시 진행 상태 유실은 감수한다(스키마 3.4에 명시된 트레이드오프).
 
@@ -189,13 +201,22 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
      (`TOO_VAGUE`/`NON_ANSWER`는 재질문 최대 2회, 초과 시 마지막 응답 채택
      `is_adopted = true` 후 다음 질문)
   4. `SUFFICIENT` → 추출(A.2·A.3) 저장 + RAG 응답(5단계) → 다음 질문 루프
-  5. `WANT_END` → 채점 집계(5단계) + `DONE` + `completed_at`
-  6. 전체 액션 0건 → `HANDOFF_REQUESTED` + 상태 변경 SSE 발행(7단계 훅)
+  5. `WANT_END` → 채점 집계(5단계) + `HANDOFF_REQUESTED` + `completed_at`
+     + 상태 변경 SSE 발행(7단계 훅). 문구는 B.6
+  6. `HANDOFF_REQUESTED` 진입 경로는 1번 버튼과 5번 둘뿐이다. 검색 0건·LLM 실패는
+     상태를 전이시키지 않는다 (PRD 2.5)
 - [ ] 트랜잭션 소유: 턴 단위로 파이프라인이 `commit`/`rollback`. `question_step`은 턴 종료 시 갱신
-- [ ] Fake 참조 제거 및 구 DTO 삭제. `fake_llm`·`fake_vector_db` 등은 다른 사용처(Agent)가
-  없는지 확인 후 삭제
+- [x] Fake 참조 제거 및 구 DTO 삭제 완료. 삭제한 것: `customer_chatbot_pipeline.py`,
+  `fake_embedder.py`, `fake_guide_retriever.py`, `fake_transaction_repository.py`,
+  `customer_chatbot.py`, 구 `retriever`, 구
+  `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`,
+  `FakeLLM.generate_chatbot_answer`, `ConsoleRenderer.print_chatbot_response`,
+  `CUSTOMER_GUIDE_TEXT`, `tests/test_pipelines.py`의 챗봇 테스트.
+  남긴 것: `fake_llm.py`·`fake_vector_db.py` — Agent의 `monitoring_agent_pipeline.py`가 쓴다.
+  `app/api/chat.py`는 빈 라우터만 남겨 7단계에서 재작성한다.
 - [ ] 테스트 `tests/test_chatbot_pipeline.py`: LLM·RAG 서비스 모킹으로 그래프 분기 검증
-  (버튼 3종, 재시도 초과 채택, WANT_END 종료·집계 1회, 전체 0건 handoff)
+  (버튼 3종, 재시도 초과 채택, WANT_END 집계 1회 + `HANDOFF_REQUESTED` 전이,
+  전체 0건이어도 상태 불변)
 
 ## 7단계 — API + 세션 생성·이메일 발송 + 거래별 세션 상태 조회·변경 SSE
 
@@ -216,7 +237,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - `GET /chat/{chat_session_id}` — 세션 상태 + 메시지 이력 (접속, `is_older` 포함)
   - `POST /chat/{chat_session_id}/actions` — 버튼 3종
   - `POST /chat/{chat_session_id}/messages` — 고객 답변 → 파이프라인 실행 → 챗봇 응답
-  - 기존 `POST /chat/ask` 제거
+  - (기존 `POST /chat/ask`는 6단계 정리에서 이미 제거했다)
 - [ ] 담당자 거래 목록에서 각 `transaction_id`에 연결된 채팅 세션 상태 조회 API
 - [ ] SSE — `GET /agent/chat-sessions/events` (`text/event-stream`):
   - 대시보드당 연결 하나로 모든 세션 상태 변경을 수신하고 `transaction_id`로 목록 항목 갱신
@@ -247,6 +268,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 | 갱신 대상 | 내용 |
 | --- | --- |
 | README 2.4 / 3.1 | 평가 LLM 실패 폴백 확정 (env var 이름, `EVALUATOR_FAILED` 진행) |
+| ~~README 2.5~~ | ~~검색·생성 실패 폴백~~ — 5단계에서 반영 완료 |
 | README 2.1 / 신규 절 | API 엔드포인트 형태 확정본 |
 | README 3.3 | FDS 결합 방식 확정 (동기 + 실패 무시 + 멱등), 미해결에서 제거 |
 | README 3.4 | `transaction_amount` 부호 제약 해소 반영 (`ml_prediction.py:69` 참조도 갱신) |

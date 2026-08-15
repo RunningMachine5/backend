@@ -427,18 +427,19 @@ Agent / 고객 질문 스켈레톤
 | `FraudAssessmentDTO` | 구형 Agent 스켈레톤 | Agent, 대시보드 |
 | `RagQueryDTO` | Agent/RAG 쿼리 담당 | VectorDB 검색 담당 |
 | `RetrievedContextDTO` | VectorDB 검색 담당 | LLM 답변 담당 |
-| `ChatbotRequestDTO` | 고객 채널 담당 | 대응가이드 챗봇 |
-| `ChatbotResponseDTO` | 대응가이드 챗봇 | 고객 채널 담당 |
 
 실제 거래 탐지는 `TransactionCreateDTO`를 받아 ML Serving과 룰 점수를 차례로 실행합니다.
 구형 Agent DTO는 실제 거래 탐지 결과에 맞춘 Agent 계약을 확정한 뒤 제거합니다.
 
-## Agent·챗봇 Fake 구현 범위
+## Agent Fake 구현 범위
 
 - VectorDB: 어떤 쿼리에도 동일한 모니터링 문맥 반환
-- RDB: 코드에 하드코딩된 거래 리스트에서 사용자 거래 조회
 - LLM: 입력 DTO의 문맥을 문자열 템플릿으로 조합
 - 이메일/대시보드: `print()`로 출력
 
 거래 수신, ML Serving 호출, PostgreSQL 저장, 동적 룰 점수 계산은 Fake 범위가 아닙니다.
+
+고객 대응 챗봇의 Fake 구현(`customer_chatbot_pipeline.py`, `FakeEmbedder`,
+`FakeGuideRetriever`, `build_chatbot_chain`)은 제거했습니다. 이 영역은
+[docs/customer-chatbot/](docs/customer-chatbot/) 설계에 따라 실제 구현으로 다시 만드는 중입니다.
 

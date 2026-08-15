@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import Mock, patch
 
 from app.dto.chatbot import RetrievedChatbotGuideChunkDTO
-from app.services.chatbot.customer_chatbot import _render_retrieved_context
 from app.services.rag.chatbot_retriever import MAX_DISTANCE, retriever_source
 
 
@@ -48,29 +47,6 @@ class TestChatbotRetriever(unittest.TestCase):
         stmt = session.exec.call_args.args[0]
         self.assertIsNotNone(stmt.whereclause)
         self.assertIn("<=", str(stmt.whereclause))
-
-
-class TestRetrievedContextRendering(unittest.TestCase):
-    def test_renders_empty_context_without_fallback_sentence(self) -> None:
-        self.assertEqual(_render_retrieved_context([]), "")
-
-    def test_renders_source_title_page_and_content(self) -> None:
-        context = _render_retrieved_context(
-            [
-                RetrievedChatbotGuideChunkDTO(
-                    content="대응 가이드 내용",
-                    source_title="금융사기 피해 예방 안내서",
-                    page=7,
-                    distance=0.2,
-                )
-            ]
-        )
-
-        self.assertEqual(
-            context,
-            "[출처: 금융사기 피해 예방 안내서 7p]\n대응 가이드 내용",
-        )
-        self.assertNotIn("관련 문서를 찾지 못했습니다.", context)
 
 
 if __name__ == "__main__":
