@@ -81,10 +81,11 @@ class TransactionRepositoryTest(unittest.TestCase):
         return transaction
 
     def test_slim_request_saves_transaction_and_account_identifiers(self) -> None:
-        transaction = self._save(_payload())
+        transaction = self._save(_payload(operating_system="iOS"))
 
         self.assertIsInstance(transaction.id, int)
         self.assertEqual(transaction.transaction_amount, -10_000)
+        self.assertEqual(transaction.operating_system, "iOS")
         self.assertEqual(transaction.location, "37.5 127.0")
         source = self.session.exec(
             select(Account).where(Account.account_number == "source-0001")
@@ -109,6 +110,7 @@ class TransactionRepositoryTest(unittest.TestCase):
         assert features is not None
         self.assertEqual(features.account_account_type, "a")
         self.assertEqual(features.account_amount_daily_limit, 0)
+        self.assertEqual(features.operating_system, "ios")
         self.assertEqual(
             features.account_creation_datetime,
             transaction.transaction_datetime,
