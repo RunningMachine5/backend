@@ -13,10 +13,12 @@ from app.data.model.chatbot import (
     ChatSenderType,
     ChatSession,
     ChatSessionStatus,
+    FraudTypeScoreAfterChat,
 )
 from app.domain.customer_action_codes import PHISHING_LINK_OPENED
 from app.domain.fraud_circumstance_codes import (
     ACCOUNT_REAUTHENTICATION_PHISHING,
+    CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
 )
 from app.domain.fraud_type_codes import (
     ACCOUNT_TAKEOVER,
@@ -40,6 +42,7 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         ChatAnswer.__table__.create(self.engine)
         ChatCustomerAction.__table__.create(self.engine)
         ChatFraudCircumstance.__table__.create(self.engine)
+        FraudTypeScoreAfterChat.__table__.create(self.engine)
         self.session = Session(self.engine)
         self.repository = ChatSessionRepository(self.session)
 
@@ -369,6 +372,71 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         ).one()
         self.assertEqual(action_count, 0)
         self.assertEqual(circumstance_count, 0)
+
+    def test_lists_all_fraud_circumstances_for_session(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-SCORE-SOURCE",
+            transaction_id=115,
+        )
+        other_session = self.repository.create_or_get(
+            chat_session_id="CHAT-SCORE-OTHER",
+            transaction_id=116,
+        )
+        self.repository.add_fraud_circumstance(
+            chat_session,
+            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
+            evidence="재인증 링크라고 했어요",
+        )
+        self.repository.add_fraud_circumstance(
+            chat_session,
+            circumstance_code=CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
+            evidence="검찰이 범죄에 연루됐다고 전화했어요",
+        )
+        self.repository.add_fraud_circumstance(
+            other_session,
+            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
+            evidence="다른 세션의 답변",
+        )
+
+        circumstances = self.repository.list_fraud_circumstances(chat_session)
+
+        self.assertEqual(
+            [item.circumstance_code for item in circumstances],
+            [
+                ACCOUNT_REAUTHENTICATION_PHISHING,
+                CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
+            ],
+        )
+
+    def test_saves_fraud_type_scores_once_per_transaction(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-SCORE",
+            transaction_id=117,
+        )
+        type_scores = {
+            VOICE_PHISHING: 3.0,
+            MESSENGER_PHISHING: 0.0,
+            ACCOUNT_TAKEOVER: 1.0,
+            FRAUD_USED_ACCOUNT: 0.0,
+        }
+
+        first_inserted = self.repository.add_fraud_type_scores(
+            chat_session,
+            type_scores=type_scores,
+        )
+        duplicate_inserted = self.repository.add_fraud_type_scores(
+            chat_session,
+            type_scores={VOICE_PHISHING: 99.0},
+        )
+
+        self.assertIs(first_inserted, True)
+        self.assertIs(duplicate_inserted, False)
+        score = self.session.get(FraudTypeScoreAfterChat, 117)
+        self.assertIsNotNone(score)
+        assert score is not None
+        self.assertEqual(score.chat_session_id, chat_session.chat_session_id)
+        self.assertEqual(score.type_scores, type_scores)
+        self.assertIsInstance(score.scored_at, datetime)
 
 
 if __name__ == "__main__":

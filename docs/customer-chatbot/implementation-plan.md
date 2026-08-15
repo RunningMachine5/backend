@@ -120,7 +120,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
   (부분 유니크 인덱스 준수)
 - [x] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
   `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러냄)
-- [ ] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
+- [x] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
   `fraud_type_score_after_chat` 저장(`ON CONFLICT DO NOTHING`, 거래당 1행)
 - [ ] SSE 스냅샷용 조회 — `status = HANDOFF_REQUESTED` 세션 목록 (PRD 2.7)
 - [ ] 테스트 `tests/test_chatbot_repository.py`: 멱등 생성, 채택 답변 유일성, enum 중복 무시

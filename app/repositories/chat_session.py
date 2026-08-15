@@ -17,6 +17,7 @@ from app.data.model.chatbot import (
     ChatSenderType,
     ChatSession,
     ChatSessionStatus,
+    FraudTypeScoreAfterChat,
 )
 from app.domain.customer_action_codes import FINAL_CUSTOMER_ACTION_CODES
 from app.domain.fraud_circumstance_codes import FINAL_FRAUD_CIRCUMSTANCE_CODES
@@ -237,6 +238,46 @@ class ChatSessionRepository:
                 ),
             },
             index_elements=["chat_session_id", "circumstance_code"],
+        )
+
+    def list_fraud_circumstances(
+        self,
+        chat_session: ChatSession,
+    ) -> list[ChatFraudCircumstance]:
+        """
+        세션에서 추출된 사기 정황을 모두 조회한다.
+        채점을 진행할때 사용
+        """
+
+        return list(
+            self.session.exec(
+                select(ChatFraudCircumstance)
+                .where(
+                    ChatFraudCircumstance.chat_session_id
+                    == chat_session.chat_session_id
+                )
+                .order_by(ChatFraudCircumstance.circumstance_id)
+            ).all()
+        )
+
+    def add_fraud_type_scores(
+        self,
+        chat_session: ChatSession,
+        *,
+        type_scores: dict[str, float],
+    ) -> bool:
+        """채팅으로 얻어진 사기 정보를 거래당 한 번만 저장한다."""
+
+        return self._insert_do_nothing(
+            FraudTypeScoreAfterChat,
+            values={
+                "transaction_id": chat_session.transaction_id,
+                "chat_session_id": chat_session.chat_session_id,
+                "type_scores": dict(type_scores),
+                "scored_at": datetime.now(UTC),
+            },
+            # 이미 저장되어 있으면 저장하지 않는다
+            index_elements=["transaction_id"],
         )
 
     def _source_answer_id(
