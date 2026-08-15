@@ -30,6 +30,10 @@ from app.services.agent.task_runner import AgentTaskRunnerDep
 from app.services.analysis.risk_grader import RiskGrader
 from app.services.ml_serving.client import MLServingClientDep
 
+from app.services.dashboard.dashboard_event_broker import(
+    dashboard_event_broker
+)
+
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -100,6 +104,7 @@ def _transaction_response(
     response_model=TransactionResponseDTO,
     status_code=status.HTTP_201_CREATED,
 )
+
 def create_transaction(
     payload: TransactionRequestDTO,
     background_tasks: BackgroundTasks,
@@ -137,6 +142,14 @@ def create_transaction(
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)
 
+    if (
+        result.prediction_result is not None
+        and result.prediction_result.predict_result
+    ):
+        dashboard_event_broker.publish(
+            event="dashboard_updated",
+            data={"source":"ml"}
+        )
     return _transaction_response(
         result.transaction,
         result.prediction_result,

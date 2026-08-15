@@ -347,7 +347,6 @@ Table chat_customer_actions {
   chat_session_id varchar(64) [not null, ref: > chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
   action_code varchar(64) [not null]
   evidence text [not null]
-  evidence_verified boolean [not null]
   source_answer_id bigint [ref: > chat_answers.answer_id, note: "ON DELETE SET NULL"]
   extracted_at timestamptz [not null]
 
@@ -361,7 +360,6 @@ Table chat_fraud_circumstances {
   chat_session_id varchar(64) [not null, ref: > chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
   circumstance_code varchar(64) [not null]
   evidence text [not null]
-  evidence_verified boolean [not null]
   source_answer_id bigint [ref: > chat_answers.answer_id, note: "ON DELETE SET NULL"]
   extracted_at timestamptz [not null]
 

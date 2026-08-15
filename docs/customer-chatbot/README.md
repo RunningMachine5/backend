@@ -294,8 +294,9 @@ Generate를 1회로 묶으면 LLM 호출 수가 액션 개수와 무관하게 1�
    전부 응답 목록에 나타난다.** 답을 찾지 못했다는 사실을 침묵이 아니라 명시적으로 알린다.
    → 문구: [B.5](messages.md#b5-근거를-찾지-못한-액션-안내)
 4. **모든 액션이 0건이면** 챗봇이 할 말이 없으므로 그때만
-   `chat_sessions.status = HANDOFF_REQUESTED`로 전이하고
-   [2.7의 SSE 이벤트](#27-상담사-반환-경로-sse)를 발행한다.
+   `chat_sessions.status = HANDOFF_REQUESTED`로 전이한다. 프론트는
+   [2.7의 SSE](#27-상담사-반환-경로-거래별-상태-조회--sse)로 변경을 받고,
+   최초 접속·재연결 시 거래별 상태 조회로 현재값을 확인한다.
    → 문구: [B.6](messages.md#b6-전체-액션이-0건일-때)
 
 ```python
@@ -381,25 +382,17 @@ response = assemble(fragments)
 집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
 상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)).
 
-### 2.7 상담사 반환 경로 (SSE)
+### 2.7 상담사 반환 경로 (거래별 상태 조회 + SSE)
 
 챗봇이 처리할 수 없어 사람에게 넘겨야 하는 순간 — [2.3](#23-최초-알림-메시지와-버튼)의
-"상담사 연결" 버튼으로 `status`가 `HANDOFF_REQUESTED`로 바뀌는 순간 — 을 담당자가 어떻게
-알아채는지가 필요하다. 채팅창은 `AgentCase` 상세 화면 안에서만 표시하므로 프론트는 이미
-현재 `case_id`를 알고 있다. SSE 이벤트에는 세션과 거래 식별자만 전달한다.
+"상담사 연결" 버튼으로 `status`가 `HANDOFF_REQUESTED`로 바뀌었는지를 담당자가 확인해야 한다.
+프론트에는 거래 목록이 있고 각 항목이 `transaction_id`를 알고 있으므로 최초 접속과 SSE
+재연결 시 각 거래에 연결된 채팅 세션의 현재 상태를 개별 조회한다.
 
-`HANDOFF_REQUESTED` 전이를 **SSE(Server-Sent Events)** 로 프론트에 푸시한다.
-
-- 엔드포인트: `GET /agent/chat-sessions/events` — `text/event-stream`을 담당자 대시보드가 구독
-- 이벤트 페이로드
-  - `chat_session_id`
-  - `transaction_id`
-- 상태 전이가 일어나는 지점(챗봇 파이프라인에서 `status`를 `HANDOFF_REQUESTED`로 갱신하는
-  코드)에서 in-process pub/sub으로 SSE 커넥션에 즉시 브로드캐스트한다.
-  MVP 단계이므로 서버가 여러 인스턴스로 배포되는 경우는 고려하지 않는다.
-- 연결 직후(새로고침·재접속 시)에는 아직 전달되지 않은 이벤트를 놓치므로, 최초 구독 시점에
-  현재 `status = HANDOFF_REQUESTED`인 세션 목록을 스냅샷으로 한 번 내려주고 이후부터
-  실시간 이벤트를 잇는다.
+이후 상태 변경은 대시보드가 SSE 연결 하나로 수신한다. 이벤트는 `transaction_id`,
+`chat_session_id`, 변경된 `status`를 포함하며 프론트는 `transaction_id`가 같은 목록 항목만
+갱신한다. 전체 `HANDOFF_REQUESTED` 세션 스냅샷은 조회하거나 선전송하지 않는다. MVP에서는
+in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 공유는 고려하지 않는다.
 
 ---
 
@@ -521,7 +514,7 @@ response = assemble(fragments)
 
 | 절 | 내용 | 이 PRD의 사용처 |
 | --- | --- | --- |
-| [3.3](schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-sse) |
+| [3.3](schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
 | [3.4](schema.md#34-chat_sessions--테이블명-변경-및-컬럼-추가) | `chat_sessions` 테이블명 변경 + 대화 진행 상태 | [2.1](#21-채팅-세션-생성-및-이메일-전송), [2.4](#24-정보-수집--챗봇-질문) |
 | [3.5](schema.md#35-chat_answers--신규) | `chat_answers` | [2.4 조건 1](#조건-1-현재-질문에-대한-재시도-횟수) |
 | [3.6](schema.md#36-추출-결과-테이블--신규) | 고객 행동·사기 정황 추출 테이블 | [2.5 고객 행동 추출](#고객-행동-추출), [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |

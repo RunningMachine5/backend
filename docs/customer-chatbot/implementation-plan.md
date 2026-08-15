@@ -25,7 +25,7 @@
 ### 없는 것 — 이 계획이 만드는 것
 
 챗봇 리포지토리, 세션 기반 API, 평가·추출 LLM 호출부, RAG 응답 조립, 채점 집계,
-LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 경로, FDS 결합.
+LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 세션 상태 조회·변경 SSE, FDS 결합.
 
 ### 대체·수정 대상
 
@@ -61,7 +61,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 | 4 | 평가·추출 LLM 서비스 | 1 |
 | 5 | RAG 응답 조립 + 채점 집계 | 2, 4 |
 | 6 | LangGraph 파이프라인 | 3, 4, 5 |
-| 7 | API + 세션 생성·이메일 발송 + SSE | 6 |
+| 7 | API + 세션 생성·이메일 발송 + 거래별 세션 상태 조회·변경 SSE | 6 |
 | 8 | FDS 파이프라인 결합 | 7 |
 | 9 | 문서 갱신 마감 | 전체 |
 
@@ -86,7 +86,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
   - 추출 구조화 출력 스키마 — `type` 필드를
     `Literal[*FINAL_CUSTOMER_ACTION_CODES]` / `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로
     선언해 파서 단계에서 화이트리스트를 강제 (스키마 3.8)
-  - 메시지 송수신·버튼 액션·SSE 이벤트 페이로드 DTO (7단계에서 확장 가능)
+  - 메시지 송수신·버튼 액션·세션 상태 변경 SSE 이벤트 DTO (7단계에서 확장 가능)
   - 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`는 Fake 파이프라인이
     아직 참조하므로 6단계에서 함께 삭제
 - [x] 테스트 `tests/test_chatbot_dto.py`: 화이트리스트 밖 enum이 파싱 실패하는지
@@ -111,24 +111,24 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 `app/repositories/chat_session.py` 신규 (필요시 `chat_message.py` 등 분리).
 **commit 하지 않는다** — 트랜잭션은 파이프라인 소유 (`get_session` 패턴).
 
-- [ ] 세션 생성 — `transaction_id` UNIQUE 기반 **멱등**: 이미 있으면 기존 세션 반환
+- [x] 세션 생성 — `transaction_id` UNIQUE 기반 **멱등**: 이미 있으면 기존 세션 반환
   (PRD 3.3의 `rule_replay` 재처리 대비). 요청의 `top_fraud_types`(선택)를 세션에 저장
-- [ ] 상태 전이, `question_step` 갱신(턴 종료 시), `email_sent_at`/`notified_email`/
+- [x] 상태 전이, `question_step` 갱신(턴 종료 시), `email_sent_at`/`notified_email`/
   `completed_at` 기록
-- [ ] 메시지 저장(순수 로그) + `chat_answers` 기록 — `attempt_no` 1~3,
+- [x] 메시지 저장(순수 로그) + `chat_answers` 기록 — `attempt_no` 1~3,
   `quality_verdict`/`verdict_skip_reason`, 질문당 `is_adopted = true` 정확히 하나
   (부분 유니크 인덱스 준수)
-- [ ] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
-  `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러내고 로그), `evidence_verified` 기록
-- [ ] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
+- [x] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
+  `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러냄)
+- [x] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
   `fraud_type_score_after_chat` 저장(`ON CONFLICT DO NOTHING`, 거래당 1행)
-- [ ] SSE 스냅샷용 조회 — `status = HANDOFF_REQUESTED` 세션 목록 (PRD 2.7)
-- [ ] 테스트 `tests/test_chatbot_repository.py`: 멱등 생성, 채택 답변 유일성, enum 중복 무시
+- [x] 거래별 세션 상태 조회 — `transaction_id`로 해당 세션의 현재 `status` 조회 (PRD 2.7)
+- [x] 테스트 `tests/test_chatbot_repository.py`: 멱등 생성, 채택 답변 유일성, enum 중복 무시
 
 ## 4단계 — 평가·추출 LLM 서비스
 
 **참조**: [prompts.md A.1~A.3](prompts.md), [PRD 2.4 조건 2](README.md#조건-2-고객응답-평가-llm),
-[PRD 3.1](README.md#31-흐름), [스키마 3.6 `evidence_verified`](schema.md#36-추출-결과-테이블--신규)
+[PRD 3.1](README.md#31-흐름), [스키마 3.6](schema.md#36-추출-결과-테이블--신규)
 
 프롬프트 렌더링은 [prompts.py](../../app/services/chatbot/prompts.py)에 이미 있으므로
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
@@ -141,7 +141,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
     기록. LLM 실패는 `attempt_no`를 소모하지 않는다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
 - [ ] `app/services/chatbot/extractors.py` — A.2 고객 행동 / A.3 사기 정황 추출 호출.
   structured output 스키마는 1단계 DTO. `evidence`가 답변 원문에 연속 문자열로 존재하는지
-  저장 전 대조해 `evidence_verified`를 산출
+  저장 전 대조하고, 불일치 항목은 로그를 남긴 뒤 저장하지 않음
 - [ ] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 5종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
@@ -190,16 +190,16 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
      `is_adopted = true` 후 다음 질문)
   4. `SUFFICIENT` → 추출(A.2·A.3) 저장 + RAG 응답(5단계) → 다음 질문 루프
   5. `WANT_END` → 채점 집계(5단계) + `DONE` + `completed_at`
-  6. 전체 액션 0건 → `HANDOFF_REQUESTED` + SSE 발행(7단계 훅)
+  6. 전체 액션 0건 → `HANDOFF_REQUESTED` + 상태 변경 SSE 발행(7단계 훅)
 - [ ] 트랜잭션 소유: 턴 단위로 파이프라인이 `commit`/`rollback`. `question_step`은 턴 종료 시 갱신
 - [ ] Fake 참조 제거 및 구 DTO 삭제. `fake_llm`·`fake_vector_db` 등은 다른 사용처(Agent)가
   없는지 확인 후 삭제
 - [ ] 테스트 `tests/test_chatbot_pipeline.py`: LLM·RAG 서비스 모킹으로 그래프 분기 검증
   (버튼 3종, 재시도 초과 채택, WANT_END 종료·집계 1회, 전체 0건 handoff)
 
-## 7단계 — API + 세션 생성·이메일 발송 + SSE
+## 7단계 — API + 세션 생성·이메일 발송 + 거래별 세션 상태 조회·변경 SSE
 
-**참조**: [PRD 2.1~2.3](README.md#21-채팅-세션-생성-및-이메일-전송), [PRD 2.7](README.md#27-상담사-반환-경로-sse),
+**참조**: [PRD 2.1~2.3](README.md#21-채팅-세션-생성-및-이메일-전송), [PRD 2.7](README.md#27-상담사-반환-경로-거래별-상태-조회--sse),
 [스키마 3.9](schema.md#39-customersemail-확보-경로)
 
 - [ ] 세션 생성 + 발송 서비스 (`app/services/chatbot/session_creator.py` 가칭):
@@ -217,13 +217,14 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
   - `POST /chat/{chat_session_id}/actions` — 버튼 3종
   - `POST /chat/{chat_session_id}/messages` — 고객 답변 → 파이프라인 실행 → 챗봇 응답
   - 기존 `POST /chat/ask` 제거
+- [ ] 담당자 거래 목록에서 각 `transaction_id`에 연결된 채팅 세션 상태 조회 API
 - [ ] SSE — `GET /agent/chat-sessions/events` (`text/event-stream`):
+  - 대시보드당 연결 하나로 모든 세션 상태 변경을 수신하고 `transaction_id`로 목록 항목 갱신
+  - 페이로드는 `transaction_id`/`chat_session_id`/`status`
+  - 전체 세션 스냅샷은 보내지 않음. 최초 접속·재연결 시 거래별 상태 조회로 현재값 복구
   - in-process pub/sub (다중 인스턴스 미고려, MVP 전제)
-  - `HANDOFF_REQUESTED` 전이 지점에서 브로드캐스트, 페이로드는
-    `chat_session_id`/`transaction_id`
-  - 최초 구독 시 현재 `HANDOFF_REQUESTED` 세션 스냅샷 선전송
 - [ ] 테스트 `tests/test_chat_api.py`: TestClient로 생성 멱등·본인인증·버튼 상태 전이·폴백
-  이메일(콘솔 출력 검증), SSE 스냅샷
+  이메일(콘솔 출력 검증), 거래별 세션 상태 조회·SSE 상태 변경 이벤트
 
 ## 8단계 — FDS 파이프라인 결합
 
@@ -260,7 +261,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 - 평가 LLM 실패 폴백: PRD 3.1의 권장안 (`REFUSAL`과 동일 진행 + `EVALUATOR_FAILED`)
 - LangGraph 체크포인터: `InMemorySaver`, 재시작 유실 감수 (스키마 3.4)
 - FDS 결합: 동기 호출 + 실패 시 거래 저장 유지 + 멱등 (PRD 3.3의 원칙 문장 그대로)
-- SSE: in-process pub/sub, 단일 인스턴스 전제 (PRD 2.7)
+- SSE: 대시보드당 연결 하나 + in-process pub/sub, 재연결 시 거래별 상태 재조회 (PRD 2.7)
 
 ## 이번 범위에서 제외 (설계 문서가 MVP 제외로 명시한 것)
 
