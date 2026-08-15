@@ -76,6 +76,11 @@ class TransactionResponseDTO(BaseModel):
     predict_result: bool | None = None
     predict_proba: float | None = None
 
+    # 룰은 ML 판정을 바꾸지 않는다. Agent와 로컬 E2E가 바로 확인할 수 있도록
+    # 사용한 룰셋 ID와 사기유형별 점수만 거래 응답에 함께 싣는다.
+    rule_set_id: int | None = None
+    rule_scores: dict[str, float] | None = None
+
     confirmed_is_fraud: bool | None = None
     labeled_at: datetime | None = None
 

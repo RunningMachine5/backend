@@ -98,8 +98,25 @@ class TransactionRepositoryTest(unittest.TestCase):
         ).one()
         self.assertEqual(source.customer_id, "C-REPOSITORY")
         self.assertIsNone(recipient.customer_id)
-        self.assertEqual(self.session.exec(select(DerivedFeatures)).all(), [])
-        self.assertIsNone(self.repository.load_ml_features(transaction))
+        derived = self.session.get(DerivedFeatures, transaction.id)
+        self.assertIsNotNone(derived)
+        assert derived is not None
+        self.assertEqual(derived.distance, 0.0)
+        self.assertEqual(derived.time_difference.total_seconds(), 0)
+        self.assertEqual(derived.one_month_max_amount, 0)
+        self.assertIs(derived.unused_terminal_status, False)
+
+        # 계좌 상세 프로필이 아직 없어도 DB 원본을 덮지 않고
+        # ML 조립 시에만 중립 기본값을 사용한다.
+        features = self.repository.load_ml_features(transaction)
+        self.assertIsNotNone(features)
+        assert features is not None
+        self.assertEqual(features.account_account_type, "a")
+        self.assertEqual(features.account_amount_daily_limit, 0)
+        self.assertEqual(
+            features.account_creation_datetime,
+            transaction.transaction_datetime,
+        )
 
     def test_missing_customer_is_allowed_only_when_customer_id_is_null(self) -> None:
         with self.assertRaises(CustomerReferenceNotFoundError):
@@ -112,6 +129,11 @@ class TransactionRepositoryTest(unittest.TestCase):
         self.assertIsNone(transaction.customer_id)
         self.assertIsNone(transaction.recipient_account_number)
         self.assertEqual(transaction.channel, "atm")
+        features = self.repository.load_ml_features(transaction)
+        self.assertIsNotNone(features)
+        assert features is not None
+        self.assertEqual(features.recipient_account_number, "unknown-recipient")
+        self.assertEqual(features.customer_name, "unknown-customer")
 
     def test_existing_account_cannot_be_claimed_by_another_customer(self) -> None:
         self.session.add(_customer("C-OTHER"))

@@ -14,7 +14,6 @@ from app.services.rules.expression_evaluator import RuleExpressionError
 from app.services.rules.feature_builder import RuleFeatureError
 from app.services.rules.repository import get_active_rule_set
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +24,12 @@ def score_transaction_fraud_types(
     raw_data: Mapping[str, Any],
     engine: RuleEngine | None = None,
 ) -> FraudTypeScoreResult | None:
-    """점수를 생성하되 룰 오류가 ML 결과 저장을 막지는 않게 한다."""
+    """ACTIVE 룰셋으로 유형 점수를 만들되 ML 결과 저장은 막지 않는다.
+
+    이 함수는 Pipeline이 ML 사기 판정을 확인한 뒤에만 호출한다. ACTIVE 룰이
+    없거나 룰 정의가 잘못돼도 이미 완료된 ML 예측은 유효하므로 ``None``을
+    반환하고 로그만 남긴다.
+    """
 
     active = get_active_rule_set(session)
     if active is None:

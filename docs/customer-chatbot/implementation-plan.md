@@ -17,7 +17,7 @@
 | --- | --- |
 | 도메인 상수: `customer_action` 19종, `fraud_circumstance` 20종, 검색 질의 매핑, 채점표 | [customer_action_codes.py](../../app/domain/customer_action_codes.py), [fraud_circumstance_codes.py](../../app/domain/fraud_circumstance_codes.py) |
 | 테이블 6종 모델 + 등록 | [chatbot.py](../../app/data/model/chatbot.py), [\_\_init\_\_.py](../../app/data/model/__init__.py) |
-| 마이그레이션 (이름 변경·신규 생성·백필·부분 유니크 인덱스) | `migrations/versions/…c4f7a2b9d810…` |
+| 마이그레이션 (이름 변경·신규 생성·백필·부분 유니크 인덱스, `top_fraud_types` 재추가) | `migrations/versions/…c4f7a2b9d810…`, `…d94b7e31a5c2…` |
 | 프롬프트 A.1~A.3 렌더링 함수 (도메인 상수에서 조립) | [prompts.py](../../app/services/chatbot/prompts.py) |
 | pgvector 코사인 검색 + `MAX_DISTANCE = 0.6` | [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py) |
 | 의존성: `langgraph`, `langchain`, `langchain-openai` | `pyproject.toml` |
@@ -74,13 +74,14 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 **참조**: [PRD 2.1 발송 폴백](README.md#발송-구현과-기본-주소-폴백), [PRD 3.1 평가 LLM 실패](README.md#31-흐름),
 [스키마 3.8](schema.md#38-appdomain-enum-코드-상수화)
 
-- [ ] [app/core/config.py](../../app/core/config.py)에 env var 추가 (`ML_SERVING_*` 패턴 복제,
+- [x] [app/core/config.py](../../app/core/config.py)에 env var 추가 (`ML_SERVING_*` 패턴 복제,
   settings 클래스 없음) + `.env.example` 갱신
   - `CHAT_BASE_URL` (기본 `http://localhost:8000`)
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
   - `CHAT_LLM_TIMEOUT_SECONDS`, `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용
-- [ ] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
-  - `CreateChatRequest`(거래 id) / `CreateChatResponse`(세션 id) — PRD 2.1의 표 그대로
+- [x] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
+  - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) /
+    `CreateChatResponse`(세션 id) — PRD 2.1의 표 그대로
   - 평가 판정 결과 DTO — `SUFFICIENT`/`TOO_VAGUE`/`NON_ANSWER`/`REFUSAL`/`WANT_END`
   - 추출 구조화 출력 스키마 — `type` 필드를
     `Literal[*FINAL_CUSTOMER_ACTION_CODES]` / `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로
@@ -88,19 +89,19 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
   - 메시지 송수신·버튼 액션·SSE 이벤트 페이로드 DTO (7단계에서 확장 가능)
   - 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`는 Fake 파이프라인이
     아직 참조하므로 6단계에서 함께 삭제
-- [ ] 테스트 `tests/test_chatbot_dto.py`: 화이트리스트 밖 enum이 파싱 실패하는지
+- [x] 테스트 `tests/test_chatbot_dto.py`: 화이트리스트 밖 enum이 파싱 실패하는지
 
 ## 2단계 — 리트리버 구조화 (선결 조건)
 
 **참조**: [PRD 2.5 검색 결과 0건 처리](README.md#검색-결과-0건-처리),
 [스키마 3.10 "손대지 않을 것"](schema.md#310-마이그레이션-적용-순서)
 
-- [ ] [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)의 `retriever_source`가
+- [x] [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)의 `retriever_source`가
   구조화된 결과(청크 내용·출처 제목·페이지·거리의 리스트)를 반환하도록 변경.
   **0건은 빈 리스트**이며 문장을 컨텍스트로 넣지 않는다. `MAX_DISTANCE`·HNSW 인덱스는 유지.
-- [ ] 호출부 [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳 갱신
+- [x] 호출부 [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳 갱신
   (문자열 조립을 호출부로 이동). 기존 `POST /chat/ask` 동작은 7단계 재작성 전까지 유지.
-- [ ] 테스트 `tests/test_chatbot_retriever.py`: 임베딩 함수를 모킹해 0건 → 빈 리스트,
+- [x] 테스트 `tests/test_chatbot_retriever.py`: 임베딩 함수를 모킹해 0건 → 빈 리스트,
   거리 초과 청크 제외 분기
 
 ## 3단계 — 챗봇 리포지토리
@@ -111,7 +112,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 **commit 하지 않는다** — 트랜잭션은 파이프라인 소유 (`get_session` 패턴).
 
 - [ ] 세션 생성 — `transaction_id` UNIQUE 기반 **멱등**: 이미 있으면 기존 세션 반환
-  (PRD 3.3의 `rule_replay` 재처리 대비)
+  (PRD 3.3의 `rule_replay` 재처리 대비). 요청의 `top_fraud_types`(선택)를 세션에 저장
 - [ ] 상태 전이, `question_step` 갱신(턴 종료 시), `email_sent_at`/`notified_email`/
   `completed_at` 기록
 - [ ] 메시지 저장(순수 로그) + `chat_answers` 기록 — `attempt_no` 1~3,
@@ -121,8 +122,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
   `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러내고 로그), `evidence_verified` 기록
 - [ ] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
   `fraud_type_score_after_chat` 저장(`ON CONFLICT DO NOTHING`, 거래당 1행)
-- [ ] SSE 스냅샷용 조회 — `status = HANDOFF_REQUESTED` 세션 목록 +
-  `agent_cases.transaction_id` 조인으로 `case_id` 확보 (PRD 2.7)
+- [ ] SSE 스냅샷용 조회 — `status = HANDOFF_REQUESTED` 세션 목록 (PRD 2.7)
 - [ ] 테스트 `tests/test_chatbot_repository.py`: 멱등 생성, 채택 답변 유일성, enum 중복 무시
 
 ## 4단계 — 평가·추출 LLM 서비스
@@ -183,7 +183,8 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 - [ ] 노드·엣지 (PRD 2.3~2.6의 흐름 그대로):
   1. 최초 알림(B.1: 거래시각·금액·입금/출금 — 금액 부호로 판정) + 버튼 3종 분기(B.2):
      챗봇 상담 → `IN_PROGRESS`, 상담사 연결 → `HANDOFF_REQUESTED`, 종료 → `DONE`
-  2. 질문 출력 — `question_step` 1~3 고정 질문, 4 이상 자유 질문(상한 없음)
+  2. 질문 출력 — `question_step` 1은 시작 멘트 + 유형판별 질문(`top_fraud_types`
+     조합 6종, 없으면 일반 질문 폴백), 2 이상은 추가 질문 멘트 반복(상한 없음)
   3. 답변 평가 — 4단계 서비스 호출. 판정별 전이는 PRD 2.4 표 그대로
      (`TOO_VAGUE`/`NON_ANSWER`는 재질문 최대 2회, 초과 시 마지막 응답 채택
      `is_adopted = true` 후 다음 질문)
@@ -202,7 +203,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 [스키마 3.9](schema.md#39-customersemail-확보-경로)
 
 - [ ] 세션 생성 + 발송 서비스 (`app/services/chatbot/session_creator.py` 가칭):
-  - 멱등 생성(3단계) → `is_older` 판정(`customers.birthyear` 60세 이상)
+  - 멱등 생성(3단계) → `is_older` 판정(`customers.birth_date` 출생연도 기준 60세 이상)
   - 메일 API 미연동: **콘솔 출력** (PRD 2.1의 형식 그대로)
   - 폴백: `customers.email`이 `NULL`·빈 문자열·공백뿐이면 `CHAT_FALLBACK_EMAIL`로.
     URL은 `CHAT_BASE_URL + /chat/{chat_session_id}`. `notified_email`·`email_sent_at` 기록,
@@ -219,7 +220,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 - [ ] SSE — `GET /agent/chat-sessions/events` (`text/event-stream`):
   - in-process pub/sub (다중 인스턴스 미고려, MVP 전제)
   - `HANDOFF_REQUESTED` 전이 지점에서 브로드캐스트, 페이로드는
-    `chat_session_id`/`transaction_id`/`case_id`(서버가 조인해 채움)
+    `chat_session_id`/`transaction_id`
   - 최초 구독 시 현재 `HANDOFF_REQUESTED` 세션 스냅샷 선전송
 - [ ] 테스트 `tests/test_chat_api.py`: TestClient로 생성 멱등·본인인증·버튼 상태 전이·폴백
   이메일(콘솔 출력 검증), SSE 스냅샷
@@ -230,7 +231,9 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 
 - [ ] [fraud_detection_pipeline.py](../../app/pipelines/fraud_detection_pipeline.py)에서
   `is_fraud`일 때 세션 생성·발송 호출. **"룰 실패가 ML 결과 저장을 막지 않는다"와 같은
-  원칙**으로, 세션 생성 실패는 로그만 남기고 거래 저장을 롤백하지 않는다
+  원칙**으로, 세션 생성 실패는 로그만 남기고 거래 저장을 롤백하지 않는다.
+  룰 채점 결과 점수 내림차순 상위 2개를 `top_fraud_types`로 전달하고, 룰 채점이 실패한
+  거래는 생략한다(일반 질문 폴백, PRD 2.4)
 - [ ] 멱등이므로 `rule_replay` 재처리 경로에서 중복 세션이 생기지 않음을 테스트로 고정
 - [ ] 발송이 콘솔 출력뿐이라 동기 호출 지연은 무시 가능. 실제 메일 연동 시 비동기화 재검토
   (README 3.3에 남긴다)
