@@ -226,3 +226,54 @@ python -m app.scripts.evaluate_agent_guide_search
 ```powershell
 python -m unittest tests.test_agent_guide_vector_search -v
 ```
+
+## RAG·LLM 대응 계획 품질 평가
+
+`app/resources/agent/response_plan_evaluation.yaml`은 4개 사기 유형의 `HIGH`,
+`VERY_HIGH` 조합으로 총 8개 평가 시나리오를 관리한다. 동일한 내부 정책을 기준으로
+정책-only 계획과 RAG·LLM 계획을 생성하여 다음 지표를 비교한다.
+
+- 필수 조치 포함률
+- 허용된 조치 코드 정확도
+- 조치별 수행 절차 생성률
+- 조치별 주의사항 생성률
+- 출력 계약 준수율
+- fallback 발생률
+- 검색 및 생성 평균 지연시간
+
+단위 테스트는 Fake 검색기와 Fake 생성기를 사용하므로 PostgreSQL과 OpenAI API를
+호출하지 않는다.
+
+```powershell
+uv run python -m unittest tests.test_agent_response_plan_evaluation -v
+```
+
+실제 pgvector와 OpenAI 모델을 사용한 평가는 대응 가이드 적재 후 다음 명령으로
+명시적으로 실행한다. `--output`을 생략하면 결과를 터미널에만 출력한다.
+
+```powershell
+uv run --env-file .env python -m app.scripts.evaluate_agent_response_plans `
+  --output local_evaluation/response_plan_report.json
+```
+
+### 1차 실제 생성 평가 결과
+
+2026-08-15에 `gpt-5-mini`, 30초 호출 제한, 유형별 `HIGH`·`VERY_HIGH` 총
+8개 시나리오로 1회 측정한 결과이다. 생성 모델의 응답 상태에 따라 수치가 달라질 수
+있으므로 동일 조건에서 반복 측정하여 최종 발표 지표를 확정한다.
+
+| 지표 | 정책-only | RAG·LLM |
+|---|---:|---:|
+| 필수 조치 포함률 | 1.000 | 1.000 |
+| 허용 조치 코드 정확도 | 1.000 | 1.000 |
+| 수행 절차 생성률 | 0.000 | 0.875 |
+| 주의사항 생성률 | 0.000 | 0.875 |
+| 출력 계약 준수율 | 1.000 | 1.000 |
+| fallback률 | 0.000 | 0.125 |
+| 평균 검색시간 | 0ms | 682.62ms |
+| 평균 생성시간 | 0ms | 26,484.38ms |
+
+RAG·LLM 8건 중 7건은 모든 정책 조치의 수행 절차와 주의사항을 생성했다. 보이스피싱
+`VERY_HIGH` 1건은 30초 제한시간에 도달하여 정책-only 계획으로 안전하게
+fallback되었다. 정책 조치 코드는 모든 결과에서 그대로 유지되어 LLM이 사기 유형과
+필수 조치를 변경하지 못하도록 한 가드레일이 정상 작동했다.

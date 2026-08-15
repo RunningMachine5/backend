@@ -1,0 +1,41 @@
+# Agent 대응 계획 생성 품질을 비교하기 위한 고정 평가 시나리오이다.
+cases:
+  - case_id: PLAN-VOICE-HIGH
+    fraud_type: VOICE_PHISHING
+    risk_grade: HIGH
+    query: 기관 사칭 보이스피싱 고위험 거래의 고객 확인과 수취계좌 검토 절차
+
+  - case_id: PLAN-VOICE-VERY-HIGH
+    fraud_type: VOICE_PHISHING
+    risk_grade: VERY_HIGH
+    query: 매우 높은 보이스피싱 위험 사건의 긴급 고객 확인과 피해 대응 절차
+
+  - case_id: PLAN-MESSENGER-HIGH
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: HIGH
+    query: 가족 지인 사칭 메신저피싱 거래의 본인 확인과 별도 연락 절차
+
+  - case_id: PLAN-MESSENGER-VERY-HIGH
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: VERY_HIGH
+    query: 매우 높은 메신저피싱 위험 사건의 긴급 확인과 추가 피해 방지 절차
+
+  - case_id: PLAN-TAKEOVER-HIGH
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: HIGH
+    query: 원격제어와 인증정보 변경이 탐지된 계정탈취 사건의 고객 확인과 보안 점검 절차
+
+  - case_id: PLAN-TAKEOVER-VERY-HIGH
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: VERY_HIGH
+    query: 매우 높은 계정탈취 위험 사건의 긴급 확인과 추가 거래 검토 절차
+
+  - case_id: PLAN-FRAUD-ACCOUNT-HIGH
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: HIGH
+    query: 고위험 사기이용계좌 의심 사건의 자금 흐름과 연결계좌 검토 절차
+
+  - case_id: PLAN-FRAUD-ACCOUNT-VERY-HIGH
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: VERY_HIGH
+    query: 매우 높은 사기이용계좌 위험 사건의 자금 이동 제한 검토와 근거 보존 절차
