@@ -64,10 +64,9 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ### 실제 ML Serving 연동 확인
 
 ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 한 건씩 요청합니다.
-정식 요청은 `transaction_id + raw59 + 학습 메타데이터 4개`인 flat raw64-compatible
-JSON입니다. Backend는 타입과 필수 컬럼을 검증한 뒤 raw59를 `customers`, `accounts`,
-`transactions`, `derived_features` 네 정규화 테이블에 나눠 저장합니다. ML 호출과 거래
-조회 시에는 네 테이블을 다시 조인해 동일한 raw59를 조립합니다. 별도의
+거래 API는 계좌번호, 거래 시각·금액, 채널과 단말 위험 신호만 담은 Slim JSON을
+받습니다. Backend는 거래와 계좌를 저장하고, 아직 준비되지 않은 고객·계좌 상세와
+파생 Feature에는 임시 기본값을 붙여 ML 추론용 raw59를 조립합니다. 별도의
 `transactions.raw_features` JSON 스냅샷 컬럼은 사용하지 않습니다.
 
 ```bash
@@ -77,19 +76,11 @@ curl -X POST http://localhost:8000/transactions \
 ```
 
 요청 예시는 [`examples/transaction-request.json`](examples/transaction-request.json)에
-있습니다. 필드명은 ML 담당자의 snake_case 계약을 사용합니다. `channel`과
-`operating_system`은 대소문자 입력을 받아 내부 소문자로 정규화하며 OS·IP·MAC과 세 개의
-과거 날짜는 nullable입니다. `transaction_amount`는 양수이고 거래 후
-`account_balance`만 음수를 허용합니다. `location` 끝에 위도·경도가 있으면 검색 컬럼으로
-분리하고, 없는 일반 문자열도 허용합니다.
-
-거래 식별정보는 `transaction_id`, `customer_id`, `customer_identification_number`,
-출금·수취 계좌번호를 함께 전달합니다. 생년월일은 `customer_birth_date`로 저장합니다.
-프로그램 호출 편의를 위해 raw59만 `raw_features`에 중첩한 형식도 허용합니다. 같은
-`customer_name`은 허용하지만 고객별 `customer_identification_number`는 고유해야 합니다.
-생성 데이터의 공통 Feature는 항상 일관되지 않을 수 있으므로 같은 고객·출금계좌가 다시
-들어오면 마지막으로 처리된 요청값으로 갱신합니다. 단, 이미 다른 고객이 소유한 출금
-계좌를 요청하거나 식별번호가 충돌하면 `409`로 거부합니다.
+있습니다. `transaction_id`는 Backend DB가 생성하므로 요청에서 보내지 않습니다.
+개인정보 원장이 아직 없으면 `customer_id`를 `null`로 보낼 수 있고, Backend는 가짜 고객
+행을 저장하지 않은 채 ML 조립 시에만 임시 고객 프로필을 사용합니다. 수취 계좌가 없는
+ATM 거래는 `recipient_account_number`도 `null`로 보낼 수 있습니다. 거래금액의 부호는
+요청과 ML 입력에서 유지하고, 룰의 금액 임계값은 거래 규모를 보도록 절댓값을 사용합니다.
 
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
 꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.

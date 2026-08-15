@@ -244,7 +244,11 @@ def assemble_ml_features(
         transaction_datetime=transaction.transaction_datetime,
         transaction_amount=transaction.transaction_amount,
         channel=transaction.channel,
-        operating_system=transaction.operating_system,
+        operating_system=(
+            transaction.operating_system.lower()
+            if transaction.operating_system is not None
+            else None
+        ),
         error_code=transaction.error_code or "",
         type_general_automatic=transaction.type_general_automatic,
         ip_address=(str(transaction.ip_address) if transaction.ip_address else None),
