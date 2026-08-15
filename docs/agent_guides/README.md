@@ -142,6 +142,18 @@ VERY_HIGH
 uv run python -m unittest tests.test_agent_guide_corpus -v
 ```
 
+내부 정책에 실제로 정의된 사기 유형·위험등급·조치 조합마다 검색 가능한
+`MONITORING` 대응 문서가 존재하는지는 다음 명령으로 확인한다. 검색과 동일하게
+`COMMON` 대상 문서도 커버리지에 포함하며, 누락 조치가 있으면 종료 코드 1을 반환한다.
+
+```powershell
+uv run python -m app.scripts.check_agent_guide_coverage
+```
+
+현재 기본 코퍼스는 내부 정책 16개에 포함된 조치 32개를 모두 지원한다. 여러 사기
+유형에 연결된 공통 긴급대응·체크리스트 문서는 오류로 처리하지 않고 검토 목록으로
+함께 출력한다.
+
 ## 문서 로더와 청크 생성기
 
 `load_guide_corpus()`는 공식·내부 디렉터리의 Markdown 문서를 정렬된 순서로
