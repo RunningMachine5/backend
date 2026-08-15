@@ -96,12 +96,12 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 **참조**: [PRD 2.5 검색 결과 0건 처리](README.md#검색-결과-0건-처리),
 [스키마 3.10 "손대지 않을 것"](schema.md#310-마이그레이션-적용-순서)
 
-- [ ] [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)의 `retriever_source`가
+- [x] [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)의 `retriever_source`가
   구조화된 결과(청크 내용·출처 제목·페이지·거리의 리스트)를 반환하도록 변경.
   **0건은 빈 리스트**이며 문장을 컨텍스트로 넣지 않는다. `MAX_DISTANCE`·HNSW 인덱스는 유지.
-- [ ] 호출부 [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳 갱신
+- [x] 호출부 [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳 갱신
   (문자열 조립을 호출부로 이동). 기존 `POST /chat/ask` 동작은 7단계 재작성 전까지 유지.
-- [ ] 테스트 `tests/test_chatbot_retriever.py`: 임베딩 함수를 모킹해 0건 → 빈 리스트,
+- [x] 테스트 `tests/test_chatbot_retriever.py`: 임베딩 함수를 모킹해 0건 → 빈 리스트,
   거리 초과 청크 제외 분기
 
 ## 3단계 — 챗봇 리포지토리
