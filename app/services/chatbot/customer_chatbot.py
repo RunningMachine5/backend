@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 from sqlmodel import Session
 
 from app.core.db import engine
+from app.dto.chatbot import RetrievedChatbotGuideChunkDTO
 from app.services.rag.chatbot_retriever import retriever_source
 
 prompt=ChatPromptTemplate.from_messages([
@@ -17,6 +18,22 @@ model = ChatOpenAI(model="gpt-4o", temperature=0.1)
 
 parser = StrOutputParser()
 
+
+def _render_retrieved_context(
+    chunks: list[RetrievedChatbotGuideChunkDTO],
+) -> str:
+    """구조화된 검색 결과를 기존 RAG 프롬프트의 출처 형식으로 변환한다."""
+
+    return "\n\n".join(
+        (
+            f"[출처: {chunk.source_title[:20]}"
+            f"{f' {chunk.page}p' if chunk.page is not None else ''}]\n"
+            f"{chunk.content}"
+        )
+        for chunk in chunks
+    )
+
+
 # 여기에 들어가는 Session 은 Fast API 레벨에서 넣어줌
 def build_chatbot_chain(session: Session,top_k: int =3) -> Runnable:
     """
@@ -24,7 +41,9 @@ def build_chatbot_chain(session: Session,top_k: int =3) -> Runnable:
     """
     # RunnableLambda 로 감싸야 일반 함수도 체인의 한 단계로 들어갈 수 있다
     retrieve = RunnableLambda(
-        lambda question: retriever_source(question, session, top_k=top_k)
+        lambda question: _render_retrieved_context(
+            retriever_source(question, session, top_k=top_k)
+        )
     )
 
     rag_input_chain = {
