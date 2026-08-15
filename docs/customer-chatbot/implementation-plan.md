@@ -111,7 +111,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), SSE 반환 �
 `app/repositories/chat_session.py` 신규 (필요시 `chat_message.py` 등 분리).
 **commit 하지 않는다** — 트랜잭션은 파이프라인 소유 (`get_session` 패턴).
 
-- [ ] 세션 생성 — `transaction_id` UNIQUE 기반 **멱등**: 이미 있으면 기존 세션 반환
+- [x] 세션 생성 — `transaction_id` UNIQUE 기반 **멱등**: 이미 있으면 기존 세션 반환
   (PRD 3.3의 `rule_replay` 재처리 대비). 요청의 `top_fraud_types`(선택)를 세션에 저장
 - [ ] 상태 전이, `question_step` 갱신(턴 종료 시), `email_sent_at`/`notified_email`/
   `completed_at` 기록
