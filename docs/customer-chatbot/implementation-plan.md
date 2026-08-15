@@ -161,11 +161,12 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - **전체 액션이 0건이면** handoff 신호를 반환 (B.6 문구, 상태 전이는 파이프라인이 수행)
 - [ ] `app/services/chatbot/chat_scoring.py` (가칭) — 상담 종료 시 1회 집계:
   `chat_fraud_circumstances` 전체 × `FRAUD_CIRCUMSTANCE_SCORES` → 4개 유형 점수 전부
-  `type_scores`로. 대표 유형·동점·정황 없음은 저장하지 않는다 (스키마 3.7)
+  `type_scores`로. 대표 유형·동점·정황 없음은 저장하지도, 백엔드가 계산하지도 않는다
+  (스키마 3.7). 사용처가 없어 `dict[str, int]` 하나만 반환한다
 - [ ] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
 - [ ] 테스트 `tests/test_chatbot_guide_responder.py` / `test_chatbot_scoring.py`:
   리트리버·LLM 모킹, 전체 0건 → handoff, 일부 0건 → B.5 삽입 및 Generate 입력에서 제외,
-  집계 합산·동점·최고점 0 분기
+  집계 합산·정황 0건·채점표에 없는 코드
 - [ ] (선택, 저비용) PRD 3.2 코퍼스 과제 1번: `docs/agent_guides/internal_demo/*_customer.md`
   4종을 `cs_guide_documents`에도 적재해 0건 비율을 낮춘다. 챗봇 로직과 독립이라
   아무 때나 끼워 넣을 수 있다
