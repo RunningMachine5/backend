@@ -29,13 +29,16 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 
 ### 대체·수정 대상
 
-- [app/api/chat.py](../../app/api/chat.py) — 세션 개념 없는 `POST /chat/ask` 하나뿐. 재작성.
-- [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py) — Fake 조립 껍데기. 재작성.
-- [app/dto/chatbot.py](../../app/dto/chatbot.py) — 구 placeholder dataclass. 재정의.
+- [app/api/chat.py](../../app/api/chat.py) — 세션 개념 없는 `POST /chat/ask` 하나뿐.
+  → 6단계 정리에서 엔드포인트를 걷어내고 빈 라우터만 남겼다. 7단계에서 재작성.
+- `customer_chatbot_pipeline.py` — Fake 조립 껍데기. → 6단계 정리에서 삭제. 새로 만든다.
+- [app/dto/chatbot.py](../../app/dto/chatbot.py) — 구 placeholder dataclass. → 재정의 완료.
 - [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py) — 0건일 때 문자열
   `"관련 문서를 찾지 못했습니다."` 반환. **구조화가 선결 조건** ([PRD 2.5](README.md#검색-결과-0건-처리)).
+  → 2단계 완료, 구 `retriever`는 6단계 정리에서 삭제.
 - Fake 5종 (`fake_embedder`, `fake_guide_retriever`, `fake_transaction_repository`,
   `fake_llm`, `fake_vector_db`) — 챗봇 파이프라인 참조 제거. 다른 사용처가 없으면 삭제.
+  → 앞의 3종은 삭제, `fake_llm`·`fake_vector_db`는 Agent가 써서 유지.
 
 ### 확인된 사실 (계획에 반영)
 
@@ -87,8 +90,8 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
     `Literal[*FINAL_CUSTOMER_ACTION_CODES]` / `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로
     선언해 파서 단계에서 화이트리스트를 강제 (스키마 3.8)
   - 메시지 송수신·버튼 액션·세션 상태 변경 SSE 이벤트 DTO (7단계에서 확장 가능)
-  - 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`는 Fake 파이프라인이
-    아직 참조하므로 6단계에서 함께 삭제
+  - 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`는 6단계 정리에서
+    Fake 파이프라인과 함께 삭제 완료
 - [x] 테스트 `tests/test_chatbot_dto.py`: 화이트리스트 밖 enum이 파싱 실패하는지
 
 ## 2단계 — 리트리버 구조화 (선결 조건)
@@ -99,8 +102,8 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 - [x] [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)의 `retriever_source`가
   구조화된 결과(청크 내용·출처 제목·페이지·거리의 리스트)를 반환하도록 변경.
   **0건은 빈 리스트**이며 문장을 컨텍스트로 넣지 않는다. `MAX_DISTANCE`·HNSW 인덱스는 유지.
-- [x] 호출부 [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳 갱신
-  (문자열 조립을 호출부로 이동). 기존 `POST /chat/ask` 동작은 7단계 재작성 전까지 유지.
+- [x] 유일한 호출부였던 `customer_chatbot.py`는 6단계 정리에서 삭제했다. 문자열을 돌려주던
+  옛 `retriever`도 함께 제거해 `retriever_source` 하나만 남았다.
 - [x] 테스트 `tests/test_chatbot_retriever.py`: 임베딩 함수를 모킹해 0건 → 빈 리스트,
   거리 초과 청크 제외 분기
 
@@ -184,7 +187,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 **참조**: [PRD 2.3~2.6](README.md#23-최초-알림-메시지와-버튼), [스키마 3.4 대화 진행 상태](schema.md#34-chat_sessions--테이블명-변경-및-컬럼-추가),
 [messages.md B.1~B.4](messages.md)
 
-[customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)를 재작성한다.
+`app/pipelines/customer_chatbot_pipeline.py`를 새로 만든다(Fake 껍데기는 삭제됨).
 `StateGraph` + **체크포인터 `InMemorySaver`**, `thread_id = chat_session_id`.
 서버 재시작 시 진행 상태 유실은 감수한다(스키마 3.4에 명시된 트레이드오프).
 
@@ -203,8 +206,14 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   6. `HANDOFF_REQUESTED` 진입 경로는 1번 버튼과 5번 둘뿐이다. 검색 0건·LLM 실패는
      상태를 전이시키지 않는다 (PRD 2.5)
 - [ ] 트랜잭션 소유: 턴 단위로 파이프라인이 `commit`/`rollback`. `question_step`은 턴 종료 시 갱신
-- [ ] Fake 참조 제거 및 구 DTO 삭제. `fake_llm`·`fake_vector_db` 등은 다른 사용처(Agent)가
-  없는지 확인 후 삭제
+- [x] Fake 참조 제거 및 구 DTO 삭제 완료. 삭제한 것: `customer_chatbot_pipeline.py`,
+  `fake_embedder.py`, `fake_guide_retriever.py`, `fake_transaction_repository.py`,
+  `customer_chatbot.py`, 구 `retriever`, 구
+  `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`,
+  `FakeLLM.generate_chatbot_answer`, `ConsoleRenderer.print_chatbot_response`,
+  `CUSTOMER_GUIDE_TEXT`, `tests/test_pipelines.py`의 챗봇 테스트.
+  남긴 것: `fake_llm.py`·`fake_vector_db.py` — Agent의 `monitoring_agent_pipeline.py`가 쓴다.
+  `app/api/chat.py`는 빈 라우터만 남겨 7단계에서 재작성한다.
 - [ ] 테스트 `tests/test_chatbot_pipeline.py`: LLM·RAG 서비스 모킹으로 그래프 분기 검증
   (버튼 3종, 재시도 초과 채택, WANT_END 집계 1회 + `HANDOFF_REQUESTED` 전이,
   전체 0건이어도 상태 불변)
@@ -228,7 +237,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - `GET /chat/{chat_session_id}` — 세션 상태 + 메시지 이력 (접속, `is_older` 포함)
   - `POST /chat/{chat_session_id}/actions` — 버튼 3종
   - `POST /chat/{chat_session_id}/messages` — 고객 답변 → 파이프라인 실행 → 챗봇 응답
-  - 기존 `POST /chat/ask` 제거
+  - (기존 `POST /chat/ask`는 6단계 정리에서 이미 제거했다)
 - [ ] 담당자 거래 목록에서 각 `transaction_id`에 연결된 채팅 세션 상태 조회 API
 - [ ] SSE — `GET /agent/chat-sessions/events` (`text/event-stream`):
   - 대시보드당 연결 하나로 모든 세션 상태 변경을 수신하고 `transaction_id`로 목록 항목 갱신

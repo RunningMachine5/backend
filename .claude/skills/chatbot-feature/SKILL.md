@@ -64,22 +64,23 @@ PRD 맨 아래 **4. 부속 문서 색인**에 A.1~A.3 / B.1~B.6 / 스키마 3.x 
 
 ## 4. 현재 구현 상태
 
-챗봇 영역은 대부분 비어 있거나 Fake다. 무엇을 걷어내고 시작하는지 알고 들어간다.
+**챗봇 Fake는 전부 걷어냈다.** `customer_chatbot_pipeline.py`, `fake_embedder.py`,
+`fake_guide_retriever.py`, `fake_transaction_repository.py`, `customer_chatbot.py`
+(`build_chatbot_chain`), 구 `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO`가
+모두 삭제됐다. `app/services/rag/`의 `fake_llm.py`·`fake_vector_db.py`는 Agent
+(`monitoring_agent_pipeline.py`)가 쓰므로 남아 있다 — 챗봇 쪽에서 쓰지 않는다.
 
-- `chat_sessions` / `chat_messages` / `fraud_type_score_after_chat`은
-  `app/data/model/chatbot.py`에 테이블 정의와
-  마이그레이션만 있고 **참조하는 비즈니스 로직이 없다.** 챗봇 리포지토리도 없다.
-- `app/api/chat.py`: `POST /chat/ask` 하나뿐, 세션 개념 없음
-- `app/services/chatbot/`: `fake_embedder.py`, `fake_guide_retriever.py`,
-  `fake_transaction_repository.py`
-- `app/services/rag/`: `fake_llm.py`, `fake_vector_db.py`
-- `app/pipelines/customer_chatbot_pipeline.py`: 위 Fake들을 엮은 껍데기
-- `app/services/chatbot/customer_chatbot.py`: `build_chatbot_chain`은 실제 LangChain RAG 체인이지만
-  `question` 문자열 하나만 받는다(대화 히스토리 미사용 — PRD 3.2에 기록된 알려진 문제)
+실제 구현 진행 상황은 [implementation-plan.md](../../../docs/customer-chatbot/implementation-plan.md)의
+체크박스가 기준이다. 대략:
 
-실제로 동작하는 부분은 `cs_guide_documents` / `cs_guide_document_chunks` 임베딩 적재와
-pgvector 코사인 검색이다(`app/services/rag/`). 다만 `chatbot_retriever.py`가 검색 0건일 때
-문자열을 반환하므로, PRD 2.5의 0건 분기를 쓰려면 구조화된 결과로 바꾸는 것이 선결 조건이다.
+- **완료**: 도메인 상수·채점표(`app/domain/`), 테이블·마이그레이션(`app/data/model/chatbot.py`),
+  DTO 재정의(`app/dto/chatbot.py`), 구조화 리트리버(`retriever_source` — 0건은 빈 리스트),
+  챗봇 리포지토리, 평가·추출 LLM 서비스(`answer_evaluator.py`, `extractors.py`),
+  RAG 응답 조립(`guide_responder.py`), 채점 집계(`chat_scoring.py`)
+- **남은 것**: LangGraph 파이프라인(6단계), API + 세션 생성·이메일 발송 + SSE(7단계),
+  FDS 결합(8단계). `app/api/chat.py`에는 빈 라우터만 있다.
+
+임베딩 적재와 pgvector 코사인 검색(`app/services/rag/`)은 처음부터 실제 구현이다.
 
 ## 5. 구현 순서
 

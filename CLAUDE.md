@@ -71,7 +71,9 @@ which file that is.
 
 ### Fake skeletons — do not treat as real
 
-The Agent and customer-chatbot pipelines (`monitoring_agent_pipeline.py`, `customer_chatbot_pipeline.py`) and their services under `app/services/{agent,analysis,chatbot,rag,notification}/` are placeholders: `FakeEmbedder`, `FakeVectorDB` (returns identical context for any query), `FakeLLM` (string-template answers), `FakeGuideRetriever`, `FakeEmailSender` (prints), `FakeTransactionRepository` (hardcoded list). Transaction ingestion, ML Serving calls, Postgres persistence, and rule scoring are the **only** non-fake parts. The older Agent DTOs (`TransactionDTO`, `FraudAssessmentDTO`, etc.) are scheduled for removal once the real Agent contract is settled.
+The Agent pipeline (`monitoring_agent_pipeline.py`) and its services under `app/services/{agent,analysis,rag,notification}/` are placeholders: `FakeVectorDB` (returns identical context for any query), `FakeLLM` (string-template answers), `FakeEmailSender` (prints). Transaction ingestion, ML Serving calls, Postgres persistence, and rule scoring are the **only** non-fake parts. The older Agent DTOs (`TransactionDTO`, `FraudAssessmentDTO`, etc.) are scheduled for removal once the real Agent contract is settled.
+
+The customer-chatbot fakes are **gone**: `customer_chatbot_pipeline.py`, `FakeEmbedder`, `FakeGuideRetriever`, `FakeTransactionRepository`, the old `build_chatbot_chain`, and the `ChatbotRequestDTO`/`CustomerGuideDTO`/`ChatbotResponseDTO` DTOs were all removed. That area is now being built for real against the `docs/customer-chatbot/` design — `app/api/chat.py` holds only an empty router until PRD 2.7 lands.
 
 ## Config
 

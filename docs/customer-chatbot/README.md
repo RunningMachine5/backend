@@ -42,13 +42,14 @@ SQLAlchemy, SQLModel, langchain-openai.
 [스키마 문서](schema.md#구현-상태)를 따른다.
 
 영속 스키마만 완료된 상태이며, **이를 사용하는 비즈니스 로직은 아직 없다.** 챗봇
-리포지토리도 없고 [app/api/chat.py](../../app/api/chat.py)는 세션 개념이 없는
-`POST /chat/ask` 하나뿐이다.
+리포지토리도 없고 [app/api/chat.py](../../app/api/chat.py)에는 라우터만 남아 있다
+(세션 개념이 없던 `POST /chat/ask`와 그 Fake 체인
+`app/services/chatbot/customer_chatbot.py`는 제거했다).
 
 RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
-다만 검색 0건일 때 `"관련 문서를 찾지 못했습니다."`라는 **문자열을 컨텍스트로 반환**하므로,
-[2.5의 0건 분기](#검색-결과-0건-처리)를 구현하려면 구조화된 결과를 돌려주도록 바꿔야 한다.
+검색 0건이면 `retriever_source`가 빈 리스트를 돌려주므로
+[2.5의 0건 분기](#검색-결과-0건-처리)를 쓸 수 있다.
 
 ---
 
@@ -462,12 +463,11 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
   사용하고, 고객 행동과 사기 정황 추출은 고객 답변만 사용한다.
 - **평가 LLM만 JSON 출력을 프롬프트로 요구한다.** "출력은 JSON만 반환하세요"는 강제가
   아니므로 추출 LLM과 마찬가지로 structured output 스키마를 지정해야 한다.
-- **리트리버가 아직 문자열을 돌려준다.**
-  [chatbot_retriever.py:31](../../app/services/rag/chatbot_retriever.py#L31)이 0건일 때
-  `"관련 문서를 찾지 못했습니다."`를 컨텍스트로 반환한다.
-  [2.5 검색 결과 0건 처리](#검색-결과-0건-처리)의 1번(구조화된 결과 반환)이 선결 조건이며,
-  이것 없이는 2~4번이 동작하지 않는다. 호출부가
-  [customer_chatbot.py](../../app/services/chatbot/customer_chatbot.py) 한 곳뿐이라 영향 범위는 좁다.
+- ~~**리트리버가 아직 문자열을 돌려준다.**~~ 해결됐다.
+  [retriever_source](../../app/services/rag/chatbot_retriever.py)가 0건을 빈 리스트로
+  반환하고, 문자열을 돌려주던 옛 `retriever`와 그 유일한 호출부
+  `customer_chatbot.py`는 제거했다.
+  [2.5 검색 결과 0건 처리](#검색-결과-0건-처리)의 1번(구조화된 결과 반환) 선결 조건은 충족됐다.
 - **가이드 코퍼스가 `customer_action` 19종을 덮지 못한다.** 0건 처리 로직은 틀린 답을 막을
   뿐 0건 비율을 낮추지 못한다. 효과 순서대로 세 가지 과제가 있다.
   1. `docs/agent_guides/internal_demo/*_customer.md` 4종(사기유형별 **고객용** 대응 가이드)이

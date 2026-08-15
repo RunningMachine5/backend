@@ -14,26 +14,6 @@ from app.services.rag.docs_embedding import query_embedding
 
 MAX_DISTANCE = 0.6  # 코사인 거리 이보다 멀면 관련 없는 청크로 본다
 
-"""
-리트리버
-"""
-def retriever(question: str, session: Session, top_k: int = 3) -> str:
-    """질문을 임베딩해서 cs_guide_document_chunks 에서 유사한 청크를 찾아 context 로 합친다"""
-    question_vector = query_embedding(question)
-    distance = CsGuideDocumentChunk.embedding.cosine_distance(question_vector)
-
-    stmt = (
-        select(CsGuideDocumentChunk.content, distance.label("distance"))
-        .order_by(distance)
-        .limit(top_k)
-    )
-    rows = session.exec(stmt).all()
-    contents = [content for content, dist in rows if dist <= MAX_DISTANCE]
-    if not contents:
-        return "관련 문서를 찾지 못했습니다."
-
-    return "\n\n".join(contents)
-
 def retriever_source(
     question: str,
     session: Session,
