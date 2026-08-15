@@ -18,9 +18,9 @@ class AgentInvestigationRepository:
         *,
         current_case_id: str,
         candidate_fraud_types: tuple[str, ...],
-    ) -> list[tuple[AgentCase, FraudTypeScoreResult]]:
+    ) -> list[tuple[AgentCase, FraudTypeScoreResult, AgentReview]]:
         statement = (
-            select(AgentCase, FraudTypeScoreResult)
+            select(AgentCase, FraudTypeScoreResult, AgentReview)
             .join(
                 FraudTypeScoreResult,
                 FraudTypeScoreResult.id == AgentCase.fraud_type_score_result_id,
