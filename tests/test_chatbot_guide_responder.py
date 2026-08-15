@@ -1,18 +1,11 @@
 import unittest
 
-from app.domain.customer_action_codes import (
-    CUSTOMER_ACTION_DESCRIPTIONS,
-    CUSTOMER_ACTION_SEARCH_QUERIES,
-    IDENTITY_DOCUMENT_SHARED,
-    OTP_OR_AUTHENTICATION_CODE_SHARED,
-    PHISHING_LINK_OPENED,
-)
 from app.dto.chatbot import (
-    ExtractedCustomerAction,
+    ExtractedGuideSearchQuery,
     RetrievedChatbotGuideChunkDTO,
 )
 from app.services.chatbot.guide_responder import GuideResponder
-from app.services.chatbot.messages import UNGROUNDED_ACTION_MESSAGE
+from app.services.chatbot.messages import UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
 
 
 def _chunk(content: str) -> RetrievedChatbotGuideChunkDTO:
@@ -25,23 +18,18 @@ def _chunk(content: str) -> RetrievedChatbotGuideChunkDTO:
 
 
 class FakeRetriever:
-    """액션별 검색 질의를 기록하고 미리 정해둔 청크를 돌려준다."""
-
     def __init__(
         self,
-        chunks_by_query_prefix: dict[str, list[RetrievedChatbotGuideChunkDTO]],
+        chunks_by_query: dict[str, list[RetrievedChatbotGuideChunkDTO]],
     ) -> None:
-        self.chunks_by_query_prefix = chunks_by_query_prefix
+        self.chunks_by_query = chunks_by_query
         self.queries: list[str] = []
         self.top_ks: list[int] = []
 
     def __call__(self, query, session, top_k=3):
         self.queries.append(query)
         self.top_ks.append(top_k)
-        for prefix, chunks in self.chunks_by_query_prefix.items():
-            if query.startswith(prefix):
-                return list(chunks)
-        return []
+        return list(self.chunks_by_query.get(query, []))
 
 
 class FakeStructuredLLM:
@@ -59,71 +47,44 @@ class FakeStructuredLLM:
 
 class GuideResponderTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        self.session = object()  # 리트리버를 모킹하므로 DB 세션은 쓰이지 않는다
-        self.link_action = ExtractedCustomerAction(
-            type=PHISHING_LINK_OPENED,
-            evidence="문자로 온 링크를 눌렀어요",
+        self.session = object()
+        self.call_query = ExtractedGuideSearchQuery(
+            title="모르는 사람의 전화 수신",
+            search_query="모르는 사람의 전화를 받은 경우 보안 대응 방법",
+            evidence="모르는 사람한테 전화가 와서 받았어",
         )
-        self.identity_action = ExtractedCustomerAction(
-            type=IDENTITY_DOCUMENT_SHARED,
-            evidence="신분증 사진을 보냈어요",
+        self.phone_query = ExtractedGuideSearchQuery(
+            title="전화번호 제공",
+            search_query="모르는 사람에게 전화번호를 제공한 경우 대응 방법",
+            evidence="그 사람에게 전화번호를 전송해줬어",
         )
 
 
 class TestRetrieveStep(GuideResponderTestCase):
-    def test_query_combines_search_mapping_and_evidence(self) -> None:
+    def test_uses_each_standalone_query_with_top_k_three(self) -> None:
         retriever = FakeRetriever({})
         responder = GuideResponder(
             structured_llm=FakeStructuredLLM([]),
             retriever=retriever,
         )
 
-        responder.respond(actions=[self.link_action], session=self.session)
+        responder.respond(
+            guide_search_queries=[self.call_query, self.phone_query],
+            session=self.session,
+        )
 
         self.assertEqual(
             retriever.queries,
-            [
-                f"{CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]}"
-                f" {self.link_action.evidence}"
-            ],
+            [self.call_query.search_query, self.phone_query.search_query],
         )
-
-    def test_each_action_is_retrieved_independently_with_top_k_three(
-        self,
-    ) -> None:
-        retriever = FakeRetriever(
-            {
-                CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]: [
-                    _chunk("링크 대응 안내")
-                ],
-                CUSTOMER_ACTION_SEARCH_QUERIES[IDENTITY_DOCUMENT_SHARED]: [
-                    _chunk("신분증 대응 안내")
-                ],
-            }
-        )
-        responder = GuideResponder(
-            structured_llm=FakeStructuredLLM(
-                [
-                    {
-                        "guides": [
-                            {"type": PHISHING_LINK_OPENED, "guidance": "가"},
-                            {"type": IDENTITY_DOCUMENT_SHARED, "guidance": "나"},
-                        ]
-                    }
-                ]
-            ),
-            retriever=retriever,
-        )
-
-        responder.respond(
-            actions=[self.link_action, self.identity_action],
-            session=self.session,
-        )
-
-        self.assertEqual(len(retriever.queries), 2)
         self.assertEqual(retriever.top_ks, [3, 3])
 
-    def test_duplicate_action_type_is_retrieved_once(self) -> None:
+    def test_duplicate_normalized_query_is_retrieved_once(self) -> None:
+        duplicate = ExtractedGuideSearchQuery(
+            title="중복",
+            search_query="  모르는 사람의 전화를 받은 경우  보안 대응 방법 ",
+            evidence="전화를 받았어",
+        )
         retriever = FakeRetriever({})
         responder = GuideResponder(
             structured_llm=FakeStructuredLLM([]),
@@ -131,19 +92,13 @@ class TestRetrieveStep(GuideResponderTestCase):
         )
 
         responder.respond(
-            actions=[
-                self.link_action,
-                ExtractedCustomerAction(
-                    type=PHISHING_LINK_OPENED,
-                    evidence="링크를 또 눌렀어요",
-                ),
-            ],
+            guide_search_queries=[self.call_query, duplicate],
             session=self.session,
         )
 
-        self.assertEqual(len(retriever.queries), 1)
+        self.assertEqual(retriever.queries, [self.call_query.search_query])
 
-    def test_retriever_failure_makes_the_action_ungrounded(self) -> None:
+    def test_retriever_failure_only_makes_that_query_ungrounded(self) -> None:
         def failing_retriever(query, session, top_k=3):
             raise RuntimeError("pgvector down")
 
@@ -158,73 +113,50 @@ class TestRetrieveStep(GuideResponderTestCase):
             level="WARNING",
         ):
             response = responder.respond(
-                actions=[self.link_action],
+                guide_search_queries=[self.call_query],
                 session=self.session,
             )
 
         self.assertEqual(
             response.message_text,
-            f"■ {CUSTOMER_ACTION_DESCRIPTIONS[PHISHING_LINK_OPENED]}\n"
-            f"{UNGROUNDED_ACTION_MESSAGE}",
+            f"■ {self.call_query.title}\n{UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE}",
         )
+        self.assertEqual(response.ungrounded_query_positions, (1,))
         self.assertEqual(llm.prompts, [])
 
 
 class TestGenerateStep(GuideResponderTestCase):
-    def test_llm_is_called_once_with_grounded_actions_only(self) -> None:
+    def test_llm_is_called_once_with_grounded_queries_only(self) -> None:
         retriever = FakeRetriever(
-            {
-                CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]: [
-                    _chunk("링크를 누른 경우 즉시 기기를 점검하세요")
-                ]
-            }
+            {self.call_query.search_query: [_chunk("발신자를 공식 채널로 확인하세요")]}
         )
         llm = FakeStructuredLLM(
-            [
-                {
-                    "guides": [
-                        {
-                            "type": PHISHING_LINK_OPENED,
-                            "guidance": "기기를 점검해주세요.",
-                        }
-                    ]
-                }
-            ]
+            [{"guides": [{"position": 1, "guidance": "공식 채널로 확인해주세요."}]}]
         )
         responder = GuideResponder(structured_llm=llm, retriever=retriever)
 
-        responder.respond(
-            actions=[self.link_action, self.identity_action],
+        response = responder.respond(
+            guide_search_queries=[self.call_query, self.phone_query],
             session=self.session,
         )
 
         self.assertEqual(len(llm.prompts), 1)
         prompt = llm.prompts[0]
-        self.assertIn(PHISHING_LINK_OPENED, prompt)
-        self.assertIn("링크를 누른 경우 즉시 기기를 점검하세요", prompt)
-        # 0건 액션은 교차 오염을 막기 위해 프롬프트에 넣지 않는다.
-        self.assertNotIn(IDENTITY_DOCUMENT_SHARED, prompt)
-        self.assertNotIn(self.identity_action.evidence, prompt)
+        self.assertIn(self.call_query.title, prompt)
+        self.assertIn(self.call_query.search_query, prompt)
+        self.assertNotIn(self.phone_query.title, prompt)
+        self.assertIn("공식 채널로 확인해주세요.", response.message_text)
+        self.assertEqual(response.grounded_query_positions, (1,))
+        self.assertEqual(response.ungrounded_query_positions, (2,))
 
-    def test_generation_is_retried_within_max_attempts(self) -> None:
+    def test_generation_retries_then_succeeds(self) -> None:
         retriever = FakeRetriever(
-            {
-                CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]: [
-                    _chunk("링크 대응 안내")
-                ]
-            }
+            {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
         llm = FakeStructuredLLM(
             [
-                TimeoutError("first call timed out"),
-                {
-                    "guides": [
-                        {
-                            "type": PHISHING_LINK_OPENED,
-                            "guidance": "기기를 점검해주세요.",
-                        }
-                    ]
-                },
+                TimeoutError("timeout"),
+                {"guides": [{"position": 1, "guidance": "확인해주세요."}]},
             ]
         )
         responder = GuideResponder(
@@ -234,23 +166,19 @@ class TestGenerateStep(GuideResponderTestCase):
         )
 
         response = responder.respond(
-            actions=[self.link_action],
+            guide_search_queries=[self.call_query],
             session=self.session,
         )
 
         self.assertEqual(len(llm.prompts), 2)
-        self.assertIn("기기를 점검해주세요.", response.message_text)
+        self.assertIn("확인해주세요.", response.message_text)
 
-    def test_generation_failure_falls_back_to_ungrounded_message(self) -> None:
+    def test_generation_failure_uses_fixed_message(self) -> None:
         retriever = FakeRetriever(
-            {
-                CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]: [
-                    _chunk("링크 대응 안내")
-                ]
-            }
+            {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
         llm = FakeStructuredLLM(
-            [TimeoutError("timed out"), TimeoutError("timed out")]
+            [TimeoutError("timeout"), TimeoutError("timeout")]
         )
         responder = GuideResponder(
             structured_llm=llm,
@@ -263,40 +191,27 @@ class TestGenerateStep(GuideResponderTestCase):
             level="WARNING",
         ):
             response = responder.respond(
-                actions=[self.link_action],
+                guide_search_queries=[self.call_query],
                 session=self.session,
             )
 
-        # 생성에 실패해도 상담사로 넘기지 않고 B.5 문구로 채워 상담을 계속한다.
-        self.assertEqual(
+        self.assertIn(
+            UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE,
             response.message_text,
-            f"■ {CUSTOMER_ACTION_DESCRIPTIONS[PHISHING_LINK_OPENED]}\n"
-            f"{UNGROUNDED_ACTION_MESSAGE}",
         )
-        self.assertEqual(
-            response.grounded_action_codes, (PHISHING_LINK_OPENED,)
-        )
+        self.assertEqual(response.grounded_query_positions, (1,))
 
-    def test_guidance_for_action_outside_prompt_is_dropped(self) -> None:
+    def test_unrequested_and_duplicate_positions_are_ignored(self) -> None:
         retriever = FakeRetriever(
-            {
-                CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]: [
-                    _chunk("링크 대응 안내")
-                ]
-            }
+            {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
         llm = FakeStructuredLLM(
             [
                 {
                     "guides": [
-                        {
-                            "type": PHISHING_LINK_OPENED,
-                            "guidance": "기기를 점검해주세요.",
-                        },
-                        {
-                            "type": OTP_OR_AUTHENTICATION_CODE_SHARED,
-                            "guidance": "근거 없이 지어낸 안내",
-                        },
+                        {"position": 1, "guidance": "첫 안내"},
+                        {"position": 1, "guidance": "중복 안내"},
+                        {"position": 3, "guidance": "근거 없는 안내"},
                     ]
                 }
             ]
@@ -308,95 +223,38 @@ class TestGenerateStep(GuideResponderTestCase):
             level="WARNING",
         ):
             response = responder.respond(
-                actions=[self.link_action],
+                guide_search_queries=[self.call_query],
                 session=self.session,
             )
 
-        self.assertNotIn("근거 없이 지어낸 안내", response.message_text)
-        self.assertNotIn(
-            CUSTOMER_ACTION_DESCRIPTIONS[OTP_OR_AUTHENTICATION_CODE_SHARED],
-            response.message_text,
-        )
+        self.assertIn("첫 안내", response.message_text)
+        self.assertNotIn("중복 안내", response.message_text)
+        self.assertNotIn("근거 없는 안내", response.message_text)
 
 
 class TestAssembleStep(GuideResponderTestCase):
-    def test_ungrounded_action_keeps_heading_and_uses_fixed_message(
-        self,
-    ) -> None:
+    def test_partial_grounding_keeps_each_heading_in_order(self) -> None:
         retriever = FakeRetriever(
-            {
-                CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]: [
-                    _chunk("링크 대응 안내")
-                ]
-            }
+            {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
         llm = FakeStructuredLLM(
-            [
-                {
-                    "guides": [
-                        {
-                            "type": PHISHING_LINK_OPENED,
-                            "guidance": "기기를 점검해주세요.",
-                        }
-                    ]
-                }
-            ]
+            [{"guides": [{"position": 1, "guidance": "확인해주세요."}]}]
         )
         responder = GuideResponder(structured_llm=llm, retriever=retriever)
 
         response = responder.respond(
-            actions=[self.link_action, self.identity_action],
+            guide_search_queries=[self.call_query, self.phone_query],
             session=self.session,
         )
 
         expected = (
-            f"■ {CUSTOMER_ACTION_DESCRIPTIONS[PHISHING_LINK_OPENED]}\n"
-            "기기를 점검해주세요.\n\n"
-            f"■ {CUSTOMER_ACTION_DESCRIPTIONS[IDENTITY_DOCUMENT_SHARED]}\n"
-            f"{UNGROUNDED_ACTION_MESSAGE}"
+            f"■ {self.call_query.title}\n확인해주세요.\n\n"
+            f"■ {self.phone_query.title}\n"
+            f"{UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE}"
         )
         self.assertEqual(response.message_text, expected)
-        self.assertEqual(
-            response.grounded_action_codes, (PHISHING_LINK_OPENED,)
-        )
-        self.assertEqual(
-            response.ungrounded_action_codes, (IDENTITY_DOCUMENT_SHARED,)
-        )
 
-    def test_empty_guidance_is_replaced_with_fixed_message(self) -> None:
-        retriever = FakeRetriever(
-            {
-                CUSTOMER_ACTION_SEARCH_QUERIES[PHISHING_LINK_OPENED]: [
-                    _chunk("링크 대응 안내")
-                ],
-                CUSTOMER_ACTION_SEARCH_QUERIES[IDENTITY_DOCUMENT_SHARED]: [
-                    _chunk("신분증 대응 안내")
-                ],
-            }
-        )
-        llm = FakeStructuredLLM(
-            [
-                {
-                    "guides": [
-                        {
-                            "type": PHISHING_LINK_OPENED,
-                            "guidance": "기기를 점검해주세요.",
-                        },
-                        {"type": IDENTITY_DOCUMENT_SHARED, "guidance": "   "},
-                    ]
-                }
-            ]
-        )
-        responder = GuideResponder(structured_llm=llm, retriever=retriever)
-
-        response = responder.respond(
-            actions=[self.link_action, self.identity_action],
-            session=self.session,
-        )
-
-        self.assertIn(UNGROUNDED_ACTION_MESSAGE, response.message_text)
-
-    def test_all_actions_ungrounded_keeps_every_heading(self) -> None:
+    def test_all_ungrounded_skips_llm_and_keeps_every_heading(self) -> None:
         llm = FakeStructuredLLM([])
         responder = GuideResponder(
             structured_llm=llm,
@@ -404,38 +262,30 @@ class TestAssembleStep(GuideResponderTestCase):
         )
 
         response = responder.respond(
-            actions=[self.link_action, self.identity_action],
+            guide_search_queries=[self.call_query, self.phone_query],
             session=self.session,
         )
 
-        # 전체 0건이어도 상담사로 넘기지 않고 두 액션 모두 B.5 문구로 답한다.
-        expected = (
-            f"■ {CUSTOMER_ACTION_DESCRIPTIONS[PHISHING_LINK_OPENED]}\n"
-            f"{UNGROUNDED_ACTION_MESSAGE}\n\n"
-            f"■ {CUSTOMER_ACTION_DESCRIPTIONS[IDENTITY_DOCUMENT_SHARED]}\n"
-            f"{UNGROUNDED_ACTION_MESSAGE}"
-        )
-        self.assertEqual(response.message_text, expected)
-        self.assertEqual(response.grounded_action_codes, ())
-        self.assertEqual(
-            response.ungrounded_action_codes,
-            (PHISHING_LINK_OPENED, IDENTITY_DOCUMENT_SHARED),
-        )
-        # 근거가 없으면 LLM 을 호출하지 않는다.
+        self.assertEqual(response.grounded_query_positions, ())
+        self.assertEqual(response.ungrounded_query_positions, (1, 2))
+        self.assertIn(f"■ {self.call_query.title}", response.message_text)
+        self.assertIn(f"■ {self.phone_query.title}", response.message_text)
         self.assertEqual(llm.prompts, [])
 
-    def test_no_action_returns_empty_text_without_llm_call(self) -> None:
+    def test_no_guide_search_query_returns_empty_text(self) -> None:
         llm = FakeStructuredLLM([])
         responder = GuideResponder(
             structured_llm=llm,
             retriever=FakeRetriever({}),
         )
 
-        response = responder.respond(actions=[], session=self.session)
+        response = responder.respond(
+            guide_search_queries=[],
+            session=self.session,
+        )
 
-        # 할 말이 없으면 빈 본문을 돌려주고, 파이프라인이 메시지를 보내지 않는다.
         self.assertEqual(response.message_text, "")
-        self.assertEqual(response.ungrounded_action_codes, ())
+        self.assertEqual(response.ungrounded_query_positions, ())
         self.assertEqual(llm.prompts, [])
 
 
