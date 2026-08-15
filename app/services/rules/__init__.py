@@ -18,7 +18,6 @@ from app.services.rules.feature_builder import (
     RULE_DERIVED_FEATURES,
     RULE_RAW_FEATURES,
     RuleFeatureBuilder,
-    RuleFeatureError,
 )
 from app.services.rules.scoring import score_transaction_fraud_types
 from app.services.rules.repository import (
@@ -39,7 +38,6 @@ __all__ = [
     "RuleExpressionError",
     "RuleExpressionEvaluator",
     "RuleFeatureBuilder",
-    "RuleFeatureError",
     "RuleSetDefinition",
     "RuleSetValidationError",
     "score_transaction_fraud_types",

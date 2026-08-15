@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from app.dto.ml_features import MLTransactionFeatures
 from app.services.rules.expression_evaluator import RuleExpressionEvaluator
 from app.services.rules.feature_builder import RuleFeatureBuilder
 
@@ -67,15 +68,25 @@ class RuleEngine:
 
     def score(
         self,
-        raw_data: Mapping[str, Any],
+        features: MLTransactionFeatures,
         rule_set: RuleSetDefinition | None = None,
     ) -> RuleScoreResult:
         if rule_set is None:
             from app.services.rules.defaults import DEFAULT_RULE_SET
 
             rule_set = DEFAULT_RULE_SET
-        context = self.feature_builder.build(raw_data)
-        return self.score_context(context, rule_set)
+        self.validate_rule_set(rule_set)
+        return self.score_validated(features, rule_set)
+
+    def score_validated(
+        self,
+        features: MLTransactionFeatures,
+        rule_set: RuleSetDefinition,
+    ) -> RuleScoreResult:
+        """활성화 등 앞 단계에서 검증한 룰셋으로 거래를 평가한다."""
+
+        context = self.feature_builder.build(features)
+        return self.score_validated_context(context, rule_set)
 
     def score_context(
         self,
@@ -107,7 +118,7 @@ class RuleEngine:
             matched: list[str] = []
             matched_weights: list[float] = []
             for component in rule.components:
-                if self.expression_evaluator.evaluate(
+                if self.expression_evaluator.evaluate_validated(
                     component.condition_expression,
                     context,
                 ):

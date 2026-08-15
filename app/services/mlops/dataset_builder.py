@@ -27,10 +27,7 @@ from app.dto.ml_features import (
     RAW_TRANSACTION_FEATURE_COLUMNS,
     MLTransactionFeatures,
 )
-from app.services.features.ml_feature_assembler import (
-    FeatureAssemblyError,
-    assemble_ml_features,
-)
+from app.services.features.ml_feature_assembler import assemble_ml_features
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -472,7 +469,7 @@ class LabeledDatasetBuilder:
                             transaction=labeled.transaction,
                             derived=labeled.derived,
                         )
-                    except (FeatureAssemblyError, ValidationError) as exc:
+                    except ValidationError as exc:
                         raise DatasetBuildError(
                             "확정 라벨 거래의 원본 Feature가 학습 계약과 맞지 "
                             f"않습니다: {transaction_id}"

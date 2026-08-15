@@ -11,10 +11,6 @@ from app.data.model.transaction import Transaction
 from app.dto.ml_features import LOCATION_PATTERN, MLTransactionFeatures
 
 
-class FeatureAssemblyError(ValueError):
-    """저장된 행에서 raw59 계약을 복원하지 못한 경우."""
-
-
 def parse_location(value: str) -> tuple[float | None, float | None]:
     """위치 문자열 끝의 위도·경도를 검색용 컬럼으로 분리한다."""
 
@@ -280,7 +276,6 @@ def assemble_ml_features(
 
 
 __all__ = [
-    "FeatureAssemblyError",
     "assemble_ml_features",
     "build_account_fields",
     "build_customer_fields",
