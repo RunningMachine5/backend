@@ -261,6 +261,14 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   원칙**으로, 세션 생성 실패는 로그만 남기고 거래 저장을 롤백하지 않는다.
   룰 채점 결과 점수 내림차순 상위 2개를 `top_fraud_types`로 전달하고, 룰 채점이 실패한
   거래는 생략한다(일반 질문 폴백, PRD 2.4)
+- [ ] **고객 안내 메일은 한 통으로 합친다.** Agent 워크플로가 이미
+  [`_send_alert_email`](../../app/services/agent/workflow.py#L313)로 이상거래 안내 메일을
+  보내고 있고, 그 본문의 챗봇 링크는 `CUSTOMER_CHATBOT_URL` env의 **세션 id 없는 고정 주소**다.
+  Agent가 세션을 먼저 만들고(멱등) 그 `/chat/{chat_session_id}` URL을 `chatbot_url`로 넘겨
+  **Agent 메일 한 통에 세션 URL이 담기게 한다.** 이때 함께 정리할 것:
+  - `AgentEmailRepository.get_email_context`가 `customers.email`이 없으면 `None`을 돌려주고
+    조용히 미발송한다. 챗봇 폴백 규칙(PRD 2.1)에 맞춰 `CHAT_FALLBACK_EMAIL`로 보내도록 고친다
+  - 세션 생성 시점의 B.7 단독 발송과 중복되지 않도록 발송 지점을 한 곳으로 정한다
 - [ ] 멱등이므로 `rule_replay` 재처리 경로에서 중복 세션이 생기지 않음을 테스트로 고정
 - [ ] 발송이 콘솔 출력뿐이라 동기 호출 지연은 무시 가능. 실제 메일 연동 시 비동기화 재검토
   (README 3.3에 남긴다)

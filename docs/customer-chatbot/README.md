@@ -84,13 +84,27 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 
 #### 발송 구현과 기본 주소 폴백
 
-실제 메일 API는 아직 연동하지 않는다. **어떤 주소로 어떤 URL을 보냈는지 콘솔에 출력**해
-로컬·데모에서 눈으로 확인한다. (아직 미구현)
+**SMTP로 실제 발송한다.** Agent의 이상거래 안내 메일이 이미 쓰고 있는
+[`SmtpEmailMessageSender`](../../app/services/agent/email_sender.py)(`SMTP_*` env var)를 그대로
+재사용하고, 챗봇 세션 메일의 제목·본문은 [B.7](messages.md#b7-챗봇-접속-안내-이메일)이다.
+메시지 조립과 발송은 [session_url_mailer.py](../../app/services/chatbot/session_url_mailer.py),
+세션 생성과 상태 기록은 [session_creator.py](../../app/services/chatbot/session_creator.py)가 맡는다.
+
+어떤 주소로 어떤 URL을 보냈는지는 로컬·데모에서 눈으로 확인할 수 있도록 로그로 남긴다.
 
 ```
 [챗봇 URL 발송] 수신자=hong@example.com 세션=chat-2026-0001 URL=http://localhost:8000/chat/chat-2026-0001
 [챗봇 URL 발송] 수신자=abcd@kosa.com (기본 주소) 세션=chat-2026-0002 URL=http://localhost:8000/chat/chat-2026-0002
 ```
+
+**발송에 실패하면 세션은 남기고 `status = FAILED`로 둔다.** 고객이 URL을 받지 못했으므로
+`URL_SENT`라고 기록할 수 없고, 세션 행 자체를 지우면 담당자가 발송 실패 사실을 볼 수 없다.
+`email_sent_at`은 비우고 `notified_email`에는 시도한 주소를 남긴다
+([스키마 3.3](schema.md#33-챗봇-상태-정의)). SMTP 예외는 호출부로 전파하지 않는다 —
+FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을 막지 않는다"와 같은 원칙이다.
+
+`CHAT_BASE_URL`은 **고객이 브라우저로 여는 챗봇 화면의 주소**다. 챗봇 UI를 프론트가 서빙하면
+기본값(`http://localhost:8000`)이 아니라 프론트 주소를 넣어야 한다.
 
 `customers.email`은 nullable이고 **거래 수집 경로가 이메일을 채우지 않으면 항상 `NULL`이다**
 ([스키마 3.9](schema.md#39-customersemail-확보-경로) 참고). 주소가 없다는 이유로 안내를 건너뛰면 챗봇이
@@ -579,6 +593,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [B.4](messages.md#b4-다음-질문-전환-안내) | 다음 질문 전환 안내 | 재시도 소진·[평가 LLM 실패](#평가-llm-실패-시-동작) |
 | [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내) | 안내를 만들지 못한 가이드 검색 질의 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
 | [B.6](messages.md#b6-상담-종료-요청-시-상담사-연결-안내) | 상담 종료 요청 시 상담사 연결 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
+| [B.7](messages.md#b7-챗봇-접속-안내-이메일) | 챗봇 접속 안내 이메일 | [2.1 발송 구현](#발송-구현과-기본-주소-폴백) |
 
 ### [DB·스키마](schema.md) · [내부 채점표](scoring.md)
 

@@ -145,7 +145,7 @@ class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
     def test_accepts_two_distinct_fraud_types(self) -> None:
         request = CreateChatRequest.model_validate(
             {
-                "transaction_id": "tx-1",
+                "transaction_id": 1,
                 "top_fraud_types": [VOICE_PHISHING, MESSENGER_PHISHING],
             }
         )
@@ -158,7 +158,7 @@ class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
     def test_accepts_omitted_top_fraud_types(self) -> None:
         """룰 채점 실패 거래는 필드를 생략하고 일반 질문 폴백을 쓴다."""
 
-        request = CreateChatRequest.model_validate({"transaction_id": "tx-1"})
+        request = CreateChatRequest.model_validate({"transaction_id": 1})
 
         self.assertIsNone(request.top_fraud_types)
 
@@ -166,7 +166,7 @@ class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
         with self.assertRaises(ValidationError):
             CreateChatRequest.model_validate(
                 {
-                    "transaction_id": "tx-1",
+                    "transaction_id": 1,
                     "top_fraud_types": [VOICE_PHISHING, "UNKNOWN_TYPE"],
                 }
             )
@@ -175,7 +175,7 @@ class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
         with self.assertRaises(ValidationError):
             CreateChatRequest.model_validate(
                 {
-                    "transaction_id": "tx-1",
+                    "transaction_id": 1,
                     "top_fraud_types": [VOICE_PHISHING],
                 }
             )
@@ -183,7 +183,7 @@ class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
         with self.assertRaises(ValidationError):
             CreateChatRequest.model_validate(
                 {
-                    "transaction_id": "tx-1",
+                    "transaction_id": 1,
                     "top_fraud_types": [
                         VOICE_PHISHING,
                         MESSENGER_PHISHING,
@@ -192,11 +192,21 @@ class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
                 }
             )
 
+    def test_rejects_non_positive_transaction_id(self) -> None:
+        """거래 id는 DB가 발급하는 양수 BIGINT다."""
+
+        for transaction_id in (0, -1, "tx-1"):
+            with self.subTest(transaction_id=transaction_id):
+                with self.assertRaises(ValidationError):
+                    CreateChatRequest.model_validate(
+                        {"transaction_id": transaction_id}
+                    )
+
     def test_rejects_duplicate_fraud_types(self) -> None:
         with self.assertRaises(ValidationError):
             CreateChatRequest.model_validate(
                 {
-                    "transaction_id": "tx-1",
+                    "transaction_id": 1,
                     "top_fraud_types": [VOICE_PHISHING, VOICE_PHISHING],
                 }
             )
