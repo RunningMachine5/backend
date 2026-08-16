@@ -117,9 +117,12 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 스냅샷으로 저장하는 컬럼은 두지 않는다.
 
 - 시도 횟수·판정 이력은 [3.5 `chat_answers`](#35-chat_answers--신규)에 영구
-  기록되므로, 유실되는 것은 "지금 어느 노드에서 무엇을 기다리는지"뿐이다. 이미 받은
-  고객 답변과 판정, 추출 결과는 남는다.
+  기록된다. 체크포인터의 현재 질문 재시도 횟수는 초기화되지만, 이미 받은 고객 답변과
+  판정, 추출 결과는 남는다.
 - `question_step`은 `InMemorySaver`의 사본이 아니라 운영 조회용 값이다. 턴이 끝날 때 갱신한다.
+  체크포인트가 없는 첫 턴과 재시작 이후에는 이 컬럼이 그래프 상태의 seed가 되므로,
+  유실되는 것은 재시도 횟수뿐이다. 답변 수신 가능 여부는 세션 상태와 이 컬럼으로 검증한다
+  ([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)).
 - 메모리 체크포인터를 공유할 수 없는 다중 인스턴스 배포도 고려하지 않는다.
 
 ### 3.5 `chat_answers` — 신규
