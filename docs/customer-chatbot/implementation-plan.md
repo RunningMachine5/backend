@@ -266,8 +266,9 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 
 | 갱신 대상 | 내용 |
 | --- | --- |
-| README 2.4 / 3.1 | 평가 LLM 실패 폴백 확정 (env var 이름, `EVALUATOR_FAILED` 진행) |
+| ~~README 2.4 / 3.1~~ | ~~평가 LLM 실패 폴백 확정 (env var 이름, `EVALUATOR_FAILED` 진행)~~ — 6단계에서 반영 완료 |
 | ~~README 2.5~~ | ~~검색·생성 실패 폴백~~ — 5단계에서 반영 완료 |
+| ~~messages.md B.1 / B.4~~ | ~~B.1 치환 표기 형식, B.4 사용처 상실~~ — 6단계에서 반영 완료 |
 | README 2.1 / 신규 절 | API 엔드포인트 형태 확정본 |
 | README 3.3 | FDS 결합 방식 확정 (동기 + 실패 무시 + 멱등), 미해결에서 제거 |
 | README 3.4 | `transaction_amount` 부호 제약 해소 반영 (`ml_prediction.py:69` 참조도 갱신) |

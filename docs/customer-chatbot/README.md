@@ -208,9 +208,23 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 
 #### 평가 LLM 실패 시 동작
 
-타임아웃이나 커넥션 오류 시 `'일시적인 오류가 발생했어요 다시 응답해주세요'`를 출력하고
-`question_step`을 증가시키지 않는다. 평가 LLM 실패는 고객 답변의
-`attempt_no`를 소모하지 않는다.
+타임아웃이나 커넥션 오류는 **챗봇 내부에서 재시도로 흡수한다.** 호출당 타임아웃은
+`CHAT_LLM_TIMEOUT_SECONDS`, 재시도 상한은 `CHAT_LLM_MAX_ATTEMPTS`이며
+([app/core/config.py](../../app/core/config.py)), 재시도 중 고객에게는 아무것도 출력하지
+않는다. 평가 LLM 실패는 고객 답변의 `attempt_no`를 소모하지 않는다.
+
+상한을 소진하면 [3.1](#31-흐름)의 권장안대로 **`REFUSAL`과 동일하게 진행**한다.
+
+| 항목 | 값 |
+| --- | --- |
+| 고객 출력 | B.3의 `REFUSAL` 문구 (「알겠습니다 다음 질문을 할게요」) |
+| `question_step` | +1 (다음 질문으로 진행) |
+| `chat_answers.quality_verdict` | `NULL` — 판정을 받지 못했으므로 비운다 |
+| `chat_answers.verdict_skip_reason` | `EVALUATOR_FAILED` |
+
+같은 질문에 갇히지 않으므로 3.1이 지적한 무한 루프는 발생하지 않는다.
+고객에게 재입력을 요청하던 [B.4](messages.md#b4-평가-llm-실패-안내-문구--현재-사용처-없음)
+문구는 이 확정으로 사용처를 잃었다.
 
 ### 2.5 정보 응답 — RAG 대응 가이드 (4-1)
 
@@ -437,12 +451,13 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 
 ### 3.1 흐름
 
-- **평가 LLM 실패 시 무한 루프.** 타임아웃/커넥션 오류 시 `question_step`을 증가시키지 않고
-  재입력을 요청하므로, LLM이 계속 실패하면 고객이 같은 질문에 갇힌다. LLM 실패는
-  `attempt_no`를 소모하지 않는다. 호출당 타임아웃과
-  재시도 상한(`ML_SERVING_MAX_ATTEMPTS` 패턴을 [app/core/config.py](../../app/core/config.py)에
-  복제), 상한 소진 시 최종 폴백(권장: `REFUSAL`과 동일하게 다음 질문으로 진행하고
-  `verdict_skip_reason = EVALUATOR_FAILED`로 기록)이 필요하다.
+- ~~**평가 LLM 실패 시 무한 루프.**~~ 해결됐다. 권장안을 그대로 채택해
+  호출당 타임아웃(`CHAT_LLM_TIMEOUT_SECONDS`)과 재시도 상한(`CHAT_LLM_MAX_ATTEMPTS`)을
+  [app/core/config.py](../../app/core/config.py)에 두고, 상한을 소진하면 `REFUSAL`과
+  동일하게 다음 질문으로 진행하며 `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다.
+  구현은 [answer_evaluator.py](../../app/services/chatbot/answer_evaluator.py)이고
+  확정된 동작은 [2.4 평가 LLM 실패 시 동작](#평가-llm-실패-시-동작)에 있다.
+  LLM 실패는 여전히 `attempt_no`를 소모하지 않는다.
 - **가이드 검색 질의 수 상한.** 한 답변에서 최대 5개를 만들고 질의당 최대 3개 청크를 사용한다.
 - **추가 질문이 대화 히스토리를 쓰지 않는다.** "그럼 그건 어떻게 해요?"처럼 이전 답변의
   대명사를 참조하는 질문은 검색·답변이 어긋난다. history-aware retriever가 필요하다.
@@ -541,7 +556,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [B.1](messages.md#b1-최초-알림-메시지) | 최초 알림 메시지 | [2.3](#23-최초-알림-메시지와-버튼) |
 | [B.2](messages.md#b2-버튼-선택-시-출력-메시지) | 버튼 선택 시 출력 | [2.3](#23-최초-알림-메시지와-버튼) |
 | [B.3](messages.md#b3-평가-판정별-안내-문구) | 평가 판정별 안내 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
-| [B.4](messages.md#b4-평가-llm-실패-안내-문구) | 평가 LLM 실패 안내 | [2.4 평가 LLM 실패 시 동작](#평가-llm-실패-시-동작) |
+| [B.4](messages.md#b4-평가-llm-실패-안내-문구--현재-사용처-없음) | 평가 LLM 실패 안내 | 사용처 없음 — [2.4 평가 LLM 실패 시 동작](#평가-llm-실패-시-동작)이 B.3 `REFUSAL` 문구로 대체 |
 | [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내) | 안내를 만들지 못한 가이드 검색 질의 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
 | [B.6](messages.md#b6-상담-종료-요청-시-상담사-연결-안내) | 상담 종료 요청 시 상담사 연결 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
 

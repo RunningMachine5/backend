@@ -112,6 +112,21 @@ class ChatSessionRepository:
         self.session.add(chat_session)
         return chat_session
 
+    def request_handoff(
+        self,
+        chat_session: ChatSession,
+        *,
+        completed_at: datetime | None = None,
+    ) -> ChatSession:
+        """상담사 연결 대기로 전이
+        """
+
+        chat_session.status = ChatSessionStatus.HANDOFF_REQUESTED.value
+        if completed_at is not None:
+            chat_session.completed_at = completed_at
+        self.session.add(chat_session)
+        return chat_session
+
     def set_session_complete(
         self,
         chat_session: ChatSession,
