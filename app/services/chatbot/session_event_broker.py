@@ -9,7 +9,8 @@
 발행 시점 규칙: **커밋을 소유한 쪽이 커밋 직후에 발행한다.** 롤백될 수 있는 상태를
 대시보드에 먼저 보여주지 않기 위해서다. 턴 단위 커밋을 소유한
 [customer_chatbot_pipeline.py](../../pipelines/customer_chatbot_pipeline.py)는 스스로 발행하고,
-커밋하지 않는 [session_creator.py](session_creator.py)는 호출부(API 라우터)가 발행한다.
+Agent가 처음 만든 세션은 사건 저장 커밋이 끝난 뒤
+[task_runner.py](../agent/task_runner.py)가 발행한다.
 
 전송 계층(SSE 포맷·keep-alive)은 [app/api/chat.py](../../api/chat.py)에 있고
 여기서는 큐 팬아웃만 한다. 대시보드 전역 이벤트를 다루는
