@@ -15,10 +15,22 @@ from app.domain.fraud_type_codes import FINAL_FRAUD_TYPE_CODES
 
 FraudCircumstanceCode = Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]
 FraudTypeCode = Literal[*FINAL_FRAUD_TYPE_CODES]
+# ChatSessionStatus 5종(스키마 3.3). API 응답과 SSE 페이로드가 같은 집합을 쓴다.
+ChatSessionStatusValue = Literal[
+    "URL_SENT",
+    "IN_PROGRESS",
+    "HANDOFF_REQUESTED",
+    "DONE",
+    "FAILED",
+]
 
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758132371&cot=14
 class CreateChatRequest(BaseModel):
-    """거래에 연결된 고객 채팅 세션 생성 요청."""
+    """거래에 연결된 고객 채팅 세션 생성 입력(PRD 2.1).
+
+    세션 생성은 HTTP 로 열지 않으므로 요청 본문이 아니다. FDS 파이프라인과
+    로컬 테스트 스크립트가 ``ChatSessionCreator.create`` 에 넘길 값을 여기서 검증한다.
+    """
 
     # transactions.id 와 chat_sessions.transaction_id 는 DB가 발급하는 BIGINT 다.
     transaction_id: int = Field(gt=0)
@@ -41,12 +53,6 @@ class CreateChatRequest(BaseModel):
         if value is not None and value[0] == value[1]:
             raise ValueError("top_fraud_types의 두 사기유형은 서로 달라야 합니다")
         return value
-
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758183440&cot=14
-class CreateChatResponse(BaseModel):
-    """생성되었거나 기존에 존재하던 고객 채팅 세션."""
-
-    chat_session_id: str = Field(min_length=1, max_length=64)
 
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758232165&cot=14
 class AnswerQualityVerdict(StrEnum):
@@ -130,18 +136,54 @@ class ChatMessageResponse(BaseModel):
     sent_at: datetime
 
 
+class ChatVerifyRequest(BaseModel):
+    """출생연도 4자리 간이 본인인증(PRD 2.2).
+
+    실패 횟수 제한·URL 토큰·세션 TTL 은 MVP 범위 밖이다(PRD 3.3).
+    """
+
+    birth_year: str = Field(pattern=r"^\d{4}$")
+
+
+class ChatSessionDetailResponse(BaseModel):
+    """고객 화면이 접속·재접속 시 받는 세션 상태와 대화 이력."""
+
+    chat_session_id: str = Field(min_length=1, max_length=64)
+    transaction_id: int = Field(gt=0)
+    status: ChatSessionStatusValue
+    # 참이면 고령자 전용 UI 로 간다(PRD 2.2). 화면 분기는 프론트가 한다.
+    is_older: bool
+    question_step: int = Field(ge=0)
+    messages: list[ChatMessageResponse]
+
+
+class ChatTurnResponse(BaseModel):
+    """버튼 선택·고객 답변 한 턴의 결과."""
+
+    chat_session_id: str = Field(min_length=1, max_length=64)
+    status: ChatSessionStatusValue
+    question_step: int = Field(ge=0)
+    # 이번 턴에 챗봇이 보낸 메시지 본문. 대화 이력은 이미 chat_messages 에 저장돼 있다.
+    messages: list[str]
+
+
+class TransactionChatSessionStatusResponse(BaseModel):
+    """담당자 거래 목록 항목 하나의 채팅 세션 상태(PRD 2.7).
+
+    세션이 아직 없는 거래는 두 필드가 모두 ``null`` 이다.
+    """
+
+    transaction_id: int = Field(gt=0)
+    chat_session_id: str | None = None
+    status: ChatSessionStatusValue | None = None
+
+
 class ChatSessionStatusChangedEventPayload(BaseModel):
     """담당자 화면에 전달하는 채팅 세션 상태 변경 SSE 이벤트."""
 
     transaction_id: int = Field(gt=0)
     chat_session_id: str = Field(min_length=1, max_length=64)
-    status: Literal[
-        "URL_SENT",
-        "IN_PROGRESS",
-        "HANDOFF_REQUESTED",
-        "DONE",
-        "FAILED",
-    ]
+    status: ChatSessionStatusValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,9 +202,12 @@ __all__ = [
     "ChatButtonAction",
     "ChatButtonActionRequest",
     "ChatMessageResponse",
+    "ChatSessionDetailResponse",
     "ChatSessionStatusChangedEventPayload",
+    "ChatSessionStatusValue",
+    "ChatTurnResponse",
+    "ChatVerifyRequest",
     "CreateChatRequest",
-    "CreateChatResponse",
     "ExtractedGuideSearchQuery",
     "ExtractedFraudCircumstance",
     "FraudCircumstanceCode",
@@ -173,4 +218,5 @@ __all__ = [
     "GuideSearchQueryExtractionResult",
     "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",
+    "TransactionChatSessionStatusResponse",
 ]

@@ -164,6 +164,19 @@ class ChatSessionRepository:
         self.session.add(chat_session)
         return message
 
+    def list_messages(self, chat_session: ChatSession) -> list[ChatMessage]:
+        """세션의 대화 이력을 보낸 순서대로 조회한다(고객 화면 재접속용)."""
+
+        return list(
+            self.session.exec(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.chat_session_id == chat_session.chat_session_id
+                )
+                .order_by(ChatMessage.message_id)
+            ).all()
+        )
+
     def add_answer(
         self,
         chat_session: ChatSession,
