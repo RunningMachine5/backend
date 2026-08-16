@@ -9,8 +9,8 @@ from app.data.model.agent import (  # noqa: F401
 )
 from app.data.model.chatbot import (  # noqa: F401
     ChatAnswer,
-    ChatCustomerAction,
     ChatFraudCircumstance,
+    ChatGuideSearchQuery,
     ChatMessage,
     ChatSession,
     ChatSenderType,
@@ -50,8 +50,8 @@ __all__ = [
     "ChatSenderType",
     "ChatSessionStatus",
     "ChatAnswer",
-    "ChatCustomerAction",
     "ChatFraudCircumstance",
+    "ChatGuideSearchQuery",
     "ChatMessage",
     "ChatSession",
     "CsGuideDocument",

@@ -18,6 +18,7 @@ from app.dto.agent import (
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
     ResponsePlanDTO,
+    SimilarCaseResultDTO,
 )
 from app.dto.agent_guide import GuideSearchRequestDTO, RetrievedGuideChunkDTO
 from app.services.agent.case_service import AgentCaseService
@@ -42,6 +43,7 @@ class AgentGraphState(TypedDict, total=False):
     response_policy: ResponsePolicy
     retrieved_guides: list[RetrievedGuideChunkDTO]
     response_plan: ResponsePlanDTO
+    similar_case_results: list[SimilarCaseResultDTO]
     final_response: AgentResponseDTO
     failure_reason: str
     workflow_started_at: float
@@ -79,6 +81,19 @@ class FraudAlertEmailNotifier(Protocol):
     """생성된 이상거래 이메일 명령을 고객 안내 서비스에 전달한다."""
 
     def send(self, command: FraudAlertEmailCommand) -> None: ...
+
+
+class DashboardSimilarCaseFinder(Protocol):
+    """모든 이상거래의 대시보드용 유사 사건을 조회하는 계약이다."""
+
+    def find_top_three(
+        self,
+        *,
+        current_case_id: str,
+        rule_result: FraudTypeScoreResultDTO,
+        risk_score: int,
+        risk_grade: str,
+    ) -> list[SimilarCaseResultDTO]: ...
 
 
 class RuleFirstFallbackInvestigator:
@@ -134,6 +149,7 @@ class AgentWorkflow:
         investigator: AmbiguousTypeInvestigator | None = None,
         response_plan_generator: ResponsePlanGenerator | None = None,
         email_notifier: FraudAlertEmailNotifier | None = None,
+        dashboard_similar_case_finder: DashboardSimilarCaseFinder | None = None,
     ) -> None:
         self.case_service = case_service
         self.policy_repository = policy_repository
@@ -143,6 +159,7 @@ class AgentWorkflow:
             response_plan_generator or PolicyResponsePlanGenerator()
         )
         self.email_notifier = email_notifier or NoOpFraudAlertEmailService()
+        self.dashboard_similar_case_finder = dashboard_similar_case_finder
         self.graph = self._build_graph()
 
     def run(self, agent_input: AgentInputDTO) -> AgentResponseDTO:
@@ -172,6 +189,7 @@ class AgentWorkflow:
         graph.add_node("load_policy", self._safe(self._load_policy))
         graph.add_node("search_guides", self._safe(self._search_guides))
         graph.add_node("generate_plan", self._safe(self._generate_plan))
+        graph.add_node("find_similar_cases", self._safe(self._find_similar_cases))
         graph.add_node("complete_case", self._safe(self._complete_case))
         graph.add_node("fail_case", self._fail_case)
 
@@ -181,18 +199,25 @@ class AgentWorkflow:
             self._route_after_start,
             {
                 "existing": END,
-                "confident": "use_rule_type",
-                "ambiguous": "investigate_type",
+                "continue": "build_email_command",
                 "failed": "fail_case",
             },
         )
-        self._add_failure_route(graph, "use_rule_type", "build_email_command")
-        self._add_failure_route(graph, "investigate_type", "build_email_command")
         self._add_failure_route(graph, "build_email_command", "send_alert_email")
-        graph.add_edge("send_alert_email", "load_policy")
+        graph.add_conditional_edges(
+            "send_alert_email",
+            self._route_by_confidence,
+            {
+                "confident": "use_rule_type",
+                "ambiguous": "investigate_type",
+            },
+        )
+        self._add_failure_route(graph, "use_rule_type", "load_policy")
+        self._add_failure_route(graph, "investigate_type", "load_policy")
         self._add_failure_route(graph, "load_policy", "search_guides")
         self._add_failure_route(graph, "search_guides", "generate_plan")
-        self._add_failure_route(graph, "generate_plan", "complete_case")
+        self._add_failure_route(graph, "generate_plan", "find_similar_cases")
+        self._add_failure_route(graph, "find_similar_cases", "complete_case")
         graph.add_conditional_edges(
             "complete_case",
             lambda state: "failed" if state.get("failure_reason") else "completed",
@@ -282,12 +307,11 @@ class AgentWorkflow:
             "email_command": build_fraud_alert_email_command(
                 transaction_id=state["agent_input"].transaction_id,
                 type_confidence=state["type_confidence"],
-                investigation_result=state["investigation_result"],
             )
         }
 
     def _send_alert_email(self, state: AgentGraphState) -> dict[str, object]:
-        """발송 장애가 뒤의 정책·RAG 흐름을 중단시키지 않도록 분리한다."""
+        """발송 장애가 후속 조사·정책·RAG 흐름을 중단시키지 않도록 한다."""
 
         try:
             self.email_notifier.send(state["email_command"])
@@ -318,7 +342,7 @@ class AgentWorkflow:
                 audience="MONITORING",
                 risk_grade=policy.risk_grade,
                 action_codes=tuple(action.action_code for action in policy.actions),
-                top_k=5,
+                top_k=3,
             )
         )
         return {"retrieved_guides": guides}
@@ -331,6 +355,25 @@ class AgentWorkflow:
                 guides=state["retrieved_guides"],
             )
         }
+
+    def _find_similar_cases(self, state: AgentGraphState) -> dict[str, object]:
+        if self.dashboard_similar_case_finder is None:
+            return {"similar_case_results": []}
+        agent_input = state["agent_input"]
+        try:
+            results = self.dashboard_similar_case_finder.find_top_three(
+                current_case_id=state["case_id"],
+                rule_result=state["rule_result"],
+                risk_score=agent_input.risk_score,
+                risk_grade=agent_input.risk_grade.value,
+            )
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "대시보드용 유사 사건 검색 실패: %s",
+                error,
+            )
+            results = []
+        return {"similar_case_results": results}
 
     def _complete_case(self, state: AgentGraphState) -> dict[str, object]:
         metrics = {
@@ -349,7 +392,7 @@ class AgentWorkflow:
         response = self.case_service.complete_case(
             state["case_id"],
             investigation_result=state["investigation_result"],
-            similar_case_results=[],
+            similar_case_results=state["similar_case_results"],
             response_result=state["response_plan"],
             generation_metadata={
                 "workflow_version": "1.0",
@@ -392,14 +435,23 @@ class AgentWorkflow:
             return "failed"
         if not state.get("case_created"):
             return "existing"
+        return "continue"
+
+    @staticmethod
+    def _route_by_confidence(state: AgentGraphState) -> str:
         status = state["type_confidence"].classification_status
-        return "ambiguous" if status is ClassificationStatus.AMBIGUOUS else "confident"
+        return (
+            "ambiguous"
+            if status is ClassificationStatus.AMBIGUOUS
+            else "confident"
+        )
 
 
 __all__ = [
     "AgentGraphState",
     "AgentWorkflow",
     "AmbiguousTypeInvestigator",
+    "DashboardSimilarCaseFinder",
     "FraudAlertEmailNotifier",
     "PolicyResponsePlanGenerator",
     "ResponsePlanGenerator",

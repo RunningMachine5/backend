@@ -2,9 +2,7 @@ import unittest
 
 from app.data.fake_data import FAKE_TRANSACTIONS
 from app.domain.enums import AgentAction, FraudType, RiskGrade
-from app.dto.chatbot import ChatbotRequestDTO
 from app.dto.fraud import FraudAssessmentDTO, FraudPredictionDTO
-from app.pipelines.customer_chatbot_pipeline import CustomerChatbotPipeline
 from app.pipelines.monitoring_agent_pipeline import MonitoringAgentPipeline
 
 
@@ -36,7 +34,7 @@ def assessment_for_agent(
 
 
 class PipelineTest(unittest.TestCase):
-    """아직 별도 스켈레톤인 Agent·Chatbot 분기를 검증한다."""
+    """아직 스켈레톤인 Agent 분기를 검증한다."""
 
     def test_very_high_risk_uses_email_and_rag_branches(self) -> None:
         """매우높음 거래가 피해자 이메일과 담당자 RAG 처리로 이어지는지 확인한다."""
@@ -101,19 +99,6 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(agent_result.action, AgentAction.NO_ACTION)
         self.assertIsNone(agent_result.rag_query)
         self.assertIsNone(agent_result.retrieved_context)
-
-    def test_chatbot_combines_guide_and_transaction(self) -> None:
-        """고객 질문에 관련 거래정보와 고객 대응 가이드가 포함되는지 확인한다."""
-        response = CustomerChatbotPipeline().run(
-            ChatbotRequestDTO(
-                #user_id="USR_100123",
-                question="이 거래는 제가 하지 않았습니다.",
-            )
-        )
-
-        # self.assertIn("85,000,000원", response.answer)
-        self.assertIn("즉시 중지", response.answer)
-        self.assertIn("Fake Guide DB", response.source)  # 리트리버가 반환한 문서의 출처를 확인한다.
 
 
 if __name__ == "__main__":

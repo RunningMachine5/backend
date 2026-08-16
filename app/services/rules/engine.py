@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from app.dto.ml_features import MLTransactionFeatures
 from app.services.rules.expression_evaluator import RuleExpressionEvaluator
 from app.services.rules.feature_builder import RuleFeatureBuilder
 
@@ -50,7 +51,11 @@ _COMPONENT_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 
 
 class RuleEngine:
-    """활성 룰별 점수와 일치한 구성요소를 계산한다."""
+    """활성 룰별 점수와 일치한 구성요소를 계산한다.
+
+    ML이 사기인지 판단한 뒤, 이 엔진은 그 거래가 어떤 사기유형 신호와
+    가까운지만 설명한다. 룰 점수는 ML 판정을 변경하는 확률값이 아니다.
+    """
 
     def __init__(
         self,
@@ -63,15 +68,25 @@ class RuleEngine:
 
     def score(
         self,
-        raw_data: Mapping[str, Any],
+        features: MLTransactionFeatures,
         rule_set: RuleSetDefinition | None = None,
     ) -> RuleScoreResult:
         if rule_set is None:
             from app.services.rules.defaults import DEFAULT_RULE_SET
 
             rule_set = DEFAULT_RULE_SET
-        context = self.feature_builder.build(raw_data)
-        return self.score_context(context, rule_set)
+        self.validate_rule_set(rule_set)
+        return self.score_validated(features, rule_set)
+
+    def score_validated(
+        self,
+        features: MLTransactionFeatures,
+        rule_set: RuleSetDefinition,
+    ) -> RuleScoreResult:
+        """활성화 등 앞 단계에서 검증한 룰셋으로 거래를 평가한다."""
+
+        context = self.feature_builder.build(features)
+        return self.score_validated_context(context, rule_set)
 
     def score_context(
         self,
@@ -98,10 +113,12 @@ class RuleEngine:
             if not rule.enabled:
                 continue
 
+            # 한 사기유형 안에서 조건을 만족한 component의 가중치만 더한다.
+            # 유형들은 서로 독립적이므로 네 유형 점수의 총합은 1일 필요가 없다.
             matched: list[str] = []
             matched_weights: list[float] = []
             for component in rule.components:
-                if self.expression_evaluator.evaluate(
+                if self.expression_evaluator.evaluate_validated(
                     component.condition_expression,
                     context,
                 ):
@@ -174,9 +191,9 @@ class RuleEngine:
 
 __all__ = [
     "FraudRuleDefinition",
-    "RuleScoreResult",
     "RuleComponentDefinition",
     "RuleEngine",
+    "RuleScoreResult",
     "RuleSetDefinition",
     "RuleSetValidationError",
 ]

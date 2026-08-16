@@ -1,4 +1,10 @@
-"""관리자 전용 ML 학습·Serving 배포 API."""
+"""관리자 전용 ML 학습·Serving 배포 API.
+
+전체 흐름은 ``데이터셋 등록 → Training Job 실행 → 결과 callback → 관리자 승인
+→ 0% 후보 배포 → 실제 예측 smoke → 100% 전환 → 배포 완료`` 순서다.
+Backend DB에는 이 흐름의 최소 상태만 저장하고, 학습 지표와 모델 버전의 원본은
+MLflow에서, 실제 리비전과 트래픽의 원본은 Cloud Run에서 다시 확인한다.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +36,7 @@ from app.services.mlops.cloud_run import (
     CloudRunAdminError,
 )
 from app.services.mlops.dataset_builder import (
+    MLOPS_BASE_DATASET_URI,
     DatasetBuildError,
     DatasetStorageError,
     LabeledDatasetBuilderDep,
@@ -66,6 +73,9 @@ router = APIRouter(
     tags=["mlops-admin"],
     dependencies=[Depends(require_mlops_admin)],
 )
+
+# DatasetVersion은 CSV 자체를 DB에 복사하지 않고, 학습에 사용할 불변 GCS
+# 객체의 주소와 버전만 가리킨다.
 
 
 def _operation_id(payload: dict[str, Any]) -> str | None:
@@ -185,17 +195,8 @@ def build_labeled_dataset_version(
     builder: LabeledDatasetBuilderDep,
     session: SessionDep,
 ) -> dict[str, Any]:
-    """기존 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
+    """고정 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
 
-    base_dataset = session.get(
-        DatasetVersion,
-        payload.base_dataset_version_id,
-    )
-    if base_dataset is None:
-        raise HTTPException(
-            status_code=404,
-            detail="기준 학습 데이터셋 버전을 찾을 수 없습니다.",
-        )
     existing_version = session.exec(
         select(DatasetVersion).where(DatasetVersion.version == payload.version)
     ).first()
@@ -208,7 +209,6 @@ def build_labeled_dataset_version(
     try:
         result = builder.build(
             session,
-            source_uri=base_dataset.gcs_uri,
             destination_uri=payload.gcs_uri,
         )
     except DatasetStorageError as exc:
@@ -233,11 +233,10 @@ def build_labeled_dataset_version(
     session.refresh(dataset)
     return {
         **_dataset_payload(dataset),
-        "base_dataset_version_id": base_dataset.id,
+        "base_dataset_uri": MLOPS_BASE_DATASET_URI,
         "build": {
             "source_row_count": result.source_row_count,
             "confirmed_label_count": result.confirmed_label_count,
-            "replaced_label_count": result.replaced_label_count,
             "appended_label_count": result.appended_label_count,
         },
     }
@@ -306,6 +305,10 @@ def start_training_run(
         "operation_id": _operation_id(operation),
         "operation": operation,
     }
+
+
+# Training Job은 Backend 요청과 별도로 실행되므로 성공·실패 결과를 callback으로
+# 돌려준다. 아래 조회/결과 API는 그 비동기 실행 상태를 연결하는 경계다.
 
 
 @router.get("/training/runs")

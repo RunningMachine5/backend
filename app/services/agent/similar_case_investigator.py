@@ -40,7 +40,7 @@ class SimilarCaseTools(Protocol):
         self,
         *,
         current_case_id: str,
-        candidate_fraud_types: tuple[str, str],
+        candidate_fraud_types: tuple[str, ...],
         type_scores: dict[str, float],
         evidence: list[RuleEvidenceDTO],
         risk_score: int,
@@ -112,6 +112,7 @@ class OpenAIInvestigationActionSelector:
             "similar_cases": [
                 {
                     "case_id": case.case_id,
+                    "confirmed_fraud_type": case.confirmed_fraud_type,
                     "similarity_score": case.similarity_score,
                     "common_evidence_codes": case.common_evidence_codes,
                 }
@@ -121,6 +122,10 @@ class OpenAIInvestigationActionSelector:
                 {
                     "case_id": case.case_id,
                     "confirmed_fraud_type": case.confirmed_fraud_type,
+                    "decision": case.decision,
+                    "performed_actions": case.performed_actions,
+                    "checklist_results": case.checklist_results,
+                    "resolution_summary": case.resolution_summary,
                 }
                 for case in inspected_cases
             ],
@@ -133,8 +138,9 @@ class OpenAIInvestigationActionSelector:
                     "content": (
                         "너는 금융 이상거래의 애매한 사기 유형을 조사하는 Agent다. "
                         "제공된 사건과 Rule 상위 후보만 사용한다. 아직 확인하지 않은 "
-                        "사건 중 확인 가치가 있는 사건은 INSPECT_CASE로 선택한다. "
-                        "근거가 충분하면 STOP_RECOMMEND, 부족하면 STOP_INSUFFICIENT를 "
+                        "사건 중 검색 요약이 서로 상충하면 INSPECT_CASE로 선택한다. "
+                        "검색 요약만으로 한 유형의 근거가 충분하면 상세조회 없이 "
+                        "STOP_RECOMMEND를 선택한다. 근거가 부족하면 STOP_INSUFFICIENT를 "
                         "선택한다. 새로운 유형이나 사건 ID를 만들지 않는다."
                     ),
                 },
@@ -185,7 +191,7 @@ class DatabaseSimilarCaseTools:
         self,
         *,
         current_case_id: str,
-        candidate_fraud_types: tuple[str, str],
+        candidate_fraud_types: tuple[str, ...],
         type_scores: dict[str, float],
         evidence: list[RuleEvidenceDTO],
         risk_score: int,
@@ -203,16 +209,19 @@ class DatabaseSimilarCaseTools:
             risk_score=risk_score,
             risk_grade=risk_grade,
         )
-        candidates = [
-            CaseSimilarityFeatures(
-                case_id=case.case_id,
-                type_scores=score.type_scores,
-                matched_components=score.matched_components,
-                risk_score=case.risk_score,
-                risk_grade=case.risk_grade,
+        candidates = []
+        confirmed_types: dict[str, str] = {}
+        for case, score, review in rows:
+            candidates.append(
+                CaseSimilarityFeatures(
+                    case_id=case.case_id,
+                    type_scores=score.type_scores,
+                    matched_components=score.matched_components,
+                    risk_score=case.risk_score,
+                    risk_grade=case.risk_grade,
+                )
             )
-            for case, score in rows
-        ]
+            confirmed_types[case.case_id] = review.confirmed_fraud_type or ""
         ranked = rank_similar_cases(
             current,
             candidates,
@@ -222,6 +231,7 @@ class DatabaseSimilarCaseTools:
         return [
             SimilarResolvedCaseDTO(
                 case_id=result.case_id,
+                confirmed_fraud_type=confirmed_types[result.case_id],
                 similarity_score=result.similarity_score,
                 common_evidence_codes=result.common_evidence_codes,
             )
@@ -235,6 +245,10 @@ class DatabaseSimilarCaseTools:
         return ResolvedCaseDetailDTO(
             case_id=case_id,
             confirmed_fraud_type=review.confirmed_fraud_type or "",
+            decision=review.decision,
+            performed_actions=list(review.performed_actions or []),
+            checklist_results=list(review.checklist_results or []),
+            resolution_summary=review.resolution_summary,
         )
 
 
@@ -446,6 +460,7 @@ class LimitedSimilarCaseInvestigator:
             "investigation_result": self._build_recommendation(
                 confidence=state["confidence"],
                 candidates=state["candidates"],
+                supported_cases=state["supported_cases"],
                 inspected=state["inspected_cases"],
                 requested_type=action.recommended_fraud_type,
                 reason=action.reason,
@@ -478,18 +493,27 @@ class LimitedSimilarCaseInvestigator:
         *,
         confidence: TypeConfidenceResult,
         candidates: tuple[str, str],
+        supported_cases: list[SimilarResolvedCaseDTO],
         inspected: list[tuple[SimilarResolvedCaseDTO, ResolvedCaseDetailDTO]],
         requested_type: str | None,
         reason: str,
     ) -> InvestigationResultDTO:
-        if not inspected:
-            return self._insufficient(confidence, "상세조회한 완료 사건이 없다.")
-
-        # 상세조회에서 담당자의 확정 유형과 실제 처리 결과가 확인된 사건만 집계한다.
-        support_count = Counter(detail.confirmed_fraud_type for _case, detail in inspected)
+        # 상세조회가 없으면 검색 요약의 담당자 확정 유형을 사용한다.
+        evidence_cases = (
+            [
+                (candidate, detail.confirmed_fraud_type)
+                for candidate, detail in inspected
+            ]
+            if inspected
+            else [
+                (candidate, candidate.confirmed_fraud_type)
+                for candidate in supported_cases
+            ]
+        )
+        support_count = Counter(type_code for _case, type_code in evidence_cases)
         support_score: dict[str, float] = defaultdict(float)
-        for candidate, detail in inspected:
-            support_score[detail.confirmed_fraud_type] += candidate.similarity_score
+        for candidate, type_code in evidence_cases:
+            support_score[type_code] += candidate.similarity_score
         recommended_type = max(
             candidates,
             key=lambda type_code: (support_count[type_code], support_score[type_code]),
@@ -498,12 +522,25 @@ class LimitedSimilarCaseInvestigator:
             return self._insufficient(confidence, "LLM 추천 유형이 확인된 근거와 일치하지 않는다.")
         best = next(
             candidate
-            for candidate, detail in inspected
-            if detail.confirmed_fraud_type == recommended_type
+            for candidate, type_code in evidence_cases
+            if type_code == recommended_type
         )
-        enough = support_count[recommended_type] >= 2 or (
-            best.similarity_score >= self.strong_similarity
+        other_type = next(
+            type_code for type_code in candidates if type_code != recommended_type
         )
+        if inspected:
+            enough = support_count[recommended_type] >= 2 or (
+                best.similarity_score >= self.strong_similarity
+            )
+        else:
+            # 검색 요약만 사용할 때는 다른 후보 유형보다 근거가 명확하게 우세해야 한다.
+            enough = (
+                support_count[recommended_type] >= 2
+                and support_count[recommended_type] > support_count[other_type]
+            ) or (
+                best.similarity_score >= self.strong_similarity
+                and support_count[other_type] == 0
+            )
         if not enough:
             return self._insufficient(confidence, "한 유형을 우선 추천할 만큼 과거 확정 근거가 충분하지 않다.")
 

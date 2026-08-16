@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 from sqlalchemy import func
@@ -13,10 +13,7 @@ from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.ml_features import MLTransactionFeatures
 from app.dto.transaction import TransactionRequestDTO
-from app.services.features.ml_feature_assembler import (
-    FeatureAssemblyError,
-    assemble_ml_features,
-)
+from app.services.features.ml_feature_assembler import assemble_ml_features
 
 
 def _account_id(account_number: str) -> str:
@@ -28,16 +25,7 @@ def _account_id(account_number: str) -> str:
     return f"ACC_{digest[:32]}"
 
 
-class CustomerIdentificationConflictError(RuntimeError):
-    """거래 원장 참조값 충돌의 API 호환 기준 예외.
-
-    기존 Pipeline이 이 예외를 409로 변환하므로 고객·계좌 원장의 다른 충돌도
-    하위 예외로 표현한다. 호출자는 하위 타입과 ``conflicting_fields``로 실제
-    원인을 구분할 수 있다.
-    """
-
-
-class AccountIdentifierConflictError(CustomerIdentificationConflictError):
+class AccountIdentifierConflictError(RuntimeError):
     """하나의 내부 계좌 ID가 서로 다른 원본 계좌번호를 가리키는 경우."""
 
     def __init__(self, account_id: str, conflicting_fields: list[str]) -> None:
@@ -47,33 +35,6 @@ class AccountIdentifierConflictError(CustomerIdentificationConflictError):
             f"계좌 식별값이 기존 원장과 다릅니다: {account_id} "
             f"({', '.join(conflicting_fields)})"
         )
-
-
-class AccountOwnershipConflictError(CustomerIdentificationConflictError):
-    """이미 다른 고객이 소유한 계좌를 출금 계좌로 사용한 경우."""
-
-    def __init__(
-        self,
-        account_id: str,
-        *,
-        stored_customer_id: str,
-        requested_customer_id: str,
-    ) -> None:
-        self.account_id = account_id
-        self.stored_customer_id = stored_customer_id
-        self.requested_customer_id = requested_customer_id
-        super().__init__(
-            "계좌 소유 고객이 기존 원장과 다릅니다: "
-            f"{account_id} ({stored_customer_id} != {requested_customer_id})"
-        )
-
-
-class CustomerReferenceNotFoundError(RuntimeError):
-    """거래가 참조한 고객이 고객 원장에 아직 등록되지 않은 경우."""
-
-    def __init__(self, customer_id: str) -> None:
-        self.customer_id = customer_id
-        super().__init__(f"고객 원장에서 customer_id를 찾을 수 없습니다: {customer_id}")
 
 
 class TransactionRepository:
@@ -86,12 +47,8 @@ class TransactionRepository:
     def load_ml_features(
         self,
         transaction: Transaction,
-    ) -> MLTransactionFeatures | None:
-        """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다.
-
-        파생 피처 행이 없거나 외부 계좌 정보만 있는 등 계약을 복원할 수 없는
-        경우에는 호출 측이 부분 응답을 만들 수 있도록 None을 반환한다.
-        """
+    ) -> MLTransactionFeatures:
+        """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다."""
 
         derived = self.session.get(DerivedFeatures, transaction.id)
         customer = (
@@ -113,24 +70,13 @@ class TransactionRepository:
             if transaction.recipient_account_number
             else None
         )
-        if (
-            derived is None
-            or customer is None
-            or source_account is None
-            or recipient_account is None
-        ):
-            return None
-
-        try:
-            return assemble_ml_features(
-                customer=customer,
-                source_account=source_account,
-                recipient_account=recipient_account,
-                transaction=transaction,
-                derived=derived,
-            )
-        except FeatureAssemblyError:
-            return None
+        return assemble_ml_features(
+            customer=customer,
+            source_account=source_account,
+            recipient_account=recipient_account,
+            transaction=transaction,
+            derived=derived,
+        )
 
     def add_received(self, payload: TransactionRequestDTO) -> Transaction:
         customer = self._find_customer(payload.customer_id)
@@ -185,22 +131,60 @@ class TransactionRepository:
         self.session.add(transaction)
         self.session.flush()
         assert transaction.id is not None
+
+        # 아직 실시간 파생 계산기가 없으므로, ML 입력 59개의 자리를
+        # 비워 두지 않고 중립적인 기본값으로 저장한다. 나중에 계산 로직이
+        # 준비되면 같은 transaction.id의 행을 실제 값으로 갱신하면 된다.
+        self.session.add(self._default_derived_features(transaction.id))
         return transaction
+
+    @staticmethod
+    def _default_derived_features(transaction_id: int) -> DerivedFeatures:
+        """실제 파생 계산기가 없는 동안 사용할 임시 스냅샷을 만든다.
+
+        수치형은 0, 상태형은 False, 과거 시각은 None을 사용한다.
+        이 값은 '이상 징후 없음'을 가정한 테스트용 기본값이지,
+        실제 거래 이력을 계산한 결과가 아니다.
+        """
+
+        return DerivedFeatures(
+            id=transaction_id,
+            distance=0.0,
+            time_difference=timedelta(0),
+            one_month_max_amount=0,
+            one_month_std_dev=0.0,
+            dawn_one_month_max_amount=0,
+            dawn_one_month_std_dev=0.0,
+            unused_terminal_status=False,
+            unused_account_status=False,
+            transaction_history_with_the_account=0,
+            flag_deposit_more_than_tenMillion=False,
+            number_of_transaction_with_the_account=0,
+            last_atm_transaction_datetime=None,
+            last_bank_branch_transaction_datetime=None,
+            flag_change_of_authentication_1=False,
+            flag_change_of_authentication_2=False,
+            flag_change_of_authentication_3=False,
+            flag_change_of_authentication_4=False,
+            inquiry_atm_limit=False,
+            increase_atm_limit=False,
+            release_suspension=False,
+            transaction_resumed_date=None,
+            recipient_account_suspend_status=False,
+            first_time_ios_by_vulnerable_user=False,
+        )
 
     def _find_customer(self, customer_id: str | None) -> Customer | None:
         if customer_id is None:
             return None
-        customer = self.session.get(Customer, customer_id)
-        if customer is None:
-            raise CustomerReferenceNotFoundError(customer_id)
-        return customer
+        return self.session.get(Customer, customer_id)
 
     def _upsert_source_account(
         self,
         payload: TransactionRequestDTO,
         customer: Customer | None,
     ) -> str:
-        """출금 계좌 식별자를 보존하고 알려진 고객 소유권만 검증한다."""
+        """출금 계좌를 준비하고 마지막 요청의 고객 연결을 반영한다."""
 
         source_account_id = _account_id(payload.source_account_number)
         source_account = self.session.exec(
@@ -221,18 +205,7 @@ class TransactionRepository:
                 account_number=payload.source_account_number,
             )
         else:
-            if source_account.customer_id is None and customer is not None:
-                source_account.customer_id = customer.id
-            elif (
-                customer is not None
-                and source_account.customer_id is not None
-                and source_account.customer_id != customer.id
-            ):
-                raise AccountOwnershipConflictError(
-                    source_account_id,
-                    stored_customer_id=source_account.customer_id,
-                    requested_customer_id=customer.id,
-                )
+            source_account.customer_id = customer.id if customer is not None else None
             source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
         return source_account.account_number
@@ -328,9 +301,9 @@ class PredictionResultRepository:
             tuple[
                 Transaction,
                 Customer | None,
+                Account,
                 Account | None,
-                Account | None,
-                DerivedFeatures | None,
+                DerivedFeatures,
             ]
         ],
         bool,
@@ -340,8 +313,8 @@ class PredictionResultRepository:
         양성 예측부터 거르면 과거 양성·최신 음성인 거래가 섞이므로 거래별 최신
         예측을 먼저 확정한다. 거래시각과 거래 ID를 함께 정렬해 같은 데이터에서는
         항상 같은 표본을 고르고, ``limit + 1``건으로 다음 표본 존재 여부를 구한다.
-        고객·출금계좌·파생 피처는 outer join하여 손상된 거래도 조용히 누락하지 않고
-        리플레이 오류 상세로 보고할 수 있게 한다.
+        출금계좌와 파생 피처가 조립된 거래만 고르고, 선택한 행은 별도 누락
+        검증 없이 바로 raw59로 재조립한다.
         """
 
         ranked_predictions = select(
@@ -377,7 +350,7 @@ class PredictionResultRepository:
                 ranked_predictions.c.prediction_result_id == MLPredictionResult.id,
             )
             .outerjoin(Customer, Customer.id == Transaction.customer_id)
-            .outerjoin(
+            .join(
                 source_account,
                 source_account.account_number == Transaction.source_account_number,
             )
@@ -386,7 +359,7 @@ class PredictionResultRepository:
                 recipient_account.account_number
                 == Transaction.recipient_account_number,
             )
-            .outerjoin(
+            .join(
                 DerivedFeatures,
                 DerivedFeatures.id == Transaction.id,
             )
@@ -417,9 +390,6 @@ class PredictionResultRepository:
 
 __all__ = [
     "AccountIdentifierConflictError",
-    "AccountOwnershipConflictError",
-    "CustomerIdentificationConflictError",
-    "CustomerReferenceNotFoundError",
     "PredictionResultRepository",
     "TransactionLabelRepository",
     "TransactionRepository",

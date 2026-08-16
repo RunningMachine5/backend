@@ -8,7 +8,6 @@ os.environ.setdefault("OPENAI_API_KEY", "test-only-key")
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
@@ -26,10 +25,6 @@ from app.data.model.fraud_rule import (
 )
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction
-from app.dto.fraud_rule import (
-    FraudRuleReplayChangedTransactionResponse,
-    FraudRuleReplayComponentImpactResponse,
-)
 from app.dto.ml_features import MLTransactionFeatures
 from app.services.features.ml_feature_assembler import (
     build_account_fields,
@@ -37,6 +32,7 @@ from app.services.features.ml_feature_assembler import (
     build_derived_features_fields,
     build_transaction_fields,
 )
+from app.services.rules.expression_evaluator import RuleExpressionEvaluator
 from app.services.rules.replay import _component_changes, replay_rule_sets
 from tests.test_rule_feature_builder import valid_rule_raw_data
 
@@ -338,6 +334,11 @@ class FraudRuleReplayApiTest(unittest.TestCase):
         self.assertEqual(body["selected_count"], 2)
         self.assertEqual(body["evaluated_count"], 2)
         self.assertEqual(body["error_count"], 0)
+        self.assertEqual(
+            body["evaluated_count"] + body["error_count"],
+            body["selected_count"],
+        )
+        self.assertEqual(body["summary_denominator"], body["evaluated_count"])
         self.assertTrue(body["has_more"])
         self.assertEqual(body["changed_transaction_count"], 2)
         self.assertEqual(body["score_changed_transaction_count"], 2)
@@ -347,6 +348,53 @@ class FraudRuleReplayApiTest(unittest.TestCase):
             [_transaction_id("TX-LATEST-POSITIVE")],
         )
         self.assertTrue(body["changed_details_truncated"])
+        self.assertEqual(
+            body["changed_transaction_rate"],
+            round(
+                body["changed_transaction_count"] / body["evaluated_count"],
+                10,
+            ),
+        )
+        for summary in body["type_summaries"]:
+            self.assertEqual(
+                summary["matched_transaction_count_delta"],
+                summary["draft_matched_transaction_count"]
+                - summary["active_matched_transaction_count"],
+            )
+            self.assertEqual(
+                summary["score_increased_transaction_count"]
+                + summary["score_decreased_transaction_count"]
+                + summary["score_unchanged_transaction_count"],
+                body["evaluated_count"],
+            )
+        for component in body["component_impacts"]:
+            self.assertEqual(
+                component["matched_transaction_count_delta"],
+                component["draft_matched_transaction_count"]
+                - component["active_matched_transaction_count"],
+            )
+            self.assertEqual(
+                component["matched_transaction_count_delta"],
+                component["newly_matched_transaction_count"]
+                - component["no_longer_matched_transaction_count"],
+            )
+        for detail in body["changed_transaction_details"]:
+            expected_deltas = {
+                type_code: round(
+                    detail["draft_type_scores"].get(type_code, 0.0)
+                    - detail["active_type_scores"].get(type_code, 0.0),
+                    10,
+                )
+                for type_code in (
+                    set(detail["active_type_scores"])
+                    | set(detail["draft_type_scores"])
+                )
+            }
+            self.assertEqual(detail["score_deltas"], expected_deltas)
+            self.assertEqual(
+                detail["max_absolute_score_delta"],
+                max((abs(value) for value in expected_deltas.values()), default=0.0),
+            )
         self.assertEqual(write_statements, [])
         self.assertEqual(len(feature_queries), 1)
 
@@ -461,7 +509,41 @@ class FraudRuleReplayApiTest(unittest.TestCase):
         self.assertEqual(impact["no_longer_matched_transaction_count"], 1)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_missing_normalized_feature_row_is_reported_as_error(self) -> None:
+    def test_replay_validates_each_rule_definition_once(self) -> None:
+        active, draft = self._active_and_draft()
+        expected_validation_count = sum(
+            len(rule["components"])
+            for rule_set in (active, draft)
+            for rule in rule_set["rules"]
+            if rule["enabled"]
+        )
+        validation_count = 0
+        original_validate = RuleExpressionEvaluator.validate
+
+        def count_validation(
+            evaluator: RuleExpressionEvaluator,
+            expression: dict[str, object],
+        ) -> None:
+            nonlocal validation_count
+            validation_count += 1
+            original_validate(evaluator, expression)
+
+        with patch.object(
+            RuleExpressionEvaluator,
+            "validate",
+            new=count_validation,
+        ):
+            response = self.client.post(
+                f"/rule-sets/{draft['id']}/replay",
+                headers=ADMIN_HEADERS,
+                json={"sample_size": 1},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(validation_count, expected_validation_count)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_missing_normalized_feature_row_is_not_selected(self) -> None:
         _, draft = self._active_and_draft()
         base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
         with Session(self.engine) as session:
@@ -489,12 +571,12 @@ class FraudRuleReplayApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(body["selected_count"], 1)
+        self.assertEqual(body["selected_count"], 0)
         self.assertEqual(body["evaluated_count"], 0)
-        self.assertEqual(body["error_count"], 1)
+        self.assertEqual(body["error_count"], 0)
         self.assertEqual(body["summary_denominator"], 0)
         self.assertIsNone(body["changed_transaction_rate"])
-        self.assertIn("derived_features", body["error_details"][0]["error"])
+        self.assertEqual(body["error_details"], [])
         self.assertTrue(
             all(
                 summary["active_average_score"] is None
@@ -587,40 +669,6 @@ class FraudRuleReplayInvariantTest(unittest.TestCase):
         )
         self.assertEqual(added, {})
         self.assertEqual(removed, {})
-
-    def test_changed_detail_rejects_empty_evidence_keys(self) -> None:
-        with self.assertRaises(ValidationError):
-            FraudRuleReplayChangedTransactionResponse(
-                transaction_id=999,
-                transaction_datetime=datetime.now(UTC),
-                score_changed=True,
-                evidence_changed=True,
-                max_absolute_score_delta=0.1,
-                active_type_scores={"TYPE": 0.1},
-                draft_type_scores={"TYPE": 0.2},
-                score_deltas={"TYPE": 0.1},
-                added_matched_components={"TYPE": []},
-                removed_matched_components={},
-            )
-
-    def test_component_impact_rejects_inconsistent_churn_counts(self) -> None:
-        with self.assertRaises(ValidationError):
-            FraudRuleReplayComponentImpactResponse(
-                type_code="TYPE",
-                component_key="component",
-                display_name="구성요소",
-                active_present=True,
-                draft_present=True,
-                active_weight=1.0,
-                draft_weight=1.0,
-                definition_changed=True,
-                active_matched_transaction_count=1,
-                draft_matched_transaction_count=1,
-                matched_transaction_count_delta=0,
-                newly_matched_transaction_count=1,
-                no_longer_matched_transaction_count=0,
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

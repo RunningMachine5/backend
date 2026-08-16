@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from typing import Any
 
 from sqlmodel import Session
 
 from app.data.model.fraud_rule import FraudTypeScoreResult
-from app.services.rules.engine import RuleEngine, RuleSetValidationError
+from app.dto.ml_features import MLTransactionFeatures
+from app.services.rules.engine import RuleEngine
 from app.services.rules.expression_evaluator import RuleExpressionError
-from app.services.rules.feature_builder import RuleFeatureError
 from app.services.rules.repository import get_active_rule_set
-
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +19,15 @@ def score_transaction_fraud_types(
     *,
     session: Session,
     transaction_id: int,
-    raw_data: Mapping[str, Any],
+    features: MLTransactionFeatures,
     engine: RuleEngine | None = None,
 ) -> FraudTypeScoreResult | None:
-    """점수를 생성하되 룰 오류가 ML 결과 저장을 막지는 않게 한다."""
+    """ACTIVE 룰셋으로 유형 점수를 만들되 ML 결과 저장은 막지 않는다.
+
+    이 함수는 Pipeline이 ML 사기 판정을 확인한 뒤에만 호출한다. ACTIVE 룰이
+    없거나 룰 정의가 잘못돼도 이미 완료된 ML 예측은 유효하므로 ``None``을
+    반환하고 로그만 남긴다.
+    """
 
     active = get_active_rule_set(session)
     if active is None:
@@ -37,8 +39,8 @@ def score_transaction_fraud_types(
 
     persisted_rule_set, definition = active
     try:
-        scored = (engine or RuleEngine()).score(raw_data, definition)
-    except (RuleSetValidationError, RuleExpressionError, RuleFeatureError):
+        scored = (engine or RuleEngine()).score_validated(features, definition)
+    except RuleExpressionError:
         logger.exception(
             "거래 %s의 유형별 룰 점수 계산에 실패했습니다.",
             transaction_id,

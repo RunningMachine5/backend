@@ -2,21 +2,10 @@
 
 from __future__ import annotations
 
-import math
-import re
-from collections.abc import Mapping
-from datetime import datetime, timedelta
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Any
 
-
-class RuleFeatureError(ValueError):
-    """룰 평가용 raw60 입력이 누락되거나 올바르지 않을 때 발생한다."""
-
-
-class RuleFeatureModel(Protocol):
-    """Pydantic DTO처럼 Python mode로 원본 dict를 내보낼 수 있는 객체."""
-
-    def model_dump(self, *, mode: str, by_alias: bool) -> dict[str, Any]: ...
+from app.dto.ml_features import MLTransactionFeatures
 
 
 # ML ``PredictInputDTO`` 60개 중 상관관계용 transaction_id를 제외한 59개다.
@@ -227,172 +216,25 @@ _BINARY_FIELDS = (
     "first_time_ios_by_vulnerable_user",
 )
 
-_INTEGER_FIELDS = (
-    "customer_credit_rating",
-    "transaction_num_connection_failure",
-    "number_of_transaction_with_the_account",
-    "transaction_history_with_the_account",
-)
-
-_NUMBER_FIELDS = (
-    "account_amount_daily_limit",
-    "account_one_month_max_amount",
-    "account_one_month_std_dev",
-    "account_dawn_one_month_max_amount",
-    "account_dawn_one_month_std_dev",
-    "transaction_amount",
-    "distance",
-)
-_OPTIONAL_NUMBER_FIELDS = (
-    "account_initial_balance",
-    "account_balance",
-    "account_remaining_amount_daily_limit_exceeded",
-)
-
-_REQUIRED_DATETIME_FIELDS = (
-    "customer_birth_date",
-    "customer_registration_datetime",
-    "account_creation_datetime",
-    "transaction_datetime",
-)
-_OPTIONAL_DATETIME_FIELDS = (
-    "last_atm_transaction_datetime",
-    "last_bank_branch_transaction_datetime",
-    "transaction_resumed_date",
-)
-_DURATION_PATTERN = re.compile(
-    r"^\s*(?:(?P<days>[+-]?\d+)\s+days?\s+)?"
-    r"(?P<hours>\d{1,2}):(?P<minutes>\d{2}):(?P<seconds>\d{2}(?:\.\d+)?)\s*$",
-    re.IGNORECASE,
-)
-
-
 class RuleFeatureBuilder:
-    """raw60 모델 입력과 공통 파생 신호로 단일 룰 컨텍스트를 만든다."""
+    """조립 완료된 ML 거래 피처에서 룰 계산용 파생 신호를 만든다."""
 
     def build(
         self,
-        raw_data: Mapping[str, Any] | RuleFeatureModel,
+        features: MLTransactionFeatures,
     ) -> dict[str, Any]:
-        if not isinstance(raw_data, Mapping):
-            model_dump = getattr(raw_data, "model_dump", None)
-            if not callable(model_dump):
-                raise RuleFeatureError(
-                    "거래 원본은 raw60 DTO 또는 key-value 매핑이어야 합니다."
-                )
-            raw_data = model_dump(mode="python", by_alias=True)
-        if not isinstance(raw_data, Mapping):
-            raise RuleFeatureError("raw60 DTO의 model_dump 결과는 매핑이어야 합니다.")
-
-        normalized = self._normalize_raw_features(raw_data)
-        for field_name in _REQUIRED_DATETIME_FIELDS:
-            normalized[field_name] = self._as_datetime(
-                field_name, normalized[field_name]
-            )
-        for field_name in _OPTIONAL_DATETIME_FIELDS:
-            normalized[field_name] = self._as_optional_datetime(
-                field_name, normalized[field_name]
-            )
-        for field_name in _INTEGER_FIELDS:
-            normalized[field_name] = self._as_int(field_name, normalized[field_name])
-        for field_name in _NUMBER_FIELDS:
-            normalized[field_name] = self._as_number(field_name, normalized[field_name])
-        for field_name in _OPTIONAL_NUMBER_FIELDS:
-            if normalized[field_name] is not None:
-                normalized[field_name] = self._as_number(
-                    field_name,
-                    normalized[field_name],
-                )
+        normalized = features.model_dump(mode="python", by_alias=True)
         for field_name in _BINARY_FIELDS:
-            normalized[field_name] = self._as_binary_flag(
-                field_name, normalized[field_name]
-            )
+            normalized[field_name] = int(normalized[field_name])
 
-        transaction_datetime = normalized["transaction_datetime"]
-        birth_date = normalized["customer_birth_date"]
-        self._validate_birth_date_order(transaction_datetime, birth_date)
-        self._validate_datetime_order(
-            transaction_datetime,
-            normalized["customer_registration_datetime"],
-            "customer_registration_datetime",
-        )
-        self._validate_datetime_order(
-            transaction_datetime,
-            normalized["account_creation_datetime"],
-            "account_creation_datetime",
-        )
-        for field_name in _OPTIONAL_DATETIME_FIELDS:
-            earlier = normalized[field_name]
-            if earlier is not None:
-                self._validate_datetime_order(
-                    transaction_datetime,
-                    earlier,
-                    field_name,
-                )
-
-        normalized["customer_gender"] = self._as_enum(
-            "customer_gender", normalized["customer_gender"], {"male", "female"}
-        )
-        normalized["customer_loan_type"] = self._as_enum(
-            "customer_loan_type",
-            normalized["customer_loan_type"],
-            {"a", "b", "c", "d", "e"},
-        )
-        normalized["account_account_type"] = self._as_enum(
-            "account_account_type",
-            normalized["account_account_type"],
-            {"a", "b", "c", "d", "e"},
-        )
-        normalized["channel"] = self._as_enum(
-            "channel",
-            normalized["channel"],
-            {"mobile", "internet", "atm", "others"},
-        )
-        operating_system = normalized["operating_system"]
-        if isinstance(operating_system, str) and not operating_system.strip():
-            normalized["operating_system"] = None
-        elif operating_system is not None:
-            normalized["operating_system"] = self._as_enum(
-                "operating_system",
-                operating_system,
-                {"android", "ios", "windows", "macos", "linux", "others"},
-            )
-        normalized["type_general_automatic"] = self._as_enum(
-            "type_general_automatic",
-            normalized["type_general_automatic"],
-            {"general", "automatic"},
-        )
-        if normalized["access_medium"] is not None:
-            normalized["access_medium"] = self._as_enum(
-                "access_medium", normalized["access_medium"], set("abcdefgh")
-            )
-        error_code = normalized["error_code"]
-        if not isinstance(error_code, str):
-            raise RuleFeatureError("error_code는 문자열이어야 합니다.")
-        normalized["error_code"] = error_code.strip().lower()
-        time_difference_seconds = self._as_duration_seconds(
-            "time_difference", normalized["time_difference"]
-        )
+        transaction_datetime = features.transaction_datetime
+        birth_date = features.customer_birth_date
+        time_difference_seconds = features.time_difference.total_seconds()
         normalized["time_difference"] = time_difference_seconds
 
-        if normalized["transaction_amount"] <= 0:
-            raise RuleFeatureError("transaction_amount는 0보다 커야 합니다.")
-        if normalized["distance"] < 0:
-            raise RuleFeatureError("distance는 음수일 수 없습니다.")
-        for field_name in (
-            "account_initial_balance",
-            "account_amount_daily_limit",
-            "account_remaining_amount_daily_limit_exceeded",
-            "account_one_month_max_amount",
-            "account_one_month_std_dev",
-            "account_dawn_one_month_max_amount",
-            "account_dawn_one_month_std_dev",
-        ):
-            if (
-                normalized[field_name] is not None
-                and normalized[field_name] < 0
-            ):
-                raise RuleFeatureError(f"{field_name}은 음수일 수 없습니다.")
+        # 거래 API와 ML에는 입·출금 부호를 그대로 보낸다. 룰의 금액 임계값은
+        # 방향이 아니라 거래 규모를 판단하므로 여기에서만 절댓값으로 바꾼다.
+        normalized["transaction_amount"] = abs(float(features.transaction_amount))
 
         age = self._age_at_transaction(birth_date, transaction_datetime)
         authentication_change_count = sum(
@@ -424,7 +266,7 @@ class RuleFeatureBuilder:
         )
         rapid_repeat = normalized["number_of_transaction_with_the_account"] >= 3
 
-        transaction_amount = abs(normalized["transaction_amount"])
+        transaction_amount = normalized["transaction_amount"]
         monthly_max = abs(normalized["account_one_month_max_amount"])
         monthly_std = abs(normalized["account_one_month_std_dev"])
         amount_anomaly = transaction_amount > max(
@@ -558,62 +400,6 @@ class RuleFeatureBuilder:
         return {**context, **legacy_aliases, **legacy_derived}
 
     @staticmethod
-    def _normalize_raw_features(raw_data: Mapping[str, Any]) -> dict[str, Any]:
-        provided = set(raw_data)
-        missing = sorted(RULE_RAW_FEATURE_SET - provided)
-        unknown = sorted(provided - RULE_RAW_FEATURE_SET)
-        if missing or unknown:
-            raise RuleFeatureError(
-                "올바르지 않은 raw60 룰 계약입니다: "
-                f"missing={missing}, unknown={unknown}"
-            )
-        return {field: raw_data[field] for field in RULE_RAW_FEATURES}
-
-    @staticmethod
-    def _as_datetime(field_name: str, value: Any) -> datetime:
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value)
-            except ValueError as exc:
-                raise RuleFeatureError(
-                    f"{field_name}은 ISO-8601 날짜·시간이어야 합니다."
-                ) from exc
-        raise RuleFeatureError(f"{field_name}은 날짜·시간이어야 합니다.")
-
-    @classmethod
-    def _as_optional_datetime(cls, field_name: str, value: Any) -> datetime | None:
-        if value is None or value == "":
-            return None
-        return cls._as_datetime(field_name, value)
-
-    @staticmethod
-    def _validate_datetime_order(
-        transaction_datetime: datetime,
-        earlier_datetime: datetime,
-        field_name: str,
-    ) -> None:
-        try:
-            is_future = earlier_datetime > transaction_datetime
-        except TypeError as exc:
-            raise RuleFeatureError(
-                f"{field_name}과 transaction_datetime의 시간대 형식이 다릅니다."
-            ) from exc
-        if is_future:
-            raise RuleFeatureError(f"{field_name}은 거래일시 이후일 수 없습니다.")
-
-    @staticmethod
-    def _validate_birth_date_order(
-        transaction_datetime: datetime,
-        birth_date: datetime,
-    ) -> None:
-        """생년월일은 timezone이 없는 DATE로 저장되므로 날짜만 비교한다."""
-
-        if birth_date.date() > transaction_datetime.date():
-            raise RuleFeatureError("customer_birth_date은 거래일시 이후일 수 없습니다.")
-
-    @staticmethod
     def _age_at_transaction(
         birth_date: datetime, transaction_datetime: datetime
     ) -> int:
@@ -627,80 +413,6 @@ class RuleFeatureBuilder:
         )
 
     @staticmethod
-    def _as_int(field_name: str, value: Any) -> int:
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise RuleFeatureError(f"{field_name}은 정수여야 합니다.")
-        return value
-
-    @staticmethod
-    def _as_number(field_name: str, value: Any) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise RuleFeatureError(f"{field_name}은 숫자여야 합니다.")
-        number = float(value)
-        if not math.isfinite(number):
-            raise RuleFeatureError(f"{field_name}은 유한한 숫자여야 합니다.")
-        return number
-
-    @staticmethod
-    def _as_binary_flag(field_name: str, value: Any) -> int:
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, int) and value in {0, 1}:
-            return value
-        raise RuleFeatureError(f"{field_name}은 0 또는 1이어야 합니다.")
-
-    @staticmethod
-    def _as_enum(field_name: str, value: Any, allowed: set[str]) -> str:
-        if not isinstance(value, str):
-            raise RuleFeatureError(f"{field_name}은 문자열이어야 합니다.")
-        normalized = value.strip().lower()
-        if normalized not in allowed:
-            choices = ", ".join(sorted(allowed))
-            raise RuleFeatureError(f"{field_name}은 {choices} 중 하나여야 합니다.")
-        return normalized
-
-    @staticmethod
-    def _as_duration_seconds(field_name: str, value: Any) -> float:
-        if isinstance(value, bool):
-            raise RuleFeatureError(f"{field_name}은 시간 간격 또는 초여야 합니다.")
-        if isinstance(value, timedelta):
-            total_seconds = value.total_seconds()
-        elif isinstance(value, (int, float)):
-            total_seconds = float(value)
-        elif isinstance(value, str):
-            text = value.strip()
-            match = _DURATION_PATTERN.fullmatch(text)
-            if match is None:
-                try:
-                    total_seconds = float(text)
-                except ValueError as exc:
-                    raise RuleFeatureError(
-                        f"{field_name}은 시간 간격 또는 초여야 합니다."
-                    ) from exc
-            else:
-                hours = int(match.group("hours"))
-                minutes = int(match.group("minutes"))
-                seconds = float(match.group("seconds"))
-                if hours > 23 or minutes > 59 or seconds >= 60:
-                    raise RuleFeatureError(
-                        f"{field_name}의 시간 형식이 올바르지 않습니다."
-                    )
-                total_seconds = (
-                    int(match.group("days") or 0) * 86_400
-                    + hours * 3_600
-                    + minutes * 60
-                    + seconds
-                )
-        else:
-            raise RuleFeatureError(f"{field_name}은 시간 간격 또는 초여야 합니다.")
-
-        if not math.isfinite(total_seconds):
-            raise RuleFeatureError(f"{field_name}은 유한한 시간이어야 합니다.")
-        if total_seconds < 0:
-            raise RuleFeatureError(f"{field_name}은 음수일 수 없습니다.")
-        return total_seconds
-
-    @staticmethod
     def _recently_resumed(
         *,
         unused_account: bool,
@@ -709,12 +421,7 @@ class RuleFeatureBuilder:
     ) -> bool:
         if not unused_account or resumed_datetime is None:
             return False
-        try:
-            elapsed_days = (transaction_datetime - resumed_datetime).days
-        except TypeError as exc:
-            raise RuleFeatureError(
-                "transaction_datetime과 transaction_resumed_date의 시간대 형식이 다릅니다."
-            ) from exc
+        elapsed_days = (transaction_datetime - resumed_datetime).days
         return 0 <= elapsed_days <= 30
 
 
@@ -733,6 +440,4 @@ __all__ = [
     "TRANSITION_LEGACY_DERIVED_FEATURES",
     "TRANSITION_LEGACY_RAW_ALIASES",
     "RuleFeatureBuilder",
-    "RuleFeatureError",
-    "RuleFeatureModel",
 ]

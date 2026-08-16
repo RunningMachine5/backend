@@ -7,7 +7,7 @@ from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, JSON_COLUMN
 
-# fake_embedder 등 현재 서비스에서 쓰는 임베딩 모델 차원과 맞춘다.
+# 현재 서비스에서 쓰는 임베딩 모델(text-embedding-3-small) 차원과 맞춘다.
 EMBEDDING_DIM = 1536
 
 

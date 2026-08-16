@@ -19,6 +19,7 @@ from app.dto.agent import (
     AgentResponseDTO,
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
+    SimilarCaseResultDTO,
 )
 from app.dto.agent_guide import RetrievedGuideChunkDTO
 from app.services.agent.case_service import AgentCaseStartResult
@@ -63,7 +64,7 @@ class FakeCaseService:
         generation_metadata,
         best_similar_case_id=None,
     ) -> AgentResponseDTO:
-        del similar_case_results, best_similar_case_id
+        del best_similar_case_id
         self.complete_calls += 1
         return AgentResponseDTO(
             case_id=case_id,
@@ -75,7 +76,7 @@ class FakeCaseService:
             risk_grade=RiskGrade.VERY_HIGH,
             investigation_result=investigation_result,
             best_similar_case_id=None,
-            similar_case_results=[],
+            similar_case_results=similar_case_results,
             response_result=response_result,
             generation_metadata=generation_metadata,
             created_at=datetime(2026, 8, 12, tzinfo=UTC),
@@ -197,12 +198,20 @@ class FakeGuideSearchService:
 
 
 class FakeInvestigator:
-    def __init__(self, recommended_type: str) -> None:
+    def __init__(
+        self,
+        recommended_type: str,
+        *,
+        events: list[str] | None = None,
+    ) -> None:
         self.recommended_type = recommended_type
         self.call_count = 0
+        self.events = events
 
     def investigate(self, *, confidence, **_kwargs) -> InvestigationResultDTO:
         self.call_count += 1
+        if self.events is not None:
+            self.events.append("investigate")
         return InvestigationResultDTO(
             classification_status=ClassificationStatus.AMBIGUOUS,
             score_margin=confidence.score_margin,
@@ -216,14 +225,41 @@ class FakeInvestigator:
 
 
 class FakeEmailNotifier:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        events: list[str] | None = None,
+    ) -> None:
         self.error = error
         self.commands = []
+        self.events = events
 
     def send(self, command) -> None:
         self.commands.append(command)
+        if self.events is not None:
+            self.events.append("email")
         if self.error is not None:
             raise self.error
+
+
+class FakeDashboardSimilarCaseFinder:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.call_count = 0
+        self.error = error
+
+    def find_top_three(self, **_kwargs):
+        self.call_count += 1
+        if self.error is not None:
+            raise self.error
+        return [
+            SimilarCaseResultDTO(
+                similar_case_id="CASE-PAST-001",
+                similarity_rank=1,
+                similarity_score=0.91,
+                similarity_reason="공통 Rule 근거가 유사함",
+            )
+        ]
 
 
 class AgentWorkflowTest(unittest.TestCase):
@@ -258,8 +294,13 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertFalse(response.generation_metadata["fallback_used"])
         self.assertIsNone(response.generation_metadata["fallback_reason"])
 
-    def test_ambiguous_case_uses_investigator_recommendation(self) -> None:
-        investigator = FakeInvestigator("MESSENGER_PHISHING")
+    def test_ambiguous_case_emails_rule_types_before_investigation(self) -> None:
+        events: list[str] = []
+        investigator = FakeInvestigator(
+            "MESSENGER_PHISHING",
+            events=events,
+        )
+        email_notifier = FakeEmailNotifier(events=events)
         policy_repository = FakePolicyRepository()
         guide_search = FakeGuideSearchService()
         workflow = AgentWorkflow(
@@ -267,13 +308,22 @@ class AgentWorkflowTest(unittest.TestCase):
             policy_repository=policy_repository,
             guide_search_service=guide_search,  # type: ignore[arg-type]
             investigator=investigator,
+            email_notifier=email_notifier,
         )
 
         state = workflow.run_state(self._input())
 
         self.assertEqual(investigator.call_count, 1)
+        self.assertEqual(events, ["email", "investigate"])
         self.assertEqual(state["applied_fraud_type"], "MESSENGER_PHISHING")
-        self.assertEqual(state["email_command"].primary_suspected_type, "MESSENGER_PHISHING")
+        self.assertEqual(
+            state["email_command"].primary_suspected_type,
+            "ACCOUNT_TAKEOVER",
+        )
+        self.assertEqual(
+            state["email_command"].secondary_suspected_type,
+            "MESSENGER_PHISHING",
+        )
         self.assertEqual(policy_repository.requested_fraud_type, "MESSENGER_PHISHING")
         self.assertEqual(guide_search.last_request.fraud_type, "MESSENGER_PHISHING")
 
@@ -283,16 +333,19 @@ class AgentWorkflowTest(unittest.TestCase):
             created=False,
         )
         policy_repository = FakePolicyRepository()
+        email_notifier = FakeEmailNotifier()
         workflow = AgentWorkflow(
             case_service=case_service,  # type: ignore[arg-type]
             policy_repository=policy_repository,
             guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            email_notifier=email_notifier,
         )
 
         response = workflow.run(self._input())
 
         self.assertEqual(response.execution_status, AgentExecutionStatus.PROCESSING)
         self.assertIsNone(policy_repository.requested_fraud_type)
+        self.assertEqual(email_notifier.commands, [])
         self.assertEqual(case_service.complete_calls, 0)
 
     def test_node_error_marks_created_case_as_failed(self) -> None:
@@ -327,6 +380,40 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
         self.assertIsNotNone(response.response_result)
         self.assertEqual(case_service.complete_calls, 1)
+
+    def test_dashboard_similar_cases_are_saved_after_plan_generation(self) -> None:
+        finder = FakeDashboardSimilarCaseFinder()
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(self._rule_result(0.80, 0.40)),  # type: ignore[arg-type]
+            policy_repository=FakePolicyRepository(),
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            dashboard_similar_case_finder=finder,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(finder.call_count, 1)
+        self.assertEqual(len(response.similar_case_results), 1)
+        self.assertEqual(
+            response.similar_case_results[0].similar_case_id,
+            "CASE-PAST-001",
+        )
+
+    def test_similar_case_failure_does_not_fail_agent_case(self) -> None:
+        finder = FakeDashboardSimilarCaseFinder(
+            error=RuntimeError("유사 사건 조회 실패")
+        )
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(self._rule_result(0.80, 0.40)),  # type: ignore[arg-type]
+            policy_repository=FakePolicyRepository(),
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            dashboard_similar_case_finder=finder,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
+        self.assertEqual(response.similar_case_results, [])
 
     @staticmethod
     def _input() -> AgentInputDTO:

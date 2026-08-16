@@ -1,12 +1,8 @@
-import re
 from dataclasses import dataclass
 from datetime import datetime
-from ipaddress import ip_address
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-MAC_ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TransactionRequestDTO(BaseModel):
@@ -29,9 +25,9 @@ class TransactionRequestDTO(BaseModel):
     transaction_datetime: datetime
     transaction_amount: int
 
-    channel: str = Field(min_length=1, max_length=32)
-    type_general_automatic: str = Field(min_length=1, max_length=16)
-    access_medium: str | None = Field(default=None, max_length=8)
+    channel: str
+    type_general_automatic: str
+    access_medium: str | None = None
     num_connection_failure: int = Field(ge=0)
 
     operating_system: str | None = Field(default=None, max_length=32)
@@ -50,31 +46,20 @@ class TransactionRequestDTO(BaseModel):
     customer_flag_terminal_malicious_behavior_5: bool = Field(default=0)
     customer_flag_terminal_malicious_behavior_6: bool = Field(default=0)
 
-    @field_validator("ip_address")
-    @classmethod
-    def validate_ip_address(cls, value: str | None) -> str | None:
-        if value is not None:
-            ip_address(value)
-        return value
-
-    @field_validator("mac_address")
-    @classmethod
-    def validate_mac_address(cls, value: str | None) -> str | None:
-        if value is not None and MAC_ADDRESS_PATTERN.fullmatch(value) is None:
-            raise ValueError("mac_address must be a valid MAC address")
-        return value
-
-
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
 
     transaction_id: int = Field(strict=True, gt=0)
 
-    # NOT_AVAILABLE은 ML 호출 실패가 아니라 아직 예측 결과가 없는 거래를 뜻한다.
-    prediction_status: Literal["COMPLETED", "FAILED", "NOT_AVAILABLE"]
+    prediction_status: Literal["COMPLETED", "FAILED"]
 
     predict_result: bool | None = None
     predict_proba: float | None = None
+
+    # 룰은 ML 판정을 바꾸지 않는다. Agent와 로컬 E2E가 바로 확인할 수 있도록
+    # 사용한 룰셋 ID와 사기유형별 점수만 거래 응답에 함께 싣는다.
+    rule_set_id: int | None = None
+    rule_scores: dict[str, float] | None = None
 
     confirmed_is_fraud: bool | None = None
     labeled_at: datetime | None = None
@@ -119,7 +104,6 @@ class TransactionFeaturesDTO:
 
 
 __all__ = [
-    "MAC_ADDRESS_PATTERN",
     "TransactionLabelResponseDTO",
     "TransactionLabelUpdateDTO",
     "TransactionRequestDTO",

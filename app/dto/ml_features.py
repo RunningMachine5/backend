@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 BinaryFlag = Literal[0, 1]
 LOCATION_PATTERN = re.compile(
@@ -48,13 +48,13 @@ class MLTransactionFeatures(BaseModel):
     account_balance: float | None
     account_indicator_release_limit_excess: int
     account_amount_daily_limit: float
-    account_remaining_amount_daily_limit_exceeded: float | None
     account_indicator_openbanking: bool
+    account_remaining_amount_daily_limit_exceeded: float | None
     account_release_suspention: bool
     account_one_month_max_amount: int
     account_one_month_std_dev: float
     account_dawn_one_month_max_amount: int
-    account_dawn_one_month_std_dev: int
+    account_dawn_one_month_std_dev: float
     transaction_datetime: datetime
     transaction_amount: float
     channel: str
@@ -80,34 +80,6 @@ class MLTransactionFeatures(BaseModel):
     transaction_history_with_the_account: int
     first_time_ios_by_vulnerable_user: bool
     transaction_resumed_date: datetime | None
-
-    @field_validator(
-        "account_initial_balance",
-        "account_balance",
-        "account_remaining_amount_daily_limit_exceeded",
-        "access_medium",
-        mode="before",
-    )
-    @classmethod
-    def normalize_optional_train1_value(cls, value: object) -> object | None:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        return value
-
-    @field_validator(
-        "account_remaining_amount_daily_limit_exceeded",
-        mode="before",
-    )
-    @classmethod
-    def reject_boolean_remaining_daily_limit(cls, value: object) -> object:
-        if isinstance(value, bool):
-            # Pydantic는 ValueError만 검증 오류(422)로 변환한다.
-            raise ValueError(  # noqa: TRY004
-                "account_remaining_amount_daily_limit_exceeded must be an amount, "
-                "not a boolean"
-            )
-        return value
-
 
 RAW_TRANSACTION_FEATURE_COLUMNS = tuple(
     field.serialization_alias or field.alias or name

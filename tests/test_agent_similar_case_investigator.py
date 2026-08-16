@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -83,10 +84,14 @@ class FakeInvestigationRepository:
         )
         self.review = SimpleNamespace(
             confirmed_fraud_type="ACCOUNT_TAKEOVER",
+            decision="CONFIRMED_FRAUD",
+            performed_actions=[{"action_code": "VERIFY_CUSTOMER"}],
+            checklist_results=[{"item_code": "CUSTOMER_CONFIRMED"}],
+            resolution_summary="고객 확인 후 사기로 확정했다.",
         )
 
     def list_resolved_cases(self, **_kwargs):
-        return [(self.case, self.score)]
+        return [(self.case, self.score, self.review)]
 
     def get_resolved_review(self, case_id: str):
         return self.review if case_id == self.case.case_id else None
@@ -123,6 +128,7 @@ class DatabaseSimilarCaseToolsTest(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].case_id, "CASE-PAST")
+        self.assertEqual(results[0].confirmed_fraud_type, "ACCOUNT_TAKEOVER")
         self.assertGreater(results[0].similarity_score, 0.90)
 
     def test_detail_maps_confirmed_type(self) -> None:
@@ -157,6 +163,7 @@ class OpenAIInvestigationActionSelectorTest(unittest.TestCase):
             similar_cases=[
                 SimilarResolvedCaseDTO(
                     case_id="CASE-PAST",
+                    confirmed_fraud_type="ACCOUNT_TAKEOVER",
                     similarity_score=0.91,
                     common_evidence_codes=("ACCOUNT_TAKEOVER:REMOTE_CONTROL",),
                 )
@@ -168,6 +175,11 @@ class OpenAIInvestigationActionSelectorTest(unittest.TestCase):
         self.assertEqual(action.action, InvestigationAction.INSPECT_CASE)
         self.assertEqual(action.case_id, "CASE-PAST")
         self.assertEqual(structured_llm.messages[0]["role"], "system")
+        observation = json.loads(structured_llm.messages[1]["content"])
+        self.assertEqual(
+            observation["similar_cases"][0]["confirmed_fraud_type"],
+            "ACCOUNT_TAKEOVER",
+        )
 
 
 class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
@@ -214,6 +226,34 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
         self.assertEqual(result.confirmed_case_count, 2)
         self.assertEqual(tools.detail_calls, ["CASE-101", "CASE-102"])
 
+    def test_two_matching_search_summaries_skip_detail_lookup(self) -> None:
+        tools = FakeSimilarCaseTools(
+            [
+                self._case("CASE-SUMMARY-1", 0.88),
+                self._case("CASE-SUMMARY-2", 0.82),
+                self._case(
+                    "CASE-SUMMARY-3",
+                    0.76,
+                    confirmed_type="MESSENGER_PHISHING",
+                ),
+            ]
+        )
+        selector = FakeActionSelector(
+            [
+                self._action(
+                    InvestigationAction.STOP_RECOMMEND,
+                    recommended_type="ACCOUNT_TAKEOVER",
+                )
+            ]
+        )
+
+        result = self._investigate(tools, selector)
+
+        self.assertEqual(result.investigation_status, InvestigationStatus.COMPLETED)
+        self.assertEqual(result.recommended_fraud_type, "ACCOUNT_TAKEOVER")
+        self.assertEqual(result.confirmed_case_count, 2)
+        self.assertEqual(tools.detail_calls, [])
+
     def test_one_strong_case_can_support_recommendation(self) -> None:
         tools = FakeSimilarCaseTools(
             [self._case("CASE-201", 0.91)],
@@ -233,6 +273,58 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
         self.assertEqual(result.investigation_status, InvestigationStatus.COMPLETED)
         self.assertEqual(result.recommended_fraud_type, "MESSENGER_PHISHING")
         self.assertEqual(tools.detail_calls, ["CASE-201"])
+
+    def test_one_strong_search_summary_skips_detail_lookup(self) -> None:
+        tools = FakeSimilarCaseTools([self._case("CASE-STRONG", 0.91)])
+        selector = FakeActionSelector(
+            [
+                self._action(
+                    InvestigationAction.STOP_RECOMMEND,
+                    recommended_type="ACCOUNT_TAKEOVER",
+                )
+            ]
+        )
+
+        result = self._investigate(tools, selector)
+
+        self.assertEqual(result.investigation_status, InvestigationStatus.COMPLETED)
+        self.assertEqual(result.recommended_fraud_type, "ACCOUNT_TAKEOVER")
+        self.assertEqual(result.confirmed_case_count, 1)
+        self.assertEqual(tools.detail_calls, [])
+
+    def test_conflicting_search_summaries_trigger_selected_detail_lookup(self) -> None:
+        tools = FakeSimilarCaseTools(
+            [
+                self._case("CASE-CONFLICT-1", 0.86),
+                self._case(
+                    "CASE-CONFLICT-2",
+                    0.84,
+                    confirmed_type="MESSENGER_PHISHING",
+                ),
+            ],
+            {
+                "CASE-CONFLICT-1": "ACCOUNT_TAKEOVER",
+                "CASE-CONFLICT-2": "MESSENGER_PHISHING",
+            },
+        )
+        selector = FakeActionSelector(
+            [
+                self._action(
+                    InvestigationAction.INSPECT_CASE,
+                    case_id="CASE-CONFLICT-1",
+                ),
+                self._action(
+                    InvestigationAction.STOP_RECOMMEND,
+                    recommended_type="ACCOUNT_TAKEOVER",
+                ),
+            ]
+        )
+
+        result = self._investigate(tools, selector)
+
+        self.assertEqual(result.investigation_status, InvestigationStatus.COMPLETED)
+        self.assertEqual(result.recommended_fraud_type, "ACCOUNT_TAKEOVER")
+        self.assertEqual(tools.detail_calls, ["CASE-CONFLICT-1"])
 
     def test_weak_cases_do_not_trigger_detail_lookup(self) -> None:
         tools = FakeSimilarCaseTools(
@@ -316,9 +408,12 @@ class LimitedSimilarCaseInvestigatorTest(unittest.TestCase):
     def _case(
         case_id: str,
         similarity_score: float,
+        *,
+        confirmed_type: str = "ACCOUNT_TAKEOVER",
     ) -> SimilarResolvedCaseDTO:
         return SimilarResolvedCaseDTO(
             case_id=case_id,
+            confirmed_fraud_type=confirmed_type,
             similarity_score=similarity_score,
             common_evidence_codes=("ACCOUNT_TAKEOVER:REMOTE_CONTROL",),
         )

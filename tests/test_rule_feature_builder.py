@@ -1,5 +1,6 @@
 import unittest
 
+from app.dto.ml_features import MLTransactionFeatures
 from app.services.rules.feature_builder import (
     RULE_CONTEXT_FIELDS,
     RULE_EVALUATION_FIELDS,
@@ -8,7 +9,6 @@ from app.services.rules.feature_builder import (
     TRANSITION_LEGACY_DERIVED_FEATURES,
     TRANSITION_LEGACY_RAW_ALIASES,
     RuleFeatureBuilder,
-    RuleFeatureError,
 )
 
 
@@ -78,9 +78,18 @@ def valid_rule_raw_data() -> dict[str, object]:
     }
 
 
+def valid_rule_features(
+    raw_data: dict[str, object] | None = None,
+) -> MLTransactionFeatures:
+    return MLTransactionFeatures.model_validate(raw_data or valid_rule_raw_data())
+
+
 class RuleFeatureBuilderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.builder = RuleFeatureBuilder()
+
+    def build(self, raw_data: dict[str, object]) -> dict[str, object]:
+        return self.builder.build(valid_rule_features(raw_data))
 
     def test_raw_contract_has_exactly_59_model_inputs(self) -> None:
         raw_data = valid_rule_raw_data()
@@ -88,20 +97,9 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         self.assertEqual(len(raw_data), 59)
         self.assertEqual(set(raw_data), set(RULE_RAW_FEATURES))
 
-    def test_accepts_shared_raw60_dto_without_json_conversion(self) -> None:
-        raw_data = valid_rule_raw_data()
+    def test_accepts_shared_ml_transaction_features(self) -> None:
+        context = self.builder.build(valid_rule_features())
 
-        class Raw60DTO:
-            def model_dump(self, *, mode: str, by_alias: bool) -> dict[str, object]:
-                self.mode = mode
-                self.by_alias = by_alias
-                return raw_data
-
-        dto = Raw60DTO()
-        context = self.builder.build(dto)
-
-        self.assertEqual(dto.mode, "python")
-        self.assertTrue(dto.by_alias)
         self.assertEqual(context["transaction_amount"], 100_000.0)
 
     def test_builds_final_common_derived_signals(self) -> None:
@@ -139,7 +137,7 @@ class RuleFeatureBuilderTest(unittest.TestCase):
             }
         )
 
-        context = self.builder.build(raw_data)
+        context = self.build(raw_data)
 
         self.assertEqual(set(context), set(RULE_EVALUATION_FIELDS))
         self.assertEqual(context["transaction_age"], 66)
@@ -164,7 +162,7 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         self.assertTrue(context["vpn_or_roaming"])
 
     def test_sensitive_identifiers_are_not_in_rule_context(self) -> None:
-        context = self.builder.build(valid_rule_raw_data())
+        context = self.build(valid_rule_raw_data())
 
         self.assertTrue(RULE_REGISTRY_EXCLUDED_RAW_FEATURES.isdisjoint(context))
         self.assertNotIn("customer_birth_date", RULE_CONTEXT_FIELDS)
@@ -175,7 +173,7 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         raw_data["channel"] = "ATM"
         raw_data["operating_system"] = "iOS"
 
-        context = self.builder.build(raw_data)
+        context = self.build(raw_data)
 
         self.assertEqual(context["Channel"], "ATM")
         self.assertEqual(context["Operating_System"], "iOS")
@@ -192,16 +190,16 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data["customer_birth_date"] = "1966-08-08T00:00:00+09:00"
 
-        self.assertEqual(self.builder.build(raw_data)["transaction_age"], 59)
+        self.assertEqual(self.build(raw_data)["transaction_age"], 59)
 
         raw_data["transaction_datetime"] = "2026-08-08T00:00:00+09:00"
-        self.assertEqual(self.builder.build(raw_data)["transaction_age"], 60)
+        self.assertEqual(self.build(raw_data)["transaction_age"], 60)
 
     def test_birth_date_without_timezone_supports_aware_transaction_time(self) -> None:
         raw_data = valid_rule_raw_data()
         raw_data["customer_birth_date"] = "1986-08-08T00:00:00"
 
-        context = self.builder.build(raw_data)
+        context = self.build(raw_data)
 
         self.assertEqual(context["transaction_age"], 39)
 
@@ -210,7 +208,7 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         raw_data["transaction_amount"] = 9_000_000
         raw_data["account_one_month_max_amount"] = 10_000_000
 
-        context = self.builder.build(raw_data)
+        context = self.build(raw_data)
 
         self.assertTrue(context["balance_depletion"])
         self.assertTrue(context["daily_limit_pressure"])
@@ -229,7 +227,7 @@ class RuleFeatureBuilderTest(unittest.TestCase):
             }
         )
 
-        context = self.builder.build(raw_data)
+        context = self.build(raw_data)
 
         self.assertEqual(context["account_account_type"], "e")
         self.assertIsNone(context["account_initial_balance"])
@@ -245,7 +243,7 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data["error_code"] = ""
 
-        context = self.builder.build(raw_data)
+        context = self.build(raw_data)
 
         self.assertEqual(context["error_code"], "")
 
@@ -253,12 +251,12 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data["distance"] = 100
         raw_data["time_difference"] = 7_200
-        self.assertTrue(self.builder.build(raw_data)["impossible_travel"])
+        self.assertTrue(self.build(raw_data)["impossible_travel"])
 
         raw_data["time_difference"] = 0
-        self.assertFalse(self.builder.build(raw_data)["impossible_travel"])
+        self.assertFalse(self.build(raw_data)["impossible_travel"])
         raw_data["time_difference"] = "0 days 02:00:01"
-        self.assertFalse(self.builder.build(raw_data)["impossible_travel"])
+        self.assertFalse(self.build(raw_data)["impossible_travel"])
 
     def test_amount_anomaly_uses_strict_monthly_baseline_comparison(self) -> None:
         raw_data = valid_rule_raw_data()
@@ -267,33 +265,23 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         raw_data["account_one_month_max_amount"] = 300
         raw_data["account_one_month_std_dev"] = 100
         raw_data["transaction_amount"] = 300
-        self.assertFalse(self.builder.build(raw_data)["amount_anomaly"])
+        self.assertFalse(self.build(raw_data)["amount_anomaly"])
 
         raw_data["transaction_amount"] = 301
-        self.assertTrue(self.builder.build(raw_data)["amount_anomaly"])
+        self.assertTrue(self.build(raw_data)["amount_anomaly"])
 
-    def test_rejects_legacy_or_incomplete_contract(self) -> None:
-        raw_data = valid_rule_raw_data()
-        raw_data.pop("customer_loan_type")
-        raw_data["legacy_customer_loan_type"] = "a"
-
-        with self.assertRaisesRegex(RuleFeatureError, "customer_loan_type"):
-            self.builder.build(raw_data)
-
-    def test_rejects_invalid_flags_and_amount_policy(self) -> None:
-        raw_data = valid_rule_raw_data()
-        raw_data["account_indicator_openbanking"] = 2
-        with self.assertRaisesRegex(RuleFeatureError, "0 또는 1"):
-            self.builder.build(raw_data)
-
+    def test_rule_amount_policy_uses_absolute_transaction_amount(self) -> None:
         raw_data = valid_rule_raw_data()
         raw_data["transaction_amount"] = 0
-        with self.assertRaisesRegex(RuleFeatureError, "0보다 커야"):
-            self.builder.build(raw_data)
+        self.assertEqual(self.build(raw_data)["transaction_amount"], 0)
+
+        raw_data = valid_rule_raw_data()
+        raw_data["transaction_amount"] = -100_000
+        self.assertEqual(self.build(raw_data)["transaction_amount"], 100_000)
 
         raw_data = valid_rule_raw_data()
         raw_data["account_balance"] = -1
-        self.assertEqual(self.builder.build(raw_data)["account_balance"], -1.0)
+        self.assertEqual(self.build(raw_data)["account_balance"], -1.0)
 
 
 if __name__ == "__main__":

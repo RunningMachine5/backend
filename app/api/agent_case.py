@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from sqlmodel import select
 
+from app.core.common_response import ApiResponse, success_response
 from app.core.db import SessionDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.domain.agent_status import AgentExecutionStatus
@@ -19,25 +20,13 @@ from app.dto.agent import (
     SimilarCaseResultDTO,
 )
 from app.repositories.agent_case import AgentCaseRepository
-from app.repositories.agent_email import AgentEmailRepository
-from app.repositories.agent_guide import AgentGuideRepository
-from app.repositories.agent_investigation import AgentInvestigationRepository
 from app.repositories.transaction import PredictionResultRepository
 from app.services.agent.case_service import (
     AgentCaseNotFoundError,
     AgentCaseService,
 )
-from app.services.agent.guide_embedder import OpenAIGuideEmbedder
-from app.services.agent.guide_search import GuideSearchService
-from app.services.agent.response_policy import get_default_policy_repository
-from app.services.agent.email_sender import FraudAlertEmailService
-from app.services.agent.response_plan_generator import RagResponsePlanGenerator
-from app.services.agent.similar_case_investigator import (
-    DatabaseSimilarCaseTools,
-    LimitedSimilarCaseInvestigator,
-    OpenAIInvestigationActionSelector,
-)
 from app.services.agent.workflow import AgentWorkflow
+from app.services.agent.workflow_factory import create_agent_workflow
 from app.services.analysis.risk_grader import RiskGrader
 
 
@@ -73,28 +62,7 @@ def get_agent_case_service(session: SessionDep) -> AgentCaseService:
 
 
 def get_agent_workflow(session: SessionDep) -> AgentWorkflow:
-    case_service = get_agent_case_service(session)
-    similar_case_tools = DatabaseSimilarCaseTools(
-        AgentInvestigationRepository(session)
-    )
-    investigator = LimitedSimilarCaseInvestigator(
-        similar_case_tools,
-        OpenAIInvestigationActionSelector(),
-    )
-    guide_search = GuideSearchService(
-        AgentGuideRepository(session),
-        OpenAIGuideEmbedder(),
-    )
-    return AgentWorkflow(
-        case_service=case_service,
-        policy_repository=get_default_policy_repository(),
-        guide_search_service=guide_search,
-        investigator=investigator,
-        response_plan_generator=RagResponsePlanGenerator(),
-        email_notifier=FraudAlertEmailService.from_env(
-            AgentEmailRepository(session)
-        ),
-    )
+    return create_agent_workflow(session)
 
 
 AgentCaseServiceDep = Annotated[AgentCaseService, Depends(get_agent_case_service)]
@@ -119,14 +87,14 @@ def _public_response(response: AgentResponseDTO) -> AgentCaseResponse:
 
 @router.post(
     "/agent-cases",
-    response_model=AgentCaseResponse,
+    response_model=ApiResponse[AgentCaseResponse],
     status_code=status.HTTP_201_CREATED,
 )
 def create_agent_case(
     payload: AgentCaseCreateRequest,
     session: SessionDep,
     workflow: AgentWorkflowDep,
-) -> AgentCaseResponse:
+) -> ApiResponse[AgentCaseResponse]:
     """저장된 탐지 결과로 Agent 대응 계획을 생성한다."""
 
     score_result = session.exec(
@@ -163,19 +131,19 @@ def create_agent_case(
             risk_grade=risk.risk_grade,
         )
     )
-    return _public_response(response)
+    return success_response(_public_response(response))
 
 
 @router.get(
     "/agent-cases/{case_id}",
-    response_model=AgentCaseResponse,
+    response_model=ApiResponse[AgentCaseResponse],
 )
 def get_agent_case(
     case_id: str,
     service: AgentCaseServiceDep,
-) -> AgentCaseResponse:
+) -> ApiResponse[AgentCaseResponse]:
     try:
-        return _public_response(service.get_case(case_id))
+        return success_response(_public_response(service.get_case(case_id)))
     except AgentCaseNotFoundError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -185,14 +153,16 @@ def get_agent_case(
 
 @router.get(
     "/transactions/{transaction_id}/agent-case",
-    response_model=AgentCaseResponse,
+    response_model=ApiResponse[AgentCaseResponse],
 )
 def get_agent_case_by_transaction(
     transaction_id: int,
     service: AgentCaseServiceDep,
-) -> AgentCaseResponse:
+) -> ApiResponse[AgentCaseResponse]:
     try:
-        return _public_response(service.get_case_by_transaction(transaction_id))
+        return success_response(
+            _public_response(service.get_case_by_transaction(transaction_id))
+        )
     except AgentCaseNotFoundError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

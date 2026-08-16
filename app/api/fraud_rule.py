@@ -1,4 +1,9 @@
-"""Administrator API for versioned fraud-type rule management."""
+"""버전이 있는 사기유형 룰을 관리하는 관리자 API.
+
+ACTIVE 룰셋은 실시간 거래 평가에 사용되므로 직접 수정하지 않는다. 관리자는
+ACTIVE를 복제한 DRAFT에서 룰을 편집하고, validate·test·replay로 영향을 확인한
+뒤 activate한다. 활성화 시 기존 ACTIVE는 ARCHIVED가 된다.
+"""
 
 from __future__ import annotations
 
@@ -52,7 +57,6 @@ from app.services.rules.expression_evaluator import RuleExpressionError
 from app.services.rules.feature_builder import (
     TRANSITION_LEGACY_DERIVED_FEATURES,
     TRANSITION_LEGACY_RAW_ALIASES,
-    RuleFeatureError,
 )
 from app.services.rules.replay import replay_rule_sets
 from app.services.rules.repository import rule_set_definition_from_database
@@ -1081,7 +1085,8 @@ def test_rule_set(
     session: SessionDep,
 ) -> FraudRuleTestResponse:
     rule_set = _get_rule_set(session, rule_set_id)
-    issues = _validation_issues(session, rule_set)
+    definition = rule_set_definition_from_database(session, rule_set)
+    issues = _definition_validation_issues(definition)
     if issues:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1091,13 +1096,9 @@ def test_rule_set(
             },
         )
 
-    definition = rule_set_definition_from_database(session, rule_set)
     try:
-        result = RuleEngine().score(
-            payload.raw_data.model_dump(mode="python", by_alias=True),
-            definition,
-        )
-    except (RuleSetValidationError, RuleExpressionError, RuleFeatureError) as exc:
+        result = RuleEngine().score_validated(payload.raw_data, definition)
+    except RuleExpressionError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),

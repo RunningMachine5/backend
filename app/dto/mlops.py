@@ -33,7 +33,6 @@ class DatasetVersionRequest(StrictMLOpsDTO):
 
 
 class LabeledDatasetBuildRequest(StrictMLOpsDTO):
-    base_dataset_version_id: int = Field(gt=0)
     version: str = Field(min_length=1, max_length=64)
     gcs_uri: str = Field(min_length=1, max_length=2048)
 

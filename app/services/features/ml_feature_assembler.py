@@ -2,53 +2,13 @@
 
 from __future__ import annotations
 
-import re
-from datetime import timedelta
+from datetime import UTC, datetime
 
 from app.data.model.account import Account
 from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.dto.ml_features import LOCATION_PATTERN, MLTransactionFeatures
-
-
-class FeatureAssemblyError(ValueError):
-    """저장된 행에서 raw59 계약을 복원하지 못한 경우."""
-
-
-_TIME_DIFFERENCE_PATTERN = re.compile(
-    r"^\s*(?P<sign>-)?(?:(?P<days>\d+)\s+days?\s+)?"
-    r"(?P<hours>\d+):(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)\s*$"
-)
-
-
-def parse_time_difference(value: str) -> timedelta:
-    """``N days HH:MM:SS`` 문자열을 DB interval로 바꾼다."""
-
-    match = _TIME_DIFFERENCE_PATTERN.fullmatch(value)
-    if match is None:
-        raise FeatureAssemblyError(
-            "time_difference must use the 'N days HH:MM:SS' format"
-        )
-    delta = timedelta(
-        days=int(match.group("days") or 0),
-        hours=int(match.group("hours")),
-        minutes=int(match.group("minutes")),
-        seconds=int(match.group("seconds")),
-    )
-    return -delta if match.group("sign") else delta
-
-
-def format_time_difference(value: timedelta) -> str:
-    """DB interval을 ML 원본 CSV와 같은 문자열로 되돌린다."""
-
-    total_seconds = int(value.total_seconds())
-    sign = "-" if total_seconds < 0 else ""
-    total_seconds = abs(total_seconds)
-    days, remainder = divmod(total_seconds, 86_400)
-    hours, remainder = divmod(remainder, 3_600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{sign}{days} days {hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def parse_location(value: str) -> tuple[float | None, float | None]:
@@ -181,7 +141,7 @@ def build_derived_features_fields(
 
 def assemble_ml_features(
     *,
-    customer: Customer,
+    customer: Customer | None,
     source_account: Account,
     recipient_account: Account | None,
     transaction: Transaction,
@@ -189,26 +149,47 @@ def assemble_ml_features(
 ) -> MLTransactionFeatures:
     """정규화된 거래 스냅샷에서 exact raw59 객체를 복원한다."""
 
-    required_account_values = {
-        "account_type": source_account.account_type,
-        "creation_datetime": source_account.creation_datetime,
-        "amount_daily_limit": source_account.amount_daily_limit,
-    }
-    missing = [name for name, value in required_account_values.items() if value is None]
-    if missing:
-        raise FeatureAssemblyError(
-            f"source account {source_account.account_number} is missing {missing}"
-        )
-    if recipient_account is None:
-        raise FeatureAssemblyError(
-            "recipient account is required by the raw59 contract"
-        )
+    # ATM 출금처럼 상대 계좌가 없는 거래도 모델에 전달한다. 실제 수취계좌가
+    # 있으면 그대로 사용하고, 없을 때만 일반 계좌번호와 겹치지 않는 고정값을 쓴다.
+    recipient_account_number = (
+        recipient_account.account_number
+        if recipient_account is not None
+        else "unknown-recipient"
+    )
+
+    # 현재 거래 API는 고객 ID가 없거나 고객 원장이 아직 준비되지 않은 거래도 받는다.
+    # ML 입력은 고객 프로필을 요구하므로, 실제 고객 행이 없을 때만 아래 임시값을
+    # 사용한다. 가짜 Customer 행을 DB에 저장하지 않으므로 실제 원장과 섞이지 않는다.
+    customer_birth_date = (
+        customer.birth_date
+        if customer is not None
+        else datetime(1990, 1, 1, tzinfo=UTC)
+    )
+    customer_gender = customer.gender if customer is not None else "male"
+    customer_name = customer.name if customer is not None else "unknown-customer"
+    customer_registration_datetime = (
+        customer.registration_datetime
+        if customer is not None
+        else datetime(2020, 1, 1, tzinfo=UTC)
+    )
+    customer_credit_rating = customer.credit_rating if customer is not None else 5
+    customer_loan_type = customer.loan_type if customer is not None else "a"
+
+    # 현재 거래 API는 계좌번호만 받고 상세 계좌 프로필은 나중에 채운다.
+    # ML 서버가 raw59 전체를 요구하므로, 프로필이 아직 없는 동안만
+    # 중립적인 기본값을 사용한다. DB의 계좌 원본을 가짜 값으로 덮지는 않는다.
+    account_type = source_account.account_type or "a"
+    account_creation_datetime = (
+        source_account.creation_datetime or transaction.transaction_datetime
+    )
+    account_amount_daily_limit = source_account.amount_daily_limit or 0
+
     return MLTransactionFeatures(
-        customer_birth_date=customer.birth_date,
-        customer_gender=customer.gender,
-        customer_name=customer.name,
-        customer_registration_datetime=customer.registration_datetime,
-        customer_credit_rating=customer.credit_rating,
+        customer_birth_date=customer_birth_date,
+        customer_gender=customer_gender,
+        customer_name=customer_name,
+        customer_registration_datetime=customer_registration_datetime,
+        customer_credit_rating=customer_credit_rating,
         customer_flag_change_of_authentication_1=(
             derived.flag_change_of_authentication_1
         ),
@@ -224,7 +205,7 @@ def assemble_ml_features(
         customer_rooting_jailbreak_indicator=(transaction.rooting_jailbreak_indicator),
         customer_mobile_roaming_indicator=transaction.mobile_roaming_indicator,
         customer_vpn_indicator=transaction.vpn_indicator,
-        customer_loan_type=customer.loan_type,
+        customer_loan_type=customer_loan_type,
         customer_flag_terminal_malicious_behavior_1=(
             transaction.flag_terminal_malicious_behavior_1
         ),
@@ -243,14 +224,14 @@ def assemble_ml_features(
         customer_inquery_atm_limit=derived.inquiry_atm_limit,
         customer_increase_atm_limit=derived.increase_atm_limit,
         account_account_number=source_account.account_number,
-        account_account_type=source_account.account_type,
-        account_creation_datetime=source_account.creation_datetime,
+        account_account_type=account_type,
+        account_creation_datetime=account_creation_datetime,
         account_initial_balance=transaction.initial_balance,
         account_balance=transaction.balance,
         account_indicator_release_limit_excess=int(
             bool(source_account.indicator_release_limit_excess)
         ),
-        account_amount_daily_limit=source_account.amount_daily_limit,
+        account_amount_daily_limit=account_amount_daily_limit,
         account_indicator_openbanking=bool(source_account.indicator_openbanking),
         account_remaining_amount_daily_limit_exceeded=(
             transaction.remaining_amount_daily_limit_exceeded
@@ -263,14 +244,18 @@ def assemble_ml_features(
         transaction_datetime=transaction.transaction_datetime,
         transaction_amount=transaction.transaction_amount,
         channel=transaction.channel,
-        operating_system=transaction.operating_system,
+        operating_system=(
+            transaction.operating_system.lower()
+            if transaction.operating_system is not None
+            else None
+        ),
         error_code=transaction.error_code or "",
         type_general_automatic=transaction.type_general_automatic,
         ip_address=(str(transaction.ip_address) if transaction.ip_address else None),
         mac_address=(str(transaction.mac_address) if transaction.mac_address else None),
         access_medium=transaction.access_medium,
         location=transaction.location,
-        recipient_account_number=recipient_account.account_number,
+        recipient_account_number=recipient_account_number,
         transaction_num_connection_failure=transaction.num_connection_failure,
         another_person_account=transaction.another_person_account,
         distance=derived.distance,
@@ -295,13 +280,10 @@ def assemble_ml_features(
 
 
 __all__ = [
-    "FeatureAssemblyError",
     "assemble_ml_features",
     "build_account_fields",
     "build_customer_fields",
     "build_derived_features_fields",
     "build_transaction_fields",
-    "format_time_difference",
     "parse_location",
-    "parse_time_difference",
 ]

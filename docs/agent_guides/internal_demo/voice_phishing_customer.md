@@ -20,8 +20,7 @@ risk_grades:
 action_codes:
   - VERIFY_CUSTOMER_TRANSACTION
   - URGENT_CUSTOMER_CONFIRMATION
-  - GUIDE_VOICE_PHISHING_RESPONSE
-version: "1.0"
+version: "1.1"
 published_at: 2026-08-11
 accessed_at: 2026-08-11
 ---

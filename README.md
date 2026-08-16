@@ -64,10 +64,9 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ### 실제 ML Serving 연동 확인
 
 ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 한 건씩 요청합니다.
-정식 요청은 `transaction_id + raw59 + 학습 메타데이터 4개`인 flat raw64-compatible
-JSON입니다. Backend는 타입과 필수 컬럼을 검증한 뒤 raw59를 `customers`, `accounts`,
-`transactions`, `derived_features` 네 정규화 테이블에 나눠 저장합니다. ML 호출과 거래
-조회 시에는 네 테이블을 다시 조인해 동일한 raw59를 조립합니다. 별도의
+거래 API는 계좌번호, 거래 시각·금액, 채널과 단말 위험 신호만 담은 Slim JSON을
+받습니다. Backend는 거래와 계좌를 저장하고, 아직 준비되지 않은 고객·계좌 상세와
+파생 Feature에는 임시 기본값을 붙여 ML 추론용 raw59를 조립합니다. 별도의
 `transactions.raw_features` JSON 스냅샷 컬럼은 사용하지 않습니다.
 
 ```bash
@@ -77,19 +76,11 @@ curl -X POST http://localhost:8000/transactions \
 ```
 
 요청 예시는 [`examples/transaction-request.json`](examples/transaction-request.json)에
-있습니다. 필드명은 ML 담당자의 snake_case 계약을 사용합니다. `channel`과
-`operating_system`은 대소문자 입력을 받아 내부 소문자로 정규화하며 OS·IP·MAC과 세 개의
-과거 날짜는 nullable입니다. `transaction_amount`는 양수이고 거래 후
-`account_balance`만 음수를 허용합니다. `location` 끝에 위도·경도가 있으면 검색 컬럼으로
-분리하고, 없는 일반 문자열도 허용합니다.
-
-거래 식별정보는 `transaction_id`, `customer_id`, `customer_identification_number`,
-출금·수취 계좌번호를 함께 전달합니다. 생년월일은 `customer_birth_date`로 저장합니다.
-프로그램 호출 편의를 위해 raw59만 `raw_features`에 중첩한 형식도 허용합니다. 같은
-`customer_name`은 허용하지만 고객별 `customer_identification_number`는 고유해야 합니다.
-생성 데이터의 공통 Feature는 항상 일관되지 않을 수 있으므로 같은 고객·출금계좌가 다시
-들어오면 마지막으로 처리된 요청값으로 갱신합니다. 단, 이미 다른 고객이 소유한 출금
-계좌를 요청하거나 식별번호가 충돌하면 `409`로 거부합니다.
+있습니다. `transaction_id`는 Backend DB가 생성하므로 요청에서 보내지 않습니다.
+개인정보 원장이 아직 없으면 `customer_id`를 `null`로 보낼 수 있고, Backend는 가짜 고객
+행을 저장하지 않은 채 ML 조립 시에만 임시 고객 프로필을 사용합니다. 수취 계좌가 없는
+ATM 거래는 `recipient_account_number`도 `null`로 보낼 수 있습니다. 거래금액의 부호는
+요청과 ML 입력에서 유지하고, 룰의 금액 임계값은 거래 규모를 보도록 절댓값을 사용합니다.
 
 ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
 꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.
@@ -252,7 +243,8 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 권장 실행 순서는 다음과 같습니다.
 
 1. 이미 준비된 GCS CSV는 `POST /mlops/datasets`로 등록합니다. DB 확정 라벨을
-   반영할 때는 `POST /mlops/datasets/build`로 기존 버전에서 새 불변 CSV와
+   반영할 때는 `POST /mlops/datasets/build`로 고정 원본
+   `gs://fdshield-ml-data-801817539291/base/train1.csv`에서 새 불변 CSV와
    데이터셋 버전을 함께 만듭니다.
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
    `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
@@ -286,8 +278,7 @@ POST /mlops/datasets
  "row_count": 210000}
 
 POST /mlops/datasets/build
-{"base_dataset_version_id": 1,
- "version": "generated-v2",
+{"version": "generated-v2",
  "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv"}
 
 POST /mlops/training/runs
@@ -329,12 +320,13 @@ Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution �
 champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않고 MLflow를 원본으로
 조회합니다. alias와 Serving 트래픽 변경은 Backend 관리자 승인 API에서만 수행합니다.
 
-`POST /mlops/datasets/build`는 `transaction_labels`의 확정 이진 라벨을 기준으로
-동작합니다. 기준 CSV에 같은 `transaction_id`가 있으면 `is_fraud`를 확정값으로 교체하고, 없는
-거래는 `customers`, 출금·수취 `accounts`, `transactions`, `derived_features`를 한 번에
-조인해 raw59와 학습 메타데이터를 재조립한 raw64 행으로 추가합니다. 기준 객체는
-수정하지 않으며 GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다.
-병합 결과의 행 수와 교체·추가 라벨 수는 API 응답에 포함됩니다.
+`POST /mlops/datasets/build`는 고정 원본 CSV의 모든 행을 그대로 복사한 뒤
+`transaction_labels`의 확정 이진 라벨 거래를 모두 추가합니다. DB 행은 `customers`,
+출금·수취 `accounts`, `transactions`, `derived_features`를 한 번에 조인해 raw59와
+학습 메타데이터를 재조립한 raw64 행입니다. 학습에서 `transaction_id`를 피처로 쓰지
+않으므로 원본 ID와 DB ID를 비교하거나 변환하지 않습니다. 기준 객체는 수정하지 않으며
+GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다. 병합 결과의 원본 행 수와
+추가 라벨 수는 API 응답에 포함됩니다.
 
 Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
 Secret Manager로 주입합니다.
@@ -436,18 +428,19 @@ Agent / 고객 질문 스켈레톤
 | `FraudAssessmentDTO` | 구형 Agent 스켈레톤 | Agent, 대시보드 |
 | `RagQueryDTO` | Agent/RAG 쿼리 담당 | VectorDB 검색 담당 |
 | `RetrievedContextDTO` | VectorDB 검색 담당 | LLM 답변 담당 |
-| `ChatbotRequestDTO` | 고객 채널 담당 | 대응가이드 챗봇 |
-| `ChatbotResponseDTO` | 대응가이드 챗봇 | 고객 채널 담당 |
 
 실제 거래 탐지는 `TransactionCreateDTO`를 받아 ML Serving과 룰 점수를 차례로 실행합니다.
 구형 Agent DTO는 실제 거래 탐지 결과에 맞춘 Agent 계약을 확정한 뒤 제거합니다.
 
-## Agent·챗봇 Fake 구현 범위
+## Agent Fake 구현 범위
 
 - VectorDB: 어떤 쿼리에도 동일한 모니터링 문맥 반환
-- RDB: 코드에 하드코딩된 거래 리스트에서 사용자 거래 조회
 - LLM: 입력 DTO의 문맥을 문자열 템플릿으로 조합
 - 이메일/대시보드: `print()`로 출력
 
 거래 수신, ML Serving 호출, PostgreSQL 저장, 동적 룰 점수 계산은 Fake 범위가 아닙니다.
+
+고객 대응 챗봇의 Fake 구현(`customer_chatbot_pipeline.py`, `FakeEmbedder`,
+`FakeGuideRetriever`, `build_chatbot_chain`)은 제거했습니다. 이 영역은
+[docs/customer-chatbot/](docs/customer-chatbot/) 설계에 따라 실제 구현으로 다시 만드는 중입니다.
 
