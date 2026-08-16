@@ -117,9 +117,12 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 스냅샷으로 저장하는 컬럼은 두지 않는다.
 
 - 시도 횟수·판정 이력은 [3.5 `chat_answers`](#35-chat_answers--신규)에 영구
-  기록되므로, 유실되는 것은 "지금 어느 노드에서 무엇을 기다리는지"뿐이다. 이미 받은
-  고객 답변과 판정, 추출 결과는 남는다.
+  기록된다. 체크포인터의 현재 질문 재시도 횟수는 초기화되지만, 이미 받은 고객 답변과
+  판정, 추출 결과는 남는다.
 - `question_step`은 `InMemorySaver`의 사본이 아니라 운영 조회용 값이다. 턴이 끝날 때 갱신한다.
+  체크포인트가 없는 첫 턴과 재시작 이후에는 이 컬럼이 그래프 상태의 seed가 되므로,
+  유실되는 것은 재시도 횟수뿐이다. 답변 수신 가능 여부는 세션 상태와 이 컬럼으로 검증한다
+  ([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)).
 - 메모리 체크포인터를 공유할 수 없는 다중 인스턴스 배포도 고려하지 않는다.
 
 ### 3.5 `chat_answers` — 신규
@@ -128,7 +131,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 다음 정보가 어디에도 남지 않는다.
 
 - 그 답이 몇 번째 시도(재질문 포함)인지
-- 평가 LLM 판정 결과(`SUFFICIENT` / `TOO_VAGUE` / `NON_ANSWER` / `REFUSAL` / `WANT_END`)
+- 평가 LLM 판정 결과(`SUFFICIENT` / `TOO_VAGUE` / `WANT_END`)
 - 여러 시도 중 실제로 채택되어 추출과 판정에 쓰인 답이 어느 것인지
 
 이 정보가 없으면 추출/판정 LLM의 입력을 사후에 재구성할 수 없어 재현·디버깅·담당자 검토가
@@ -143,7 +146,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 | `question_step` | `integer NOT NULL` | 질문 진행 단계 |
 | `attempt_no` | `integer NOT NULL` | 해당 질문에 대한 시도 번호. 최초 응답이 1, 조건 1에 따라 최대 3 |
 | `message_id` | `bigint NOT NULL` FK → `chat_messages.message_id`, `ON DELETE CASCADE`, `UNIQUE` | 이 시도의 고객 답변 원문이 저장된 메시지 |
-| `quality_verdict` | `varchar(16) NULL` | `SUFFICIENT` / `TOO_VAGUE` / `NON_ANSWER` / `REFUSAL` / `WANT_END`. 평가 LLM을 거치지 않았으면 `NULL` |
+| `quality_verdict` | `varchar(16) NULL` | `SUFFICIENT` / `TOO_VAGUE` / `WANT_END`. 평가 LLM을 거치지 못했으면 `NULL` |
 | `verdict_skip_reason` | `varchar(24) NULL` | `quality_verdict`가 `NULL`인 원인. `MAX_RETRY_EXCEEDED` / `EVALUATOR_FAILED` |
 | `is_adopted` | `boolean NOT NULL DEFAULT false` | 이 시도가 최종 채택되어 추출 입력에 쓰였는지. 질문당 정확히 하나만 `true` |
 | `created_at` | `timestamptz NOT NULL` | |
@@ -154,7 +157,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 UNIQUE (chat_session_id, question_step, attempt_no)
 CHECK (attempt_no BETWEEN 1 AND 3)
 CHECK (quality_verdict IS NULL
-       OR quality_verdict IN ('SUFFICIENT','TOO_VAGUE','NON_ANSWER','REFUSAL','WANT_END'))
+       OR quality_verdict IN ('SUFFICIENT','TOO_VAGUE','WANT_END'))
 CHECK (verdict_skip_reason IS NULL
        OR verdict_skip_reason IN ('MAX_RETRY_EXCEEDED','EVALUATOR_FAILED'))
 
@@ -310,7 +313,8 @@ customer_email: str | None = Field(
 ### 3.10 마이그레이션 적용 순서
 
 기본 대화 스키마는 `c4f7a2b9d810`, 유형판별 질문 컬럼은 `d94b7e31a5c2`, 가이드 검색 질의
-교체는 `f8a1b2c3d4e5`에 반영됐다.
+교체는 `f8a1b2c3d4e5`에 반영됐다. `a6b8c9d0e1f2`는 기존 두 head를 병합하면서
+답변 평가 판정 CHECK를 3종으로 축소한다.
 
 1. `app/domain/fraud_circumstance_codes.py`에 사기 정황 enum과 채점표를 둔다.
 2. [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 `ChatAnswer`,
@@ -318,8 +322,8 @@ customer_email: str | None = Field(
    `ChatSession` / `FraudTypeScoreAfterChat` 수정.
 3. **[app/data/model/\_\_init\_\_.py](../../app/data/model/__init__.py)에 새 모델 import 추가.**
    빠뜨리면 autogenerate가 `DROP TABLE`을 낸다.
-4. 기존 마이그레이션은 수정하지 않고 새 리비전을 쌓는다. `f8a1b2c3d4e5`는 기존 두 head를
-   병합하면서 `chat_customer_actions`를 백필 없이 제거한다.
+4. 기존 마이그레이션은 수정하지 않고 새 리비전을 쌓는다. `a6b8c9d0e1f2`가
+   `f3a6c8d2e941`과 `f8a1b2c3d4e5`를 병합하고 `quality_verdict` CHECK를 교체한다.
 5. 리포지토리는 가이드 검색 질의를 `(source_answer_id, position)` 기준으로 멱등 저장한다.
 6. [3.9](#39-customersemail-확보-경로)의 `customer_email` 필드 추가는 마이그레이션이 없다.
 

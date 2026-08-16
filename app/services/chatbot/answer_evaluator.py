@@ -19,15 +19,13 @@ logger = logging.getLogger(__name__)
 class AnswerEvaluationOutcome:
     """평가 결과와 파이프라인·저장소에서 사용할 실패 메타데이터."""
 
-    routing_verdict: AnswerQualityVerdict
     quality_verdict: AnswerQualityVerdict | None
     verdict_skip_reason: Literal["EVALUATOR_FAILED"] | None = None
 
 
 class AnswerEvaluator:
-    """프롬프트로 고객 답변을 평가"""
-    # routing_verdict: 파이브라인이 다음에 어떻게 움직일지 결정
-    # quality_verdict: LLM이 실제로 판정한 결과를 DB에 기록
+    """프롬프트로 고객 답변을 평가한다."""
+
     def __init__(
         self,
         *,
@@ -49,8 +47,8 @@ class AnswerEvaluator:
         question_text: str,
         customer_answer: str,
     ) -> AnswerEvaluationOutcome:
-        """고객 답변을 평가합니다"""
-        
+        """고객 답변을 평가한다."""
+
         prompt = render_quality_check_prompt(
             question_text=question_text,
             customer_answer=customer_answer,
@@ -68,15 +66,13 @@ class AnswerEvaluator:
                     attempt,
                     type(exc).__name__,
                 )
-                #평가 실패 시 DB엔 quality_verdict 를 저장하지 말고 verdict_skip_reason을 저장한다
+                # 고객 판정 대신 평가 실패 사유만 저장한다.
                 return AnswerEvaluationOutcome(
-                    routing_verdict=AnswerQualityVerdict.REFUSAL,
                     quality_verdict=None,
                     verdict_skip_reason="EVALUATOR_FAILED",
                 )
 
             return AnswerEvaluationOutcome(
-                routing_verdict=result.verdict,
                 quality_verdict=result.verdict,
             )
 

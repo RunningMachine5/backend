@@ -85,7 +85,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 - [x] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
   - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) /
     `CreateChatResponse`(세션 id) — PRD 2.1의 표 그대로
-  - 평가 판정 결과 DTO — `SUFFICIENT`/`TOO_VAGUE`/`NON_ANSWER`/`REFUSAL`/`WANT_END`
+  - 평가 판정 결과 DTO — `SUFFICIENT`/`TOO_VAGUE`/`WANT_END`
   - 가이드 검색 질의 구조화 출력 — `title`, `search_query`, `evidence`와 최대 5개 제한
   - 사기 정황 `type`은 `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로 화이트리스트 강제
   - 메시지 송수신·버튼 액션·세션 상태 변경 SSE 이벤트 DTO (7단계에서 확장 가능)
@@ -136,16 +136,16 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
 
 - [x] `app/services/chatbot/answer_evaluator.py` — A.1 평가 호출.
-  structured output으로 판정 5종을 강제(프롬프트 지시에 의존하지 않는다, PRD 3.2).
+  structured output으로 판정 3종을 강제(프롬프트 지시에 의존하지 않는다, PRD 3.2).
   타임아웃·재시도는 1단계 env var 사용.
-  - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한, 상한 소진 시
-    `REFUSAL`과 동일하게 다음 질문으로 진행하고 `verdict_skip_reason = EVALUATOR_FAILED`로
-    기록. LLM 실패는 `attempt_no`를 소모하지 않는다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
+  - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한,
+    상한 소진 시 고객 판정과 분리된 경로로 다음 질문에 진행하고
+    `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
 - [x] `app/services/chatbot/extractors.py` — A.2 가이드 검색 질의 분해 / A.3 사기 정황 추출 호출.
   structured output 스키마는 1단계 DTO. `evidence`가 답변 원문에 연속 문자열로 존재하는지
   저장 전 대조하고, 불일치 항목은 로그를 남긴 뒤 저장하지 않음
 - [x] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
-  LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 5종 분기,
+  LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 3종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
 
 ## 5단계 — RAG 응답 조립 + 채점 집계
@@ -189,14 +189,17 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 `StateGraph` + **체크포인터 `InMemorySaver`**, `thread_id = chat_session_id`.
 서버 재시작 시 진행 상태 유실은 감수한다(스키마 3.4에 명시된 트레이드오프).
 
-- [ ] 그래프 상태: `question_step`, 현재 질문의 재시도 횟수, 대기 중 여부
-- [ ] 노드·엣지 (PRD 2.3~2.6의 흐름 그대로):
+- [x] 그래프 상태: `question_step`, 현재 질문의 재시도 횟수.
+  체크포인트가 없는 첫 턴·서버 재시작 후에는 `chat_sessions.question_step`에서 seed 하고
+  재시도 횟수만 유실을 감수한다. 답변 수신 가능 여부는 영속된 세션 상태와
+  `question_step`으로 검증한다
+- [x] 노드·엣지 (PRD 2.3~2.6의 흐름 그대로):
   1. 최초 알림(B.1: 거래시각·금액·입금/출금 — 금액 부호로 판정) + 버튼 3종 분기(B.2):
      챗봇 상담 → `IN_PROGRESS`, 상담사 연결 → `HANDOFF_REQUESTED`, 종료 → `DONE`
   2. 질문 출력 — `question_step` 1은 시작 멘트 + 유형판별 질문(`top_fraud_types`
      조합 6종, 없으면 일반 질문 폴백), 2 이상은 추가 질문 멘트 반복(상한 없음)
   3. 답변 평가 — 4단계 서비스 호출. 판정별 전이는 PRD 2.4 표 그대로
-     (`TOO_VAGUE`/`NON_ANSWER`는 재질문 최대 2회, 초과 시 마지막 응답 채택
+     (`TOO_VAGUE`는 재질문 최대 2회, 초과 시 마지막 응답 채택
      `is_adopted = true` 후 다음 질문)
   4. `SUFFICIENT` → 가이드 검색 질의 분해·저장·RAG와 사기 정황 추출·저장을 독립 실행한다.
      한 경로가 재시도 후 실패해도 성공한 경로는 반영하고 다음 질문으로 진행한다
@@ -204,7 +207,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
      + 상태 변경 SSE 발행(7단계 훅). 문구는 B.6
   6. `HANDOFF_REQUESTED` 진입 경로는 1번 버튼과 5번 둘뿐이다. 검색 0건·LLM 실패는
      상태를 전이시키지 않는다 (PRD 2.5)
-- [ ] 트랜잭션 소유: 턴 단위로 파이프라인이 `commit`/`rollback`. `question_step`은 턴 종료 시 갱신
+- [x] 트랜잭션 소유: 턴 단위로 파이프라인이 `commit`/`rollback`. `question_step`은 턴 종료 시 갱신
 - [x] Fake 참조 제거 및 구 DTO 삭제 완료. 삭제한 것: `customer_chatbot_pipeline.py`,
   `fake_embedder.py`, `fake_guide_retriever.py`, `fake_transaction_repository.py`,
   `customer_chatbot.py`, 구 `retriever`, 구
@@ -213,9 +216,12 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   `CUSTOMER_GUIDE_TEXT`, `tests/test_pipelines.py`의 챗봇 테스트.
   남긴 것: `fake_llm.py`·`fake_vector_db.py` — Agent의 `monitoring_agent_pipeline.py`가 쓴다.
   `app/api/chat.py`는 빈 라우터만 남겨 7단계에서 재작성한다.
-- [ ] 테스트 `tests/test_chatbot_pipeline.py`: LLM·RAG 서비스 모킹으로 그래프 분기 검증
+- [x] 테스트 `tests/test_chatbot_pipeline.py`: LLM·RAG 서비스 모킹으로 그래프 분기 검증
   (버튼 3종, 재시도 초과 채택, WANT_END 집계 1회 + `HANDOFF_REQUESTED` 전이,
   전체 0건이어도 상태 불변)
+- [x] `ChatSessionRepository.request_handoff` 신설 — 기존 `set_session_complete`가
+  `DONE` 고정이라 `HANDOFF_REQUESTED` 전이 경로가 없었다. `completed_at`은 선택이며
+  버튼 경로는 남기지 않고 `WANT_END`만 기록한다
 
 ## 7단계 — API + 세션 생성·이메일 발송 + 거래별 세션 상태 조회·변경 SSE
 
@@ -266,8 +272,9 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 
 | 갱신 대상 | 내용 |
 | --- | --- |
-| README 2.4 / 3.1 | 평가 LLM 실패 폴백 확정 (env var 이름, `EVALUATOR_FAILED` 진행) |
+| ~~README 2.4 / 3.1~~ | ~~평가 LLM 실패 폴백 확정 (env var 이름, `EVALUATOR_FAILED` 진행)~~ — 6단계에서 반영 완료 |
 | ~~README 2.5~~ | ~~검색·생성 실패 폴백~~ — 5단계에서 반영 완료 |
+| ~~messages.md B.1 / B.4~~ | ~~B.1 치환 표기 형식, B.4를 재시도 소진·평가 장애 공통 전이 안내로 확정~~ — 반영 완료 |
 | README 2.1 / 신규 절 | API 엔드포인트 형태 확정본 |
 | README 3.3 | FDS 결합 방식 확정 (동기 + 실패 무시 + 멱등), 미해결에서 제거 |
 | README 3.4 | `transaction_amount` 부호 제약 해소 반영 (`ml_prediction.py:69` 참조도 갱신) |
@@ -279,8 +286,14 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 
 ## 채택한 결정 (설계 문서의 권장안·전제를 그대로 따름)
 
-- 평가 LLM 실패 폴백: PRD 3.1의 권장안 (`REFUSAL`과 동일 진행 + `EVALUATOR_FAILED`)
+- 평가 LLM 실패 폴백: 고객 판정과 분리해 다음 질문 진행 + `EVALUATOR_FAILED`
 - LangGraph 체크포인터: `InMemorySaver`, 재시작 유실 감수 (스키마 3.4)
+- LangGraph 구동: **턴 단위 invoke**. 고객 입력 하나 = 그래프 실행 하나이고 그 턴의
+  출력을 만든 뒤 END로 끝난다. `interrupt()` + `Command(resume=...)`로 대화 중간에
+  멈춰 세우지 않는다 — 입력 경로가 HTTP 요청뿐이라 멈춤 지점이 곧 요청 경계이고,
+  `InMemorySaver`에서는 재시작 시 멈춘 노드 자체가 사라져 재개할 수 없다 (스키마 3.4)
+- `is_adopted`: `SUFFICIENT`와 재시도 초과에만 `true` (README 2.4 `is_adopted`를 세우는 판정)
+- 재시도 초과 턴의 고객 출력: B.4 다음 질문 전환 안내 (messages.md B.4)
 - FDS 결합: 동기 호출 + 실패 시 거래 저장 유지 + 멱등 (PRD 3.3의 원칙 문장 그대로)
 - SSE: 대시보드당 연결 하나 + in-process pub/sub, 재연결 시 거래별 상태 재조회 (PRD 2.7)
 
