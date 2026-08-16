@@ -20,7 +20,8 @@ FraudTypeCode = Literal[*FINAL_FRAUD_TYPE_CODES]
 class CreateChatRequest(BaseModel):
     """거래에 연결된 고객 채팅 세션 생성 요청."""
 
-    transaction_id: str = Field(min_length=1, max_length=64)
+    # transactions.id 와 chat_sessions.transaction_id 는 DB가 발급하는 BIGINT 다.
+    transaction_id: int = Field(gt=0)
     # 룰 채점 점수 내림차순 상위 2개 사기유형. 유형판별 질문(PRD 2.4) 선택에 쓴다.
     # 룰 채점 실패로 유형 점수가 없으면 생략하며, 그 세션은 일반 질문 폴백을 쓴다.
     top_fraud_types: list[FraudTypeCode] | None = Field(

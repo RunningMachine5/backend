@@ -51,6 +51,7 @@ class ChatSessionRepository:
         chat_session_id: str,
         transaction_id: int,
         top_fraud_types: list[str] | None = None,
+        is_older: bool = False,
     ) -> ChatSession:
         """
         거래에 연결된 세션이 있으면 반환하고, 없으면 새로 추가한다.
@@ -69,6 +70,7 @@ class ChatSessionRepository:
             top_fraud_types=(
                 list(top_fraud_types) if top_fraud_types is not None else None
             ),
+            is_older=is_older,
         )
         self.session.add(chat_session)
         return chat_session
