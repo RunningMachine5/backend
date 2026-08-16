@@ -342,7 +342,7 @@ class AgentWorkflow:
                 audience="MONITORING",
                 risk_grade=policy.risk_grade,
                 action_codes=tuple(action.action_code for action in policy.actions),
-                top_k=5,
+                top_k=3,
             )
         )
         return {"retrieved_guides": guides}

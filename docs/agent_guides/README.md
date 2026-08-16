@@ -142,6 +142,18 @@ VERY_HIGH
 uv run python -m unittest tests.test_agent_guide_corpus -v
 ```
 
+내부 정책에 실제로 정의된 사기 유형·위험등급·조치 조합마다 검색 가능한
+`MONITORING` 대응 문서가 존재하는지는 다음 명령으로 확인한다. 검색과 동일하게
+`COMMON` 대상 문서도 커버리지에 포함하며, 누락 조치가 있으면 종료 코드 1을 반환한다.
+
+```powershell
+uv run python -m app.scripts.check_agent_guide_coverage
+```
+
+현재 기본 코퍼스는 내부 정책 16개에 포함된 조치 32개를 모두 지원한다. 여러 사기
+유형에 연결된 공통 긴급대응·체크리스트 문서는 오류로 처리하지 않고 검토 목록으로
+함께 출력한다.
+
 ## 문서 로더와 청크 생성기
 
 `load_guide_corpus()`는 공식·내부 디렉터리의 Markdown 문서를 정렬된 순서로
@@ -193,8 +205,112 @@ python -m app.scripts.index_agent_guides
 python -m app.scripts.evaluate_agent_guide_search
 ```
 
+### 문서·메타데이터 1차 개선 결과
+
+공통 체크리스트와 플레이북에는 실제 수행 절차를 제공하는 조치 코드만 남기고,
+보이스피싱·메신저피싱·사기이용계좌 전문 문서의 절차를 보강했다. 검색 로직과 20개
+평가 질의·기대 문서는 변경하지 않고 동일한 기준으로 다시 측정했다.
+
+| 지표 | 개선 전 | 개선 후 |
+|---|---:|---:|
+| Precision@1 | 0.70 | 0.85 |
+| Hit Rate@3 | 0.95 | 1.00 |
+| Hit Rate@5 | 1.00 | 1.00 |
+| MRR | 0.8292 | 0.9250 |
+
+정책 조치 문서 커버리지는 개선 전후 모두 32/32, 100%를 유지했다. 변경된 문서
+7개만 다시 임베딩했으며 기존 문서 9개는 저장된 임베딩을 재사용했다.
+
 외부 API와 PostgreSQL 없이 실행하는 단위 테스트는 다음과 같다.
 
 ```powershell
 python -m unittest tests.test_agent_guide_vector_search -v
+```
+
+## RAG·LLM 대응 계획 품질 평가
+
+`app/resources/agent/response_plan_evaluation.yaml`은 4개 사기 유형의 `HIGH`,
+`VERY_HIGH` 조합으로 총 8개 평가 시나리오를 관리한다. 동일한 내부 정책을 기준으로
+정책-only 계획과 RAG·LLM 계획을 생성하여 다음 지표를 비교한다.
+
+- 필수 조치 포함률
+- 허용된 조치 코드 정확도
+- 조치별 수행 절차 생성률
+- 조치별 주의사항 생성률
+- 출력 계약 준수율
+- fallback 발생률
+- 검색 및 생성 평균 지연시간
+
+단위 테스트는 Fake 검색기와 Fake 생성기를 사용하므로 PostgreSQL과 OpenAI API를
+호출하지 않는다.
+
+```powershell
+uv run python -m unittest tests.test_agent_response_plan_evaluation -v
+```
+
+실제 pgvector와 OpenAI 모델을 사용한 평가는 대응 가이드 적재 후 다음 명령으로
+명시적으로 실행한다. `--output`을 생략하면 결과를 터미널에만 출력한다.
+
+```powershell
+uv run --env-file .env python -m app.scripts.evaluate_agent_response_plans `
+  --output local_evaluation/response_plan_report.json
+```
+
+### 1차 실제 생성 평가 결과
+
+2026-08-15에 `gpt-5-mini`, 30초 호출 제한, 유형별 `HIGH`·`VERY_HIGH` 총
+8개 시나리오로 1회 측정한 결과이다. 생성 모델의 응답 상태에 따라 수치가 달라질 수
+있으므로 동일 조건에서 반복 측정하여 최종 발표 지표를 확정한다.
+
+| 지표 | 정책-only | RAG·LLM |
+|---|---:|---:|
+| 필수 조치 포함률 | 1.000 | 1.000 |
+| 허용 조치 코드 정확도 | 1.000 | 1.000 |
+| 수행 절차 생성률 | 0.000 | 0.875 |
+| 주의사항 생성률 | 0.000 | 0.875 |
+| 출력 계약 준수율 | 1.000 | 1.000 |
+| fallback률 | 0.000 | 0.125 |
+| 평균 검색시간 | 0ms | 682.62ms |
+| 평균 생성시간 | 0ms | 26,484.38ms |
+
+RAG·LLM 8건 중 7건은 모든 정책 조치의 수행 절차와 주의사항을 생성했다. 보이스피싱
+`VERY_HIGH` 1건은 30초 제한시간에 도달하여 정책-only 계획으로 안전하게
+fallback되었다. 정책 조치 코드는 모든 결과에서 그대로 유지되어 LLM이 사기 유형과
+필수 조치를 변경하지 못하도록 한 가드레일이 정상 작동했다.
+
+### 생성 지연시간 개선 결과
+
+1차 평가에서 확인된 평균 26.48초의 생성 지연과 12.5% fallback을 개선하기 위해
+검색 문맥을 Top-5에서 Top-3으로 줄이고, `gpt-5-mini`의 reasoning effort를
+`low`로 설정했다. 구조화 출력이 중간에 종료되지 않도록 최대 생성 토큰은 3000으로
+설정했다. 최종 후보는 8개 시나리오를 3회씩 총 24건 실행하여 검증했다.
+
+| 지표 | 개선 전 | 개선 후 |
+|---|---:|---:|
+| 평가 건수 | 8건 | 24건 |
+| 필수 조치 포함률 | 1.000 | 1.000 |
+| 허용 조치 코드 정확도 | 1.000 | 1.000 |
+| 수행 절차 생성률 | 0.875 | 1.000 |
+| 주의사항 생성률 | 0.875 | 1.000 |
+| 출력 계약 준수율 | 1.000 | 1.000 |
+| fallback률 | 0.125 | 0.000 |
+| 평균 검색시간 | 682.62ms | 558.00ms |
+| 평균 생성시간 | 26,484.38ms | 12,844.42ms |
+| 생성시간 P50 | 미측정 | 12,419ms |
+| 생성시간 P95 | 미측정 | 15,804ms |
+
+평균 생성시간은 약 51.5% 감소했으며, 24건 모두 정책 조치와 출력 계약을 유지했다.
+출력 토큰을 1200으로 제한한 후보는 모든 시나리오에서 구조화 출력 생성에 실패했기
+때문에 채택하지 않았다. 속도만 줄이지 않고 품질 지표를 함께 비교하여 최종 설정을
+선정한 결과이다.
+
+반복 횟수와 검색 문서 수를 변경하여 재측정할 수 있다.
+
+```powershell
+uv run --env-file .env python -m app.scripts.evaluate_agent_response_plans `
+  --repeat 3 `
+  --top-k 3 `
+  --reasoning-effort low `
+  --max-completion-tokens 3000 `
+  --output local_evaluation/response_plan_report.json
 ```

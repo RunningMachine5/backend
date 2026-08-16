@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -17,6 +18,10 @@ from app.dto.agent import (
     ResponsePlanDTO,
 )
 from app.dto.agent_guide import RetrievedGuideChunkDTO
+
+
+RESPONSE_PLAN_REASONING_EFFORT = "low"
+RESPONSE_PLAN_MAX_COMPLETION_TOKENS = 3000
 
 
 class GeneratedActionDetail(BaseModel):
@@ -90,6 +95,8 @@ class RagResponsePlanGenerator:
         *,
         structured_llm: Any | None = None,
         fallback: PolicyResponsePlanGenerator | None = None,
+        reasoning_effort: str = RESPONSE_PLAN_REASONING_EFFORT,
+        max_completion_tokens: int = RESPONSE_PLAN_MAX_COMPLETION_TOKENS,
     ) -> None:
         self.structured_llm = structured_llm or ChatOpenAI(
             model=os.getenv(
@@ -99,6 +106,8 @@ class RagResponsePlanGenerator:
             api_key=os.getenv("OPENAI_API_KEY"),
             timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
             max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
+            reasoning_effort=reasoning_effort,
+            max_completion_tokens=max_completion_tokens,
         ).with_structured_output(
             GeneratedResponsePlan,
             method="json_schema",
@@ -155,7 +164,11 @@ class RagResponsePlanGenerator:
                     for item in policy.checklist
                 ],
             )
-        except Exception:
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "RAG 대응 계획 생성 실패로 정책 fallback 적용: %s",
+                error,
+            )
             return self.fallback.generate(
                 fraud_type=fraud_type,
                 policy=policy,
@@ -209,5 +222,7 @@ __all__ = [
     "GeneratedActionDetail",
     "GeneratedResponsePlan",
     "PolicyResponsePlanGenerator",
+    "RESPONSE_PLAN_MAX_COMPLETION_TOKENS",
+    "RESPONSE_PLAN_REASONING_EFFORT",
     "RagResponsePlanGenerator",
 ]
