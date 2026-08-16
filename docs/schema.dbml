@@ -342,16 +342,18 @@ Table chat_answers {
   }
 }
 
-Table chat_customer_actions {
-  action_id bigint [pk, increment]
+Table chat_guide_search_queries {
+  guide_search_query_id bigint [pk, increment]
   chat_session_id varchar(64) [not null, ref: > chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
-  action_code varchar(64) [not null]
+  position integer [not null, note: "CHECK BETWEEN 1 AND 5"]
+  title varchar(120) [not null]
+  search_query text [not null]
   evidence text [not null]
   source_answer_id bigint [ref: > chat_answers.answer_id, note: "ON DELETE SET NULL"]
   extracted_at timestamptz [not null]
 
   indexes {
-    (chat_session_id, action_code) [unique]
+    (source_answer_id, position) [unique]
   }
 }
 

@@ -9,12 +9,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.domain.customer_action_codes import FINAL_CUSTOMER_ACTION_CODES
 from app.domain.fraud_circumstance_codes import FINAL_FRAUD_CIRCUMSTANCE_CODES
 from app.domain.fraud_type_codes import FINAL_FRAUD_TYPE_CODES
 
 
-CustomerActionCode = Literal[*FINAL_CUSTOMER_ACTION_CODES]
 FraudCircumstanceCode = Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]
 FraudTypeCode = Literal[*FINAL_FRAUD_TYPE_CODES]
 
@@ -69,17 +67,18 @@ class AnswerEvaluationResult(BaseModel):
 
     verdict: AnswerQualityVerdict
 
-class ExtractedCustomerAction(BaseModel):
-    """고객 답변에서 추출한 화이트리스트 행동과 원문 근거."""
+class ExtractedGuideSearchQuery(BaseModel):
+    """고객 답변에서 분해한 독립 검색 단위와 원문 근거."""
 
-    type: CustomerActionCode
+    title: str = Field(min_length=1, max_length=120)
+    search_query: str = Field(min_length=1, max_length=500)
     evidence: str = Field(min_length=1)
 
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758280649&cot=14
-class CustomerActionExtractionResult(BaseModel):
-    """고객 행동 추출 LLM의 구조화 출력."""
+class GuideSearchQueryExtractionResult(BaseModel):
+    """대응 가이드 검색 질의 분해 LLM의 구조화 출력."""
 
-    customer_actions: list[ExtractedCustomerAction]
+    guide_search_queries: list[ExtractedGuideSearchQuery] = Field(max_length=5)
 
 class ExtractedFraudCircumstance(BaseModel):
     """고객 답변에서 추출한 화이트리스트 사기 정황과 원문 근거."""
@@ -94,10 +93,10 @@ class FraudCircumstanceExtractionResult(BaseModel):
     fraud_circumstances: list[ExtractedFraudCircumstance]
 
 
-class GeneratedActionGuide(BaseModel):
-    """대응 가이드 생성 LLM이 액션 하나에 대해 만든 안내."""
+class GeneratedSearchQueryGuide(BaseModel):
+    """대응 가이드 생성 LLM이 검색 단위 하나에 대해 만든 안내."""
 
-    type: CustomerActionCode
+    position: int = Field(ge=1, le=5)
     # 근거만으로 안내를 쓸 수 없으면 빈 문자열이며, 호출부가 B.5 문구로 대체한다.
     guidance: str
 
@@ -106,7 +105,7 @@ class GeneratedActionGuide(BaseModel):
 class GuideResponseGenerationResult(BaseModel):
     """대응 가이드 생성 LLM의 구조화 출력."""
 
-    guides: list[GeneratedActionGuide]
+    guides: list[GeneratedSearchQueryGuide] = Field(max_length=5)
 
 
 class ChatButtonAction(StrEnum):
@@ -165,15 +164,14 @@ __all__ = [
     "ChatSessionStatusChangedEventPayload",
     "CreateChatRequest",
     "CreateChatResponse",
-    "CustomerActionCode",
-    "CustomerActionExtractionResult",
-    "ExtractedCustomerAction",
+    "ExtractedGuideSearchQuery",
     "ExtractedFraudCircumstance",
     "FraudCircumstanceCode",
     "FraudCircumstanceExtractionResult",
     "FraudTypeCode",
-    "GeneratedActionGuide",
+    "GeneratedSearchQueryGuide",
     "GuideResponseGenerationResult",
+    "GuideSearchQueryExtractionResult",
     "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",
 ]

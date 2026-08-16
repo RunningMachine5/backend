@@ -2,7 +2,6 @@ import unittest
 
 from pydantic import ValidationError
 
-from app.domain.customer_action_codes import PHISHING_LINK_OPENED
 from app.domain.fraud_circumstance_codes import (
     ACCOUNT_REAUTHENTICATION_PHISHING,
 )
@@ -12,54 +11,73 @@ from app.dto.chatbot import (
     AnswerQualityVerdict,
     ChatSessionStatusChangedEventPayload,
     CreateChatRequest,
-    CustomerActionExtractionResult,
     FraudCircumstanceExtractionResult,
+    GuideSearchQueryExtractionResult,
 )
 
 
 class TestChatbotStructuredOutputDTO(unittest.TestCase):
-    def test_accepts_customer_action_whitelist_value(self) -> None:
-        result = CustomerActionExtractionResult.model_validate(
+    def test_accepts_guide_search_query_without_action_whitelist(self) -> None:
+        result = GuideSearchQueryExtractionResult.model_validate(
             {
-                "customer_actions": [
+                "guide_search_queries": [
                     {
-                        "type": PHISHING_LINK_OPENED,
+                        "title": "전화번호 제공",
+                        "search_query": "모르는 사람에게 전화번호를 제공한 경우 대응 방법",
                         "evidence": "링크를 눌렀어요",
                     }
                 ]
             }
         )
 
-        self.assertEqual(result.customer_actions[0].type, PHISHING_LINK_OPENED)
+        self.assertEqual(result.guide_search_queries[0].title, "전화번호 제공")
 
-    def test_preserves_customer_action_evidence_whitespace(self) -> None:
+    def test_preserves_guide_search_query_evidence_whitespace(self) -> None:
         evidence = " 링크를 눌렀어요 "
 
-        result = CustomerActionExtractionResult.model_validate(
+        result = GuideSearchQueryExtractionResult.model_validate(
             {
-                "customer_actions": [
+                "guide_search_queries": [
                     {
-                        "type": PHISHING_LINK_OPENED,
+                        "title": "의심 링크",
+                        "search_query": "의심 링크를 누른 경우 대응 방법",
                         "evidence": evidence,
                     }
                 ]
             }
         )
 
-        self.assertEqual(result.customer_actions[0].evidence, evidence)
+        self.assertEqual(result.guide_search_queries[0].evidence, evidence)
 
-    def test_rejects_customer_action_outside_whitelist(self) -> None:
+    def test_rejects_more_than_five_guide_search_queries(self) -> None:
         with self.assertRaises(ValidationError):
-            CustomerActionExtractionResult.model_validate(
+            GuideSearchQueryExtractionResult.model_validate(
                 {
-                    "customer_actions": [
+                    "guide_search_queries": [
                         {
-                            "type": "unknown_customer_action",
-                            "evidence": "임의의 행동을 했어요",
+                            "title": f"요구 {index}",
+                            "search_query": f"검색 질의 {index}",
+                            "evidence": "고객 원문",
                         }
+                        for index in range(6)
                     ]
                 }
             )
+
+    def test_rejects_blank_or_oversized_guide_search_query_fields(self) -> None:
+        invalid_items = [
+            {"title": "", "search_query": "질의", "evidence": "원문"},
+            {"title": "제목", "search_query": "", "evidence": "원문"},
+            {"title": "제목", "search_query": "질의", "evidence": ""},
+            {"title": "가" * 121, "search_query": "질의", "evidence": "원문"},
+            {"title": "제목", "search_query": "가" * 501, "evidence": "원문"},
+        ]
+        for item in invalid_items:
+            with self.subTest(item=item):
+                with self.assertRaises(ValidationError):
+                    GuideSearchQueryExtractionResult.model_validate(
+                        {"guide_search_queries": [item]}
+                    )
 
     def test_accepts_fraud_circumstance_whitelist_value(self) -> None:
         result = FraudCircumstanceExtractionResult.model_validate(

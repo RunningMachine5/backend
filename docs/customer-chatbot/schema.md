@@ -7,17 +7,18 @@
 
 ## 구현 상태
 
-**챗봇 영속 스키마 구현 완료 (2026-08-14).**
+**챗봇 영속 스키마 구현 완료 (2026-08-15).**
 
-- `customer_action` 19종, `fraud_circumstance` 20종과 유형별 점수표를
-  `app/domain/`에 정의했다.
-- [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 세션·메시지·답변·고객 행동·
+- `fraud_circumstance` 20종과 유형별 점수표를 `app/domain/`에 정의했다.
+- [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 세션·메시지·답변·가이드 검색 질의·
   사기 정황·채점 결과 모델을 정의하고
   [app/data/model/__init__.py](../../app/data/model/__init__.py)에 등록했다.
 - Alembic revision `c4f7a2b9d810`에 기존 `agent_chat_*` 테이블 이름 변경, 신규 테이블 생성,
   채점 결과 백필, FK·CHECK·UNIQUE·부분 유니크 인덱스 적용과 downgrade를 구현했다.
 - Alembic revision `d94b7e31a5c2`가 [유형판별 질문](README.md#유형판별-질문) 도입으로
   사용처가 생긴 `chat_sessions.top_fraud_types`를 재추가했다 (2026-08-15).
+- Alembic revision `f8a1b2c3d4e5`가 `chat_customer_actions`를 제거하고
+  `chat_guide_search_queries`로 교체했다. 기존 고객행동 행은 백필하지 않는다.
 
 이 완료 표시는 이 문서의 챗봇 영속 구조(3.1~3.8)에 한정한다. 리포지토리·DTO·LLM·API와
 [3.9의 이메일 확보 경로](#39-customersemail-확보-경로)는 후속 애플리케이션 작업이다.
@@ -30,7 +31,7 @@
 | [3.3](#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 |
 | [3.4](#34-chat_sessions--테이블명-변경-및-컬럼-추가) | `chat_sessions` 테이블명 변경 + 컬럼 추가 |
 | [3.5](#35-chat_answers--신규) | `chat_answers` 신규 |
-| [3.6](#36-추출-결과-테이블--신규) | 고객 행동·사기 정황 추출 테이블 신규 |
+| [3.6](#36-추출-결과-테이블--신규) | 가이드 검색 질의·사기 정황 추출 테이블 |
 | [3.7](#37-fraud_type_score_after_chat--구조-변경) | `fraud_type_score_after_chat` 구조 변경 |
 | [3.8](#38-appdomain-enum-코드-상수화) | `app/domain/` enum 코드 상수화 |
 | [3.9](#39-customersemail-확보-경로) | `customers.email` 확보 경로 |
@@ -61,7 +62,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 | 거래 원장 | `transactions` | 기존, 변경 없음 |
 | 챗봇 세션·메시지 | `chat_sessions`, `chat_messages` | 기존 테이블명 변경, 세션에 컬럼 추가 |
 | 질문·시도·판정 이력 | `chat_answers` | **신규** |
-| 추출 결과 | `chat_customer_actions`, `chat_fraud_circumstances` | **신규** |
+| 추출 결과 | `chat_guide_search_queries`, `chat_fraud_circumstances` | **신규** |
 | 채팅 후 사기유형 점수 | `fraud_type_score_after_chat` | 기존, 구조 변경 |
 | 유저 대응가이드 임베딩 | `cs_guide_documents`, `cs_guide_document_chunks` | 기존, 변경 없음 |
 
@@ -173,15 +174,23 @@ CREATE UNIQUE INDEX uq_chat_answers_adopted
 
 ### 3.6 추출 결과 테이블 — 신규
 
-고객 행동은 RAG 검색에, 사기 정황은 점수 집계에 사용되므로 별도 테이블에 저장한다.
-두 테이블은 `kind` 구분자 없이 각 도메인의 코드 컬럼을 명시적으로 가진다.
+동적 가이드 검색 질의는 RAG 검색과 감사 기록에, 사기 정황은 점수 집계에 사용한다.
 
-| 테이블 | PK | 코드 컬럼 | 세션별 중복 방지 |
+| 테이블 | PK | 핵심 컬럼 | 중복 방지 |
 | --- | --- | --- | --- |
-| `chat_customer_actions` | `action_id BIGSERIAL` | `action_code varchar(64)` | `UNIQUE (chat_session_id, action_code)` |
+| `chat_guide_search_queries` | `guide_search_query_id BIGSERIAL` | `position`, `title`, `search_query` | `UNIQUE (source_answer_id, position)` |
 | `chat_fraud_circumstances` | `circumstance_id BIGSERIAL` | `circumstance_code varchar(64)` | `UNIQUE (chat_session_id, circumstance_code)` |
 
-두 테이블의 공통 컬럼은 다음과 같다.
+`chat_guide_search_queries`는 답변 한 건마다 최대 5개의 가이드 검색 질의를 순서대로 저장한다.
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| `position` | `integer NOT NULL` | 원문 언급 순서, `CHECK (position BETWEEN 1 AND 5)` |
+| `title` | `varchar(120) NOT NULL` | 고객 응답 소제목 |
+| `search_query` | `text NOT NULL` | 독립 검색 가능한 한국어 질의 |
+| `evidence` | `text NOT NULL` | 고객 답변의 연속 원문 |
+
+두 테이블은 다음 추적 컬럼을 공유한다.
 
 | 컬럼 | 타입 | 설명 |
 | --- | --- | --- |
@@ -190,11 +199,9 @@ CREATE UNIQUE INDEX uq_chat_answers_adopted
 | `source_answer_id` | `bigint NULL` FK → `chat_answers.answer_id`, `ON DELETE SET NULL` | 어느 턴의 답변에서 나왔는지 |
 | `extracted_at` | `timestamptz NOT NULL` | |
 
-코드 컬럼에 19종·20종 CHECK를 걸지 않는다. enum 하나 추가할 때마다 마이그레이션이
-필요하고, 이 값들은 프롬프트 튜닝과 함께 자주 바뀐다. [3.8](#38-appdomain-enum-코드-상수화)의
-파이썬 화이트리스트를 1차 방어선으로 둔다(구조화 출력 스키마 + 저장 직전 검증).
-`fraud_type_score_results.type_scores`가 유형 코드를 JSON으로 담고 CHECK 없이 코드로
-관리하는 것과 같은 선택이다.
+가이드 검색 질의에는 enum이나 코드 컬럼을 두지 않는다. 사기 정황 코드는 enum 추가마다
+마이그레이션이 필요하지 않도록 DB CHECK 대신 [3.8](#38-appdomain-enum-코드-상수화)의
+파이썬 화이트리스트로 검증한다.
 
 `evidence`는 저장 직전에 고객 답변에 실제로 존재하는 연속된 원문 문자열인지 대조한다.
 대조에 실패한 추출 항목은 로그를 남기고 저장하지 않는다.
@@ -223,22 +230,17 @@ CREATE UNIQUE INDEX uq_chat_answers_adopted
 
 ### 3.8 `app/domain/` enum 코드 상수화
 
-`customer_action` 19종과 `fraud_circumstance` 20종이 현재 프롬프트 문자열 안에만
-나열되어 있고 코드 상수로 정의된 곳이 없다. 이 값들은 최소 세 곳에서 쓰인다.
+동적 가이드 검색 질의는 enum을 사용하지 않는다. `fraud_circumstance` 20종만 코드 상수로
+관리하며 다음 세 곳에서 같은 정의를 사용한다.
 
 - LLM 프롬프트에 나열하는 enum 목록과 설명
 - 구조화 출력(structured output) 스키마의 허용값
 - DB 저장 시 값 검증
 
-세 곳에 각각 문자열로 박아두면 값 추가·삭제·오타 수정 시 반드시 어긋난다.
-`app/domain/fraud_type_codes.py`가 사기유형 코드에 대해 이미 하는 패턴을 그대로 적용한다.
+세 곳에 각각 문자열을 두면 값 추가·삭제·오타 수정 시 어긋나므로
+`app/domain/fraud_circumstance_codes.py`를 단일 출처로 사용한다.
 
 ```
-app/domain/customer_action_codes.py
-    CUSTOMER_ACTION_DESCRIPTIONS: Mapping[str, str]    # 프롬프트 렌더링용 19종
-    CUSTOMER_ACTION_SEARCH_QUERIES: Mapping[str, str]  # RAG 검색 질의용 한국어 매핑
-    FINAL_CUSTOMER_ACTION_CODES = frozenset(...)
-
 app/domain/fraud_circumstance_codes.py
     FRAUD_CIRCUMSTANCE_DESCRIPTIONS: Mapping[str, str]           # 20종
     FRAUD_CIRCUMSTANCE_SCORES: Mapping[str, Mapping[str, int]]   # 내부 채점표 (2.6)
@@ -248,38 +250,13 @@ app/domain/fraud_circumstance_codes.py
 `FRAUD_CIRCUMSTANCE_SCORES`가 [내부 채점표](scoring.md#채점표)를 그대로 담는다.
 정황 하나가 여러 유형에 점수를 주므로 `Mapping[정황코드, Mapping[사기유형코드, 점수]]`
 구조이며, 이 안에 정황 → 사기유형 관계가 포함되어 별도 매핑이 필요 없다.
-검색 질의는 코드 문자열 대신 아래 한국어 문구를 사용한다. 행동 설명보다 검색 의도를
-분명히 하기 위해 모든 문구에 피해 대응 맥락을 포함한다.
-
-| `customer_action` | `CUSTOMER_ACTION_SEARCH_QUERIES` |
-| --- | --- |
-| `detected_transaction_initiated` | 의심 거래를 직접 입력하고 실행했을 때 대응 방법 |
-| `detected_transaction_approved` | 다른 사람이 준비한 의심 거래를 인증하거나 승인했을 때 대응 방법 |
-| `cash_delivered_after_withdrawal` | 현금을 출금해 다른 사람에게 직접 전달했을 때 대응 방법 |
-| `received_funds_forwarded` | 입금받은 돈을 다른 계좌나 사람에게 다시 송금했을 때 대응 방법 |
-| `received_funds_withdrawn` | 입금받은 돈을 현금으로 출금했을 때 대응 방법 |
-| `goods_or_asset_delivered_for_payment` | 입금 대가로 물품·금·외화 등 자산을 전달했을 때 대응 방법 |
-| `bank_account_rented_or_transferred` | 본인 명의 계좌를 다른 사람에게 대여하거나 양도했을 때 대응 방법 |
-| `account_access_or_payment_instrument_shared` | 금융계정 접근정보·통장·카드·OTP 기기를 전달했을 때 대응 방법 |
-| `phishing_link_opened` | 상대방이 보낸 의심스러운 링크를 열거나 눌렀을 때 대응 방법 |
-| `financial_credentials_entered_or_shared` | 금융서비스 아이디·비밀번호·PIN을 입력하거나 전달했을 때 대응 방법 |
-| `otp_or_authentication_code_shared` | OTP·문자·ARS 인증번호를 입력하거나 전달했을 때 대응 방법 |
-| `identity_document_shared` | 신분증 사진·사본·위임장을 전달했을 때 대응 방법 |
-| `card_information_shared` | 카드번호·유효기간·CVC·카드 비밀번호를 전달했을 때 대응 방법 |
-| `suspicious_app_installed` | 상대방이 안내한 앱이나 APK를 설치했을 때 대응 방법 |
-| `remote_control_or_security_permission_granted` | 원격제어·접근성·기기관리자 권한을 허용했을 때 대응 방법 |
-| `loan_taken_for_transaction` | 의심 거래 자금을 마련하려고 대출을 실행했을 때 대응 방법 |
-| `account_opened_for_other_party` | 상대방 요청으로 계좌를 개설하거나 사용하게 했을 때 대응 방법 |
-| `open_banking_or_external_finance_linked` | 상대방 요청으로 오픈뱅킹이나 외부 금융서비스를 연결했을 때 대응 방법 |
-| `crypto_purchased_or_transferred` | 의심 거래와 관련해 가상자산을 구매하거나 외부 지갑으로 전송했을 때 대응 방법 |
-
 프롬프트의 "허용된 enum 이외의 값은 생성하지 않습니다" 같은 규칙은 LLM에 대한 요청일 뿐
 강제가 아니다. 모델이 이를 어길 가능성은 항상 있으므로 **구조화 출력 스키마와 DB 저장은
 파이썬 코드로 강제한다.**
 
-- **구조화 출력 스키마**: `type` 필드를 `Enum` 또는 `Literal[*FINAL_CUSTOMER_ACTION_CODES]`로
+- **구조화 출력 스키마**: 사기 정황 `type`을 `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로
   선언해 파서 단계에서 화이트리스트 밖의 값이 들어오면 실패하게 한다.
-- **DB 저장**: 파서를 통과한 뒤에도 저장 직전에 `code in FINAL_*_CODES`를 다시 검증한다.
+- **DB 저장**: 파서를 통과한 뒤에도 저장 직전에 정황 코드를 다시 검증한다.
   거짓이면 해당 항목만 저장하지 않고 로그로 남긴다(전체 추출 결과를 폐기하지 않고
   항목 단위로 걸러낸다).
 
@@ -332,22 +309,19 @@ customer_email: str | None = Field(
 
 ### 3.10 마이그레이션 적용 순서
 
-아래 1~4번은 Alembic revision `c4f7a2b9d810`까지 완료됐고, 유형판별 질문 도입에 따른
-`top_fraud_types` 재추가는 `d94b7e31a5c2`로 완료됐다. 5~6번은 영속 스키마 완료
-범위 밖의 후속 리포지토리·거래 수집 작업이다.
+기본 대화 스키마는 `c4f7a2b9d810`, 유형판별 질문 컬럼은 `d94b7e31a5c2`, 가이드 검색 질의
+교체는 `f8a1b2c3d4e5`에 반영됐다.
 
-1. `app/domain/customer_action_codes.py`, `app/domain/fraud_circumstance_codes.py` —
-   나머지가 전부 여기 의존한다.
+1. `app/domain/fraud_circumstance_codes.py`에 사기 정황 enum과 채점표를 둔다.
 2. [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 `ChatAnswer`,
-   `ChatCustomerAction`, `ChatFraudCircumstance` 추가 +
+   `ChatGuideSearchQuery`, `ChatFraudCircumstance` 추가 +
    `ChatSession` / `FraudTypeScoreAfterChat` 수정.
 3. **[app/data/model/\_\_init\_\_.py](../../app/data/model/__init__.py)에 새 모델 import 추가.**
    빠뜨리면 autogenerate가 `DROP TABLE`을 낸다.
-4. `uv run --env-file .env alembic revision --autogenerate` →
-   부분 유니크 인덱스(`WHERE is_adopted`)는 autogenerate가 잡지 못하므로 손으로 넣는다.
-   이미 병합된 마이그레이션은 수정하지 말고 새 리비전을 쌓는다.
-5. `app/repositories/chat_session.py` 신규 — 현재 챗봇 리포지토리가 없다.
-6. [3.9](#39-customersemail-확보-경로)의 `customer_email` 필드 추가 — 마이그레이션 없음.
+4. 기존 마이그레이션은 수정하지 않고 새 리비전을 쌓는다. `f8a1b2c3d4e5`는 기존 두 head를
+   병합하면서 `chat_customer_actions`를 백필 없이 제거한다.
+5. 리포지토리는 가이드 검색 질의를 `(source_answer_id, position)` 기준으로 멱등 저장한다.
+6. [3.9](#39-customersemail-확보-경로)의 `customer_email` 필드 추가는 마이그레이션이 없다.
 
 손대지 않을 것:
 

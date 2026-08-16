@@ -1,4 +1,4 @@
-"""고객 답변에서 행동과 사기 정황을 구조화 출력으로 추출한다."""
+"""고객 답변에서 가이드 검색 질의와 사기 정황을 구조화 출력으로 추출한다."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from typing import Any
 
 from app.core.config import CHAT_LLM_MAX_ATTEMPTS, CHAT_LLM_TIMEOUT_SECONDS
 from app.dto.chatbot import (
-    CustomerActionExtractionResult,
     FraudCircumstanceExtractionResult,
+    GuideSearchQueryExtractionResult,
 )
 from app.services.chatbot.llm import build_structured_llm
 from app.services.chatbot.prompts import (
-    render_customer_action_extraction_prompt,
     render_fraud_circumstance_extraction_prompt,
+    render_guide_search_query_extraction_prompt,
 )
 
 
@@ -24,16 +24,16 @@ class ChatbotExtractionError(RuntimeError):
     """추출 LLM이 재시도 상한 안에 유효한 결과를 반환하지 못한 경우."""
 
 
-class CustomerActionExtractionError(ChatbotExtractionError):
-    """고객 행동 추출에 실패한 경우."""
+class GuideSearchQueryExtractionError(ChatbotExtractionError):
+    """가이드 검색 질의 분해에 실패한 경우."""
 
 
 class FraudCircumstanceExtractionError(ChatbotExtractionError):
     """사기 정황 추출에 실패한 경우."""
 
 
-class CustomerActionExtractor:
-    """프롬프트로 고객 행동을 추출"""
+class GuideSearchQueryExtractor:
+    """고객 답변을 독립적인 가이드 검색 질의로 분해한다."""
 
     def __init__(
         self,
@@ -44,7 +44,7 @@ class CustomerActionExtractor:
         max_attempts: int = CHAT_LLM_MAX_ATTEMPTS,
     ) -> None:
         self.structured_llm = structured_llm or build_structured_llm(
-            CustomerActionExtractionResult,
+            GuideSearchQueryExtractionResult,
             model=model,
             timeout_seconds=timeout_seconds,
         )
@@ -54,42 +54,67 @@ class CustomerActionExtractor:
         self,
         *,
         user_answers: str,
-    ) -> CustomerActionExtractionResult:
-        prompt = render_customer_action_extraction_prompt(
+    ) -> GuideSearchQueryExtractionResult:
+        # 분해 전용 프롬프트 요청
+        prompt = render_guide_search_query_extraction_prompt(
             user_answers=user_answers
         )
 
         for attempt in range(1, self.max_attempts + 1):
             try:
                 raw_result = self.structured_llm.invoke(prompt)
-                result = CustomerActionExtractionResult.model_validate(
+                result = GuideSearchQueryExtractionResult.model_validate(
                     raw_result
                 )
             except Exception as exc:
                 if attempt < self.max_attempts:
                     continue
                 logger.warning(
-                    "고객 행동 추출 LLM 호출 실패: attempts=%s error=%s",
+                    "가이드 검색 질의 분해 LLM 호출 실패: attempts=%s error=%s",
                     attempt,
                     type(exc).__name__,
                 )
-                raise CustomerActionExtractionError(
-                    "customer_action 추출에 실패했습니다."
+                raise GuideSearchQueryExtractionError(
+                    "guide_search_query 분해에 실패했습니다."
                 ) from exc
 
-            valid_actions = []
-            for action in result.customer_actions:
-                if action.evidence not in user_answers:
+            valid_queries = []
+            seen_queries: set[str] = set()
+            for query in result.guide_search_queries:
+                # 이상한 증거를 가져왔을때 거를려고
+                if query.evidence not in user_answers:
                     logger.warning(
-                        "LLM 이 꾸며낸 응답이므로 패스합니다=%s"
+                        "원문에 없는 가이드 검색 질의 evidence를 버립니다: evidence=%s",
+                        query.evidence,
                     )
                     continue
-                valid_actions.append(action)
-            return CustomerActionExtractionResult(
-                customer_actions=valid_actions
+
+                title = query.title.strip()
+                search_query = " ".join(query.search_query.split())
+                if not title or not search_query:
+                    continue
+
+                #중복 검사 부분
+                normalized_query = _normalize_search_query(search_query)
+                # 만약 이미 쿼리 리스트에 있었다면 패스
+                if normalized_query in seen_queries:
+                    continue
+                # 쿼리 리스트에 저장 (seen_queries는 지금까지 쿼리 정보를 모아둔 사전 역할을 한다)
+                seen_queries.add(normalized_query)
+                valid_queries.append(
+                    # 기존 쿼리에서 evidence는 유지하고 title,search_query 만 정규화된 값으로 교체
+                    query.model_copy(
+                        update={
+                            "title": title,
+                            "search_query": search_query,
+                        }
+                    )
+                )
+            return GuideSearchQueryExtractionResult(
+                guide_search_queries=valid_queries
             )
 
-        raise AssertionError("고객 행동 추출 재시도 루프가 종료되었습니다.")
+        raise AssertionError("가이드 검색 질의 분해 재시도 루프가 종료되었습니다.")
 
 
 class FraudCircumstanceExtractor:
@@ -151,8 +176,14 @@ class FraudCircumstanceExtractor:
 
 __all__ = [
     "ChatbotExtractionError",
-    "CustomerActionExtractionError",
-    "CustomerActionExtractor",
     "FraudCircumstanceExtractionError",
     "FraudCircumstanceExtractor",
+    "GuideSearchQueryExtractionError",
+    "GuideSearchQueryExtractor",
 ]
+
+
+def _normalize_search_query(search_query: str) -> str:
+    """중복 비교를 위해 검색 질의의 공백과 대소문자를 정규화한다."""
+
+    return " ".join(search_query.split()).casefold()
