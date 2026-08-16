@@ -1,7 +1,5 @@
 """pyloader를 써서 적당히 임베딩"""
 import os
-from functools import lru_cache
-
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from pypdf import PdfReader
@@ -13,22 +11,16 @@ from app.data.model.cs_guide_document_chunk import CsGuideDocumentChunk
 
 load_dotenv()
 
-# 실제 임베딩 요청 전까지 OpenAI 클라이언트를 생성하지 않는다.
-@lru_cache(maxsize=1)
-def get_embedder() -> OpenAIEmbeddings:
-    """OpenAI 임베딩 클라이언트를 한 번 생성해 재사용한다."""
-    return OpenAIEmbeddings(model="text-embedding-3-small")
-
+# 1. 임베딩 모델 설정 (db 연결 정보는 app.core.db 가 DATABASE_URL 로 관리한다)
+embedder = OpenAIEmbeddings(model="text-embedding-3-small")
 
 def query_embedding(text: str)->list[float]:
     """사용자 질문에 대한 임베딩 (문서 임베딩이랑 구분해서 쓰기)"""
-    return get_embedder().embed_query(text)
-
+    return embedder.embed_query(text)
 
 def docs_embedding(texts: list[str])->list[list[float]]:
     """문서에 대한 임베딩"""
-    return get_embedder().embed_documents(texts)
-
+    return embedder.embed_documents(texts)
 
 def get_chunks_from_pdf(pdf_path, overlap_size=100) -> tuple[str, str, list[dict]]:
     """
