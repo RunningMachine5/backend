@@ -42,10 +42,17 @@ SQLAlchemy, SQLModel, langchain-openai.
 가이드 검색 질의 테이블로 교체한다. 자세한 완료 범위는
 [스키마 문서](schema.md#구현-상태)를 따른다.
 
-영속 스키마만 완료된 상태이며, **이를 사용하는 비즈니스 로직은 아직 없다.** 챗봇
-리포지토리도 없고 [app/api/chat.py](../../app/api/chat.py)에는 라우터만 남아 있다
-(세션 개념이 없던 `POST /chat/ask`와 그 Fake 체인
-`app/services/chatbot/customer_chatbot.py`는 제거했다).
+**상담 흐름은 세션 생성부터 상담사 반환까지 실제로 동작한다.** 챗봇 리포지토리
+([chat_session.py](../../app/repositories/chat_session.py)), 평가·추출 LLM 호출부와 RAG 응답
+조립(`app/services/chatbot/`), LangGraph 턴 파이프라인
+([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)),
+세션 생성·URL 발송([session_creator.py](../../app/services/chatbot/session_creator.py)),
+[2.8의 API 6종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
+Fake 체인 `app/services/chatbot/customer_chatbot.py`는 제거했다.
+
+**남은 것은 FDS 파이프라인 결합이다.** 이상거래 판정 시 세션 생성을 부르고 첫 상태 SSE를
+발행하는 경로가 아직 없어([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)), 지금은
+[테스트용 세션 생성](#테스트용-세션-생성) 스크립트로만 세션을 만든다.
 
 RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
@@ -155,6 +162,10 @@ uv run --env-file .env python -m scripts.create_chat_session <transaction_id>
 
 - 참: 고령자 전용 UI로 이동 (추후 구현)
 - 거짓: 기본 챗봇 UI로 이동
+
+접속 화면이 처음 부르는 것은 **본인인증 경로**이고, 세션 조회 경로는 인증을 마친 뒤의
+새로고침·재접속용이다. 둘의 응답은 같은 형태이며 최초 알림을 만드는 쪽은 본인인증뿐이다
+([2.8](#28-api-엔드포인트)).
 
 ### 2.3 최초 알림 메시지와 버튼
 
@@ -509,6 +520,33 @@ response = assemble(augmented, guidance)
 `chat_session_id`, 변경된 `status`를 포함하며 프론트는 `transaction_id`가 같은 목록 항목만
 갱신한다. 전체 `HANDOFF_REQUESTED` 세션 스냅샷은 조회하거나 선전송하지 않는다. MVP에서는
 in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 공유는 고려하지 않는다.
+
+### 2.8 API 엔드포인트
+
+2.2~2.7의 흐름을 HTTP로 옮긴 확정 형태다. 구현은
+[app/api/chat.py](../../app/api/chat.py)이고 Swagger(`/docs`)에 한국어 설명이 들어 있다.
+라우터는 쓰는 쪽이 달라 둘로 나눈다 — `/chat`은 고객 화면, `/agent`는 담당자 화면이다.
+
+**세션 생성 엔드포인트는 없다**([2.1](#21-채팅-세션-생성-및-이메일-전송)).
+
+| 메서드 · 경로 | 하는 일 | 절 |
+| --- | --- | --- |
+| `POST /chat/{chat_session_id}/verify` | 출생연도 4자리 본인인증. **고객이 처음 접속할 때 부르는 경로**이며 첫 진입이면 최초 알림을 만들어 함께 돌려준다 | [2.2](#22-채팅-접속-및-본인인증), [2.3](#23-최초-알림-메시지와-버튼) |
+| `GET /chat/{chat_session_id}` | 세션 상태와 대화 이력 조회. 인증을 마친 화면의 **새로고침·재접속 전용**이라 최초 알림을 만들지 않는다 | [2.2](#22-채팅-접속-및-본인인증) |
+| `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
+| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
+| `GET /agent/transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
+| `GET /agent/chat-sessions/events` | 상태 변경 SSE. 대시보드당 연결 하나 | [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
+
+- 응답은 레포 공통 봉투 `ApiResponse`(`success`/`data`/`error`)를 쓴다.
+- **현재 세션 상태에서 받을 수 없는 입력은 `409`다.** 버튼·답변 경로의 상태 조건이 그것이고,
+  판정에 따른 흐름 분기는 오류가 아니라 정상 응답이다.
+- 버튼·답변 응답의 `messages`는 **그 턴에 챗봇이 보낸 메시지 본문만** 담는다. 누적 이력은
+  세션 조회로 받는다.
+- 본인인증은 토큰을 발급하지 않으므로 `GET /chat/{chat_session_id}`를 포함한 나머지 경로에
+  인증 게이트가 없다. 세션 id를 아는 사람은 이력을 볼 수 있다([3.3](#33-보안운영)의 MVP 제외).
+- 트랜잭션은 라우터가 소유한다(`get_session`은 commit하지 않는다). 턴 실행의 커밋과 상태 변경
+  발행은 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 함께 처리한다.
 
 ---
 
