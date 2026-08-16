@@ -122,18 +122,34 @@ class ChatButtonAction(StrEnum):
 
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758326094&cot=14
 class ChatButtonActionRequest(BaseModel):
-    action: ChatButtonAction
+    """최초 알림 뒤 고객이 누른 버튼."""
+
+    action: ChatButtonAction = Field(
+        description=(
+            "`START_CHAT`(챗봇 상담 시작) / `REQUEST_HANDOFF`(상담사 연결) / "
+            "`END_CHAT`(상담 종료)"
+        ),
+    )
 
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758326541&cot=14
 class SendChatMessageRequest(BaseModel):
-    message_text: str = Field(min_length=1)
+    """고객이 질문에 답한 메시지 한 건."""
+
+    message_text: str = Field(
+        min_length=1,
+        description="고객이 입력한 답변 원문. 빈 문자열은 받지 않는다.",
+    )
 
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758326686&cot=14
 class ChatMessageResponse(BaseModel):
-    message_id: int = Field(gt=0)
-    sender_type: Literal["AI", "HUMAN", "SYSTEM"]
-    message_text: str
-    sent_at: datetime
+    """대화 이력에 쌓인 메시지 한 건."""
+
+    message_id: int = Field(gt=0, description="메시지 id. 이력 정렬 기준이다.")
+    sender_type: Literal["AI", "HUMAN", "SYSTEM"] = Field(
+        description="작성 주체. `AI`(챗봇) / `HUMAN`(고객) / `SYSTEM`(시스템 안내)",
+    )
+    message_text: str = Field(description="메시지 본문.")
+    sent_at: datetime = Field(description="메시지가 기록된 시각(UTC).")
 
 
 class ChatVerifyRequest(BaseModel):
@@ -142,29 +158,65 @@ class ChatVerifyRequest(BaseModel):
     실패 횟수 제한·URL 토큰·세션 TTL 은 MVP 범위 밖이다(PRD 3.3).
     """
 
-    birth_year: str = Field(pattern=r"^\d{4}$")
+    birth_year: str = Field(
+        pattern=r"^\d{4}$",
+        description="고객 출생연도 4자리. 거래 고객의 생년월일과 대조한다.",
+        examples=["1958"],
+    )
 
 
 class ChatSessionDetailResponse(BaseModel):
     """고객 화면이 접속·재접속 시 받는 세션 상태와 대화 이력."""
 
-    chat_session_id: str = Field(min_length=1, max_length=64)
-    transaction_id: int = Field(gt=0)
-    status: ChatSessionStatusValue
+    chat_session_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="채팅 세션 id.",
+    )
+    transaction_id: int = Field(gt=0, description="이 상담이 다루는 거래 id.")
+    status: ChatSessionStatusValue = Field(
+        description=(
+            "세션 상태. `URL_SENT`(접속 전) / `IN_PROGRESS`(상담 중) / "
+            "`HANDOFF_REQUESTED`(상담사 연결 대기) / `DONE`(종료) / `FAILED`(실패)"
+        ),
+    )
     # 참이면 고령자 전용 UI 로 간다(PRD 2.2). 화면 분기는 프론트가 한다.
-    is_older: bool
-    question_step: int = Field(ge=0)
-    messages: list[ChatMessageResponse]
+    is_older: bool = Field(
+        description="참이면 고령자 전용 UI 로 분기한다(화면 분기는 프론트가 한다).",
+    )
+    question_step: int = Field(
+        ge=0,
+        description="진행 중인 질문 번호. 0 이면 아직 첫 질문을 내보내지 않았다.",
+    )
+    messages: list[ChatMessageResponse] = Field(
+        description="이 세션의 전체 대화 이력(오래된 순).",
+    )
 
 
 class ChatTurnResponse(BaseModel):
     """버튼 선택·고객 답변 한 턴의 결과."""
 
-    chat_session_id: str = Field(min_length=1, max_length=64)
-    status: ChatSessionStatusValue
-    question_step: int = Field(ge=0)
+    chat_session_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="채팅 세션 id.",
+    )
+    status: ChatSessionStatusValue = Field(
+        description="이 턴을 처리한 뒤의 세션 상태.",
+    )
+    question_step: int = Field(
+        ge=0,
+        description=(
+            "이 턴을 처리한 뒤의 질문 번호. 재질문 턴에서는 값이 그대로 유지된다."
+        ),
+    )
     # 이번 턴에 챗봇이 보낸 메시지 본문. 대화 이력은 이미 chat_messages 에 저장돼 있다.
-    messages: list[str]
+    messages: list[str] = Field(
+        description=(
+            "이번 턴에 챗봇이 보낸 메시지 본문만 담는다(누적 이력이 아니다). "
+            "전체 이력은 `GET /chat/{chat_session_id}` 로 받는다."
+        ),
+    )
 
 
 class TransactionChatSessionStatusResponse(BaseModel):
@@ -173,17 +225,30 @@ class TransactionChatSessionStatusResponse(BaseModel):
     세션이 아직 없는 거래는 두 필드가 모두 ``null`` 이다.
     """
 
-    transaction_id: int = Field(gt=0)
-    chat_session_id: str | None = None
-    status: ChatSessionStatusValue | None = None
+    transaction_id: int = Field(gt=0, description="조회한 거래 id.")
+    chat_session_id: str | None = Field(
+        default=None,
+        description="연결된 채팅 세션 id. 세션이 없으면 `null`.",
+    )
+    status: ChatSessionStatusValue | None = Field(
+        default=None,
+        description="세션의 현재 상태. 세션이 없으면 `null`.",
+    )
 
 
 class ChatSessionStatusChangedEventPayload(BaseModel):
     """담당자 화면에 전달하는 채팅 세션 상태 변경 SSE 이벤트."""
 
-    transaction_id: int = Field(gt=0)
-    chat_session_id: str = Field(min_length=1, max_length=64)
-    status: ChatSessionStatusValue
+    transaction_id: int = Field(
+        gt=0,
+        description="갱신할 거래 목록 항목의 거래 id.",
+    )
+    chat_session_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="상태가 바뀐 채팅 세션 id.",
+    )
+    status: ChatSessionStatusValue = Field(description="변경된 뒤의 세션 상태.")
 
 
 @dataclass(frozen=True, slots=True)
