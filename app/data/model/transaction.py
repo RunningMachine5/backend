@@ -88,10 +88,9 @@ class Transaction(SQLModel, table=True):
         max_length=255,
         index=True,
     )
-    recipient_account_number: str | None = Field(
-        default=None,
+    recipient_account_number: str = Field(
         foreign_key="accounts.account_number",
-        ondelete="SET NULL",
+        ondelete="RESTRICT",
         max_length=255,
         index=True,
     )
@@ -125,7 +124,6 @@ class Transaction(SQLModel, table=True):
         default=None,
         sa_column=Column(MACADDR_COLUMN, nullable=True),
     )
-    location: str = Field(sa_column=Column(Text, nullable=False))
     location_lat: float | None = Field(
         default=None,
         sa_column=Column(Float, nullable=True),
@@ -142,6 +140,11 @@ class Transaction(SQLModel, table=True):
     flag_terminal_malicious_behavior_3: bool
     flag_terminal_malicious_behavior_5: bool
     flag_terminal_malicious_behavior_6: bool
+
+    transaction_failure_status: bool
+    error_code: str | None = Field(
+        default=None
+    )
 
     created_at: datetime = Field(
         default_factory=datetime.now,

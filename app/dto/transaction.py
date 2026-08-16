@@ -10,14 +10,13 @@ class TransactionRequestDTO(BaseModel):
     외부 클라이언트가 보내는 거래 원시 데이터.
     계좌 정보와 단말기에서 감지할 수 있는 정보들이 들어온다.
     """
-
     model_config = ConfigDict(extra="forbid")
 
     # ATM·지점 거래는 고객 식별자가 전달되지 않을 수 있다.
     customer_id: str | None = Field(default=None, min_length=1, max_length=64)
     source_account_number: str = Field(min_length=8, max_length=32)
     # ATM 입금은 상대 계좌가 없을 수 있다.
-    recipient_account_number: str | None = Field(
+    recipient_account_number: str = Field(
         default=None,
         min_length=8,
         max_length=32,
