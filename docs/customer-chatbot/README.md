@@ -42,10 +42,17 @@ SQLAlchemy, SQLModel, langchain-openai.
 가이드 검색 질의 테이블로 교체한다. 자세한 완료 범위는
 [스키마 문서](schema.md#구현-상태)를 따른다.
 
-영속 스키마만 완료된 상태이며, **이를 사용하는 비즈니스 로직은 아직 없다.** 챗봇
-리포지토리도 없고 [app/api/chat.py](../../app/api/chat.py)에는 라우터만 남아 있다
-(세션 개념이 없던 `POST /chat/ask`와 그 Fake 체인
-`app/services/chatbot/customer_chatbot.py`는 제거했다).
+**상담 흐름은 세션 생성부터 상담사 반환까지 실제로 동작한다.** 챗봇 리포지토리
+([chat_session.py](../../app/repositories/chat_session.py)), 평가·추출 LLM 호출부와 RAG 응답
+조립(`app/services/chatbot/`), LangGraph 턴 파이프라인
+([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)),
+세션 생성·URL 발송([session_creator.py](../../app/services/chatbot/session_creator.py)),
+[2.8의 API 6종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
+Fake 체인 `app/services/chatbot/customer_chatbot.py`는 제거했다.
+
+**남은 것은 FDS 파이프라인 결합이다.** 이상거래 판정 시 세션 생성을 부르고 첫 상태 SSE를
+발행하는 경로가 아직 없어([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)), 지금은
+[테스트용 세션 생성](#테스트용-세션-생성) 스크립트로만 세션을 만든다.
 
 RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
@@ -61,10 +68,14 @@ RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbo
 FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 세션 생성 함수를 호출한다.
 거래 하나당 채팅 세션은 하나이며, 하나의 거래는 한 번만 판단된다.
 
-| DTO | 내용 |
+**세션 생성은 HTTP 엔드포인트로 열지 않는다.** 호출자는 FDS 파이프라인뿐이므로
+[session_creator.py](../../app/services/chatbot/session_creator.py)의
+`ChatSessionCreator.create`를 함수로 부른다. 사기 판정을 기다리지 않고 접속 URL이 필요한
+로컬·데모 상황은 [테스트용 세션 생성](#테스트용-세션-생성)의 스크립트가 대신한다.
+
+| 입력 | 내용 |
 | --- | --- |
 | `CreateChatRequest` | 거래 id, 상위 2개 사기유형 코드 `top_fraud_types`(선택) |
-| `CreateChatResponse` | 생성된 채팅 세션 id |
 
 `top_fraud_types`는 룰 채점 결과(`rule_scores`)의 점수 내림차순 상위 2개 사기유형
 코드다([스키마 3.1](schema.md#31-사기-유형)의 4종 중 서로 다른 2개).
@@ -84,13 +95,27 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 
 #### 발송 구현과 기본 주소 폴백
 
-실제 메일 API는 아직 연동하지 않는다. **어떤 주소로 어떤 URL을 보냈는지 콘솔에 출력**해
-로컬·데모에서 눈으로 확인한다. (아직 미구현)
+**SMTP로 실제 발송한다.** Agent의 이상거래 안내 메일이 이미 쓰고 있는
+[`SmtpEmailMessageSender`](../../app/services/agent/email_sender.py)(`SMTP_*` env var)를 그대로
+재사용하고, 챗봇 세션 메일의 제목·본문은 [B.7](messages.md#b7-챗봇-접속-안내-이메일)이다.
+메시지 조립과 발송은 [session_url_mailer.py](../../app/services/chatbot/session_url_mailer.py),
+세션 생성과 상태 기록은 [session_creator.py](../../app/services/chatbot/session_creator.py)가 맡는다.
+
+어떤 주소로 어떤 URL을 보냈는지는 로컬·데모에서 눈으로 확인할 수 있도록 로그로 남긴다.
 
 ```
 [챗봇 URL 발송] 수신자=hong@example.com 세션=chat-2026-0001 URL=http://localhost:8000/chat/chat-2026-0001
 [챗봇 URL 발송] 수신자=abcd@kosa.com (기본 주소) 세션=chat-2026-0002 URL=http://localhost:8000/chat/chat-2026-0002
 ```
+
+**발송에 실패하면 세션은 남기고 `status = FAILED`로 둔다.** 고객이 URL을 받지 못했으므로
+`URL_SENT`라고 기록할 수 없고, 세션 행 자체를 지우면 담당자가 발송 실패 사실을 볼 수 없다.
+`email_sent_at`은 비우고 `notified_email`에는 시도한 주소를 남긴다
+([스키마 3.3](schema.md#33-챗봇-상태-정의)). SMTP 예외는 호출부로 전파하지 않는다 —
+FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을 막지 않는다"와 같은 원칙이다.
+
+`CHAT_BASE_URL`은 **고객이 브라우저로 여는 챗봇 화면의 주소**다. 챗봇 UI를 프론트가 서빙하면
+기본값(`http://localhost:8000`)이 아니라 프론트 주소를 넣어야 한다.
 
 `customers.email`은 nullable이고 **거래 수집 경로가 이메일을 채우지 않으면 항상 `NULL`이다**
 ([스키마 3.9](schema.md#39-customersemail-확보-경로) 참고). 주소가 없다는 이유로 안내를 건너뛰면 챗봇이
@@ -105,6 +130,27 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 - 기본 주소로 보냈는지는 세션의 `notified_email`을 `customers.email`과 비교해 구분한다.
   **폴백은 데모용 임시 조치이지 이메일 확보의 대체재가 아니다**([스키마 3.9](schema.md#39-customersemail-확보-경로)).
 
+#### 테스트용 세션 생성
+
+세션 생성 경로가 FDS 파이프라인뿐이라 로컬에서 화면을 확인하려면 이상거래 판정을 기다려야
+한다. 임의 거래로 접속 URL을 뽑는 용도로
+[scripts/create_chat_session.py](../../scripts/create_chat_session.py)를 둔다. 레포 루트에서
+모듈로 실행한다.
+
+```bash
+uv run --env-file .env python -m scripts.create_chat_session <transaction_id>
+```
+
+- `--no-email` — SMTP를 부르지 않고 URL만 출력한다. SMTP 설정이 없는 로컬에서도 상태가
+  `FAILED`로 떨어지지 않는다.
+- `--top-fraud-types FIRST SECOND` — 유형판별 질문([2.4](#유형판별-질문))을 확인할 때 쓴다.
+- `--recreate` — 생성이 멱등이라 같은 거래로 다시 돌리면 기존 URL이 나온다. 새 대화로 다시
+  시작하려면 이 플래그로 기존 세션과 대화 이력을 지우고 만든다.
+
+**운영에서 쓰지 않는다.** 서버와 다른 프로세스라 in-process 브로커에 상태 변경을 발행하지
+못하므로([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)) 담당자 화면에는 SSE 이벤트가
+뜨지 않는다. 거래별 상태 조회로 새로고침하면 보인다.
+
 ### 2.2 채팅 접속 및 본인인증
 
 고객은 이메일로 채팅에 접속한 뒤 본인인증을 진행한다(출생연도 4자리 인증을 넣는 간이 방식).
@@ -116,6 +162,10 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 
 - 참: 고령자 전용 UI로 이동 (추후 구현)
 - 거짓: 기본 챗봇 UI로 이동
+
+접속 화면이 처음 부르는 것은 **본인인증 경로**이고, 세션 조회 경로는 인증을 마친 뒤의
+새로고침·재접속용이다. 둘의 응답은 같은 형태이며 최초 알림을 만드는 쪽은 본인인증뿐이다
+([2.8](#28-api-엔드포인트)).
 
 ### 2.3 최초 알림 메시지와 버튼
 
@@ -461,10 +511,42 @@ response = assemble(augmented, guidance)
 프론트에는 거래 목록이 있고 각 항목이 `transaction_id`를 알고 있으므로 최초 접속과 SSE
 재연결 시 각 거래에 연결된 채팅 세션의 현재 상태를 개별 조회한다.
 
+세션 생성 직후의 첫 상태(`URL_SENT`, 발송 실패면 `FAILED`)는 **세션을 만든 쪽이 커밋한 뒤**
+발행한다. 세션 생성 HTTP 경로가 없으므로([2.1](#21-채팅-세션-생성-및-이메일-전송)) 이 발행
+책임은 FDS 파이프라인에 있다. 턴 실행 중의 전이는
+[customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 발행한다.
+
 이후 상태 변경은 대시보드가 SSE 연결 하나로 수신한다. 이벤트는 `transaction_id`,
 `chat_session_id`, 변경된 `status`를 포함하며 프론트는 `transaction_id`가 같은 목록 항목만
 갱신한다. 전체 `HANDOFF_REQUESTED` 세션 스냅샷은 조회하거나 선전송하지 않는다. MVP에서는
 in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 공유는 고려하지 않는다.
+
+### 2.8 API 엔드포인트
+
+2.2~2.7의 흐름을 HTTP로 옮긴 확정 형태다. 구현은
+[app/api/chat.py](../../app/api/chat.py)이고 Swagger(`/docs`)에 한국어 설명이 들어 있다.
+라우터는 쓰는 쪽이 달라 둘로 나눈다 — `/chat`은 고객 화면, `/agent`는 담당자 화면이다.
+
+**세션 생성 엔드포인트는 없다**([2.1](#21-채팅-세션-생성-및-이메일-전송)).
+
+| 메서드 · 경로 | 하는 일 | 절 |
+| --- | --- | --- |
+| `POST /chat/{chat_session_id}/verify` | 출생연도 4자리 본인인증. **고객이 처음 접속할 때 부르는 경로**이며 첫 진입이면 최초 알림을 만들어 함께 돌려준다 | [2.2](#22-채팅-접속-및-본인인증), [2.3](#23-최초-알림-메시지와-버튼) |
+| `GET /chat/{chat_session_id}` | 세션 상태와 대화 이력 조회. 인증을 마친 화면의 **새로고침·재접속 전용**이라 최초 알림을 만들지 않는다 | [2.2](#22-채팅-접속-및-본인인증) |
+| `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
+| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
+| `GET /agent/transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
+| `GET /agent/chat-sessions/events` | 상태 변경 SSE. 대시보드당 연결 하나 | [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
+
+- 응답은 레포 공통 봉투 `ApiResponse`(`success`/`data`/`error`)를 쓴다.
+- **현재 세션 상태에서 받을 수 없는 입력은 `409`다.** 버튼·답변 경로의 상태 조건이 그것이고,
+  판정에 따른 흐름 분기는 오류가 아니라 정상 응답이다.
+- 버튼·답변 응답의 `messages`는 **그 턴에 챗봇이 보낸 메시지 본문만** 담는다. 누적 이력은
+  세션 조회로 받는다.
+- 본인인증은 토큰을 발급하지 않으므로 `GET /chat/{chat_session_id}`를 포함한 나머지 경로에
+  인증 게이트가 없다. 세션 id를 아는 사람은 이력을 볼 수 있다([3.3](#33-보안운영)의 MVP 제외).
+- 트랜잭션은 라우터가 소유한다(`get_session`은 commit하지 않는다). 턴 실행의 커밋과 상태 변경
+  발행은 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 함께 처리한다.
 
 ---
 
@@ -579,6 +661,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [B.4](messages.md#b4-다음-질문-전환-안내) | 다음 질문 전환 안내 | 재시도 소진·[평가 LLM 실패](#평가-llm-실패-시-동작) |
 | [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내) | 안내를 만들지 못한 가이드 검색 질의 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
 | [B.6](messages.md#b6-상담-종료-요청-시-상담사-연결-안내) | 상담 종료 요청 시 상담사 연결 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
+| [B.7](messages.md#b7-챗봇-접속-안내-이메일) | 챗봇 접속 안내 이메일 | [2.1 발송 구현](#발송-구현과-기본-주소-폴백) |
 
 ### [DB·스키마](schema.md) · [내부 채점표](scoring.md)
 

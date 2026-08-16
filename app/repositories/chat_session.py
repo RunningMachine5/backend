@@ -51,6 +51,7 @@ class ChatSessionRepository:
         chat_session_id: str,
         transaction_id: int,
         top_fraud_types: list[str] | None = None,
+        is_older: bool = False,
     ) -> ChatSession:
         """
         거래에 연결된 세션이 있으면 반환하고, 없으면 새로 추가한다.
@@ -69,6 +70,7 @@ class ChatSessionRepository:
             top_fraud_types=(
                 list(top_fraud_types) if top_fraud_types is not None else None
             ),
+            is_older=is_older,
         )
         self.session.add(chat_session)
         return chat_session
@@ -161,6 +163,19 @@ class ChatSessionRepository:
         chat_session.last_message_id = message.message_id
         self.session.add(chat_session)
         return message
+
+    def list_messages(self, chat_session: ChatSession) -> list[ChatMessage]:
+        """세션의 대화 이력을 보낸 순서대로 조회한다(고객 화면 재접속용)."""
+
+        return list(
+            self.session.exec(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.chat_session_id == chat_session.chat_session_id
+                )
+                .order_by(ChatMessage.message_id)
+            ).all()
+        )
 
     def add_answer(
         self,

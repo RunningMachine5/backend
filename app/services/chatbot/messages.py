@@ -47,6 +47,27 @@ WANT_END_HANDOFF_MESSAGE = (
     " 정확한 안내를 위해 상담사를 연결해드릴게요. 잠시만 기다려주세요."
 )
 
+# B.7 챗봇 접속 안내 이메일 — 대화창이 아니라 메일 본문으로 나가는 유일한 문구다.
+CHAT_URL_EMAIL_SUBJECT = "[FDShield] 거래 확인이 필요합니다"
+# 고객명을 알 수 없을 때 쓰는 값. "고객님"으로 읽힌다.
+CHAT_URL_EMAIL_DEFAULT_CUSTOMER_NAME = "고객"
+CHAT_URL_EMAIL_BODY_TEMPLATE = Template(
+    "안녕하세요, $customer_name님.\n"
+    "최근 거래에서 전자금융사고 예방을 위한 확인 필요 사항이 발생하여"
+    " 해당 거래를 현재 일시적으로 처리 보류 중입니다.\n"
+    "\n"
+    "거래 일시: $transaction_datetime\n"
+    "거래 금액: $transaction_amount $transaction_direction\n"
+    "\n"
+    "아래 주소에서 거래 확인과 금융사기 대응 안내를 받으실 수 있습니다.\n"
+    "$chat_url\n"
+    "\n"
+    "접속 후 본인 확인을 위해 출생연도 4자리를 입력해 주세요.\n"
+    "\n"
+    "본인이 하지 않은 거래라면 금융회사 공식 고객센터로 즉시 신고해 주세요.\n"
+    "FDShield는 이메일로 비밀번호나 인증번호를 요구하지 않습니다.\n"
+)
+
 
 def render_initial_notification(
     *,
@@ -59,15 +80,53 @@ def render_initial_notification(
     치환값의 표기 형식은 설계 문서가 정하지 않아 여기서 고정한다.
     """
 
-    direction = "출금" if transaction_amount < 0 else "입금"
     return INITIAL_NOTIFICATION_TEMPLATE.substitute(
-        transaction_datetime=transaction_datetime.strftime("%Y-%m-%d %H:%M"),
-        transaction_amount=f"{abs(transaction_amount):,}원",
-        transaction_direction=direction,
+        transaction_datetime=_format_datetime(transaction_datetime),
+        transaction_amount=_format_amount(transaction_amount),
+        transaction_direction=_format_direction(transaction_amount),
     )
 
 
+def render_chat_url_email_body(
+    *,
+    customer_name: str | None,
+    transaction_datetime: datetime,
+    transaction_amount: int,
+    chat_url: str,
+) -> str:
+    """B.7 이메일 본문을 거래 원장 값과 세션 접속 URL로 채운다.
+
+    거래시각·거래금액·입금/출금 표기는 B.1과 같다.
+    """
+
+    name = (customer_name or "").strip() or CHAT_URL_EMAIL_DEFAULT_CUSTOMER_NAME
+    return CHAT_URL_EMAIL_BODY_TEMPLATE.substitute(
+        customer_name=name,
+        transaction_datetime=_format_datetime(transaction_datetime),
+        transaction_amount=_format_amount(transaction_amount),
+        transaction_direction=_format_direction(transaction_amount),
+        chat_url=chat_url,
+    )
+
+
+def _format_datetime(transaction_datetime: datetime) -> str:
+    return transaction_datetime.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_amount(transaction_amount: int) -> str:
+    return f"{abs(transaction_amount):,}원"
+
+
+def _format_direction(transaction_amount: int) -> str:
+    """음수=출금, 양수=입금 (PRD 2.3)."""
+
+    return "출금" if transaction_amount < 0 else "입금"
+
+
 __all__ = [
+    "CHAT_URL_EMAIL_BODY_TEMPLATE",
+    "CHAT_URL_EMAIL_DEFAULT_CUSTOMER_NAME",
+    "CHAT_URL_EMAIL_SUBJECT",
     "END_CHAT_MESSAGE",
     "HANDOFF_WAITING_MESSAGE",
     "INITIAL_NOTIFICATION_TEMPLATE",
@@ -75,5 +134,6 @@ __all__ = [
     "TOO_VAGUE_MESSAGE",
     "UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE",
     "WANT_END_HANDOFF_MESSAGE",
+    "render_chat_url_email_body",
     "render_initial_notification",
 ]

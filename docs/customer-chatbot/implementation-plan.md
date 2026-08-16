@@ -83,8 +83,9 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
   - `CHAT_LLM_TIMEOUT_SECONDS`, `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용
 - [x] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
-  - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) /
-    `CreateChatResponse`(세션 id) — PRD 2.1의 표 그대로
+  - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) — PRD 2.1의 표.
+    세션 생성이 HTTP 경로를 갖지 않게 되면서 요청 본문이 아니라 생성 함수의 입력 검증이
+    됐고, 짝이던 `CreateChatResponse`는 7단계에서 제거했다
   - 평가 판정 결과 DTO — `SUFFICIENT`/`TOO_VAGUE`/`WANT_END`
   - 가이드 검색 질의 구조화 출력 — `title`, `search_query`, `evidence`와 최대 5개 제한
   - 사기 정황 `type`은 `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로 화이트리스트 강제
@@ -228,29 +229,44 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 **참조**: [PRD 2.1~2.3](README.md#21-채팅-세션-생성-및-이메일-전송), [PRD 2.7](README.md#27-상담사-반환-경로-거래별-상태-조회--sse),
 [스키마 3.9](schema.md#39-customersemail-확보-경로)
 
-- [ ] 세션 생성 + 발송 서비스 (`app/services/chatbot/session_creator.py` 가칭):
+- [x] 세션 생성 + 발송 서비스 ([session_creator.py](../../app/services/chatbot/session_creator.py)):
   - 멱등 생성(3단계) → `is_older` 판정(`customers.birth_date` 출생연도 기준 60세 이상)
-  - 메일 API 미연동: **콘솔 출력** (PRD 2.1의 형식 그대로)
+  - **콘솔 출력이 아니라 SMTP 실발송으로 확정했다.** Agent가 쓰는
+    `SmtpEmailMessageSender`를 재사용하고 메시지 조립은
+    [session_url_mailer.py](../../app/services/chatbot/session_url_mailer.py)가 맡는다.
+    발송 실패는 예외를 삼키고 `status = FAILED`. → README 2.1 "발송 구현과 기본 주소 폴백"에
+    반영 완료
   - 폴백: `customers.email`이 `NULL`·빈 문자열·공백뿐이면 `CHAT_FALLBACK_EMAIL`로.
     URL은 `CHAT_BASE_URL + /chat/{chat_session_id}`. `notified_email`·`email_sent_at` 기록,
     `status = URL_SENT`
-- [ ] [app/api/chat.py](../../app/api/chat.py) 재작성 — 엔드포인트 형태는 설계 문서에 없으므로
-  아래는 초안이며 **확정되는 대로 README에 반영한다** (9단계):
-  - `POST /chat/sessions` — 세션 생성 (`CreateChatRequest` → `CreateChatResponse`)
+- [x] [app/api/chat.py](../../app/api/chat.py) 재작성 — 엔드포인트 형태는 설계 문서에 없었으므로
+  초안으로 만들었고, 확정된 형태를 README에 반영했다:
+  - ~~`POST /chat/sessions`~~ — **만들지 않는다.** 세션 생성의 호출자는 FDS 파이프라인뿐이라
+    함수 호출로 충분하다(PRD 2.1). 초안 단계에서 한 번 만들었다가 제거했다. 로컬에서 접속
+    URL이 필요하면 [scripts/create_chat_session.py](../../scripts/create_chat_session.py)를
+    쓴다(PRD 2.1 테스트용 세션 생성)
   - `POST /chat/{chat_session_id}/verify` — 출생연도 4자리 간이 본인인증
     (실패 횟수 제한·토큰·TTL 없음 — PRD 3.3의 MVP 제외 그대로)
   - `GET /chat/{chat_session_id}` — 세션 상태 + 메시지 이력 (접속, `is_older` 포함)
   - `POST /chat/{chat_session_id}/actions` — 버튼 3종
   - `POST /chat/{chat_session_id}/messages` — 고객 답변 → 파이프라인 실행 → 챗봇 응답
   - (기존 `POST /chat/ask`는 6단계 정리에서 이미 제거했다)
-- [ ] 담당자 거래 목록에서 각 `transaction_id`에 연결된 채팅 세션 상태 조회 API
-- [ ] SSE — `GET /agent/chat-sessions/events` (`text/event-stream`):
+  - 확정된 엔드포인트 6종은 [README 2.8](README.md#28-api-엔드포인트)에 표로 남겼고,
+    Swagger(`/docs`)에 한국어 summary·description·오류 예시를 달았다
+- [x] 담당자 거래 목록에서 각 `transaction_id`에 연결된 채팅 세션 상태 조회 API
+- [x] SSE — `GET /agent/chat-sessions/events` (`text/event-stream`):
   - 대시보드당 연결 하나로 모든 세션 상태 변경을 수신하고 `transaction_id`로 목록 항목 갱신
   - 페이로드는 `transaction_id`/`chat_session_id`/`status`
   - 전체 세션 스냅샷은 보내지 않음. 최초 접속·재연결 시 거래별 상태 조회로 현재값 복구
   - in-process pub/sub (다중 인스턴스 미고려, MVP 전제)
-- [ ] 테스트 `tests/test_chat_api.py`: TestClient로 생성 멱등·본인인증·버튼 상태 전이·폴백
-  이메일(콘솔 출력 검증), 거래별 세션 상태 조회·SSE 상태 변경 이벤트
+- [x] 테스트 [tests/test_chat_api.py](../../tests/test_chat_api.py): TestClient로 본인인증·버튼
+  상태 전이, 상태에 맞지 않는 입력의 `409`, 거래별 세션 상태 조회, 상태 변경 SSE 프레임.
+  세션 생성 멱등·폴백 이메일은 `tests/test_chat_session_creator.py`가, 스크립트 인자 계약은
+  `tests/test_create_chat_session_script.py`가 맡는다
+  - **SSE 만 TestClient 로 열지 않는다.** 끝나지 않는 스트림이라 `client.stream(...)` 이
+    연결을 닫을 때 매달린다. 라우터가 만든 응답 본문 이터레이터를 직접 읽어 프레임을 본다
+  - 평가 LLM 이 필요한 턴은 파이프라인이 지연 생성하는 `AnswerEvaluator` 자리를 대역으로
+    바꾼다. 라우터에 서비스 주입 지점이 없어 생성자 주입 대신 패치를 쓴다
 
 ## 8단계 — FDS 파이프라인 결합
 
@@ -261,6 +277,18 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   원칙**으로, 세션 생성 실패는 로그만 남기고 거래 저장을 롤백하지 않는다.
   룰 채점 결과 점수 내림차순 상위 2개를 `top_fraud_types`로 전달하고, 룰 채점이 실패한
   거래는 생략한다(일반 질문 폴백, PRD 2.4)
+- [ ] **첫 상태 SSE 발행도 파이프라인이 맡는다.** 커밋한 뒤 새로 만든 세션에 대해
+  `chat_session_event_broker.publish_status_changed`를 부른다(`URL_SENT` 또는 발송 실패 시
+  `FAILED`). 7단계의 세션 생성 엔드포인트가 하던 일이며, 그 엔드포인트를 없앴으므로
+  지금은 발행 주체가 없다(PRD 2.7)
+- [ ] **고객 안내 메일은 한 통으로 합친다.** Agent 워크플로가 이미
+  [`_send_alert_email`](../../app/services/agent/workflow.py#L313)로 이상거래 안내 메일을
+  보내고 있고, 그 본문의 챗봇 링크는 `CUSTOMER_CHATBOT_URL` env의 **세션 id 없는 고정 주소**다.
+  Agent가 세션을 먼저 만들고(멱등) 그 `/chat/{chat_session_id}` URL을 `chatbot_url`로 넘겨
+  **Agent 메일 한 통에 세션 URL이 담기게 한다.** 이때 함께 정리할 것:
+  - `AgentEmailRepository.get_email_context`가 `customers.email`이 없으면 `None`을 돌려주고
+    조용히 미발송한다. 챗봇 폴백 규칙(PRD 2.1)에 맞춰 `CHAT_FALLBACK_EMAIL`로 보내도록 고친다
+  - 세션 생성 시점의 B.7 단독 발송과 중복되지 않도록 발송 지점을 한 곳으로 정한다
 - [ ] 멱등이므로 `rule_replay` 재처리 경로에서 중복 세션이 생기지 않음을 테스트로 고정
 - [ ] 발송이 콘솔 출력뿐이라 동기 호출 지연은 무시 가능. 실제 메일 연동 시 비동기화 재검토
   (README 3.3에 남긴다)
@@ -275,10 +303,10 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 | ~~README 2.4 / 3.1~~ | ~~평가 LLM 실패 폴백 확정 (env var 이름, `EVALUATOR_FAILED` 진행)~~ — 6단계에서 반영 완료 |
 | ~~README 2.5~~ | ~~검색·생성 실패 폴백~~ — 5단계에서 반영 완료 |
 | ~~messages.md B.1 / B.4~~ | ~~B.1 치환 표기 형식, B.4를 재시도 소진·평가 장애 공통 전이 안내로 확정~~ — 반영 완료 |
-| README 2.1 / 신규 절 | API 엔드포인트 형태 확정본 |
+| ~~README 2.1 / 신규 절~~ | ~~API 엔드포인트 형태 확정본~~ — 7단계에서 [2.8 신설](README.md#28-api-엔드포인트)로 반영 완료 |
 | README 3.3 | FDS 결합 방식 확정 (동기 + 실패 무시 + 멱등), 미해결에서 제거 |
 | README 3.4 | `transaction_amount` 부호 제약 해소 반영 (`ml_prediction.py:69` 참조도 갱신) |
-| README 1.3 / schema.md 구현 상태 | "비즈니스 로직 없음" 문구를 단계 진행에 맞춰 갱신 |
+| ~~README 1.3~~ / schema.md 구현 상태 | ~~"비즈니스 로직 없음" 문구~~ — README 1.3 은 7단계에서 갱신 완료. schema.md 구현 상태는 남아 있다 |
 | README 4 색인 | 절 구성이 바뀌면 색인·상호 링크 정리 (`erd.md` 부재 처리 포함) |
 | messages.md / prompts.md | 구현 중 문구·프롬프트가 바뀌었을 때만 |
 
@@ -295,6 +323,9 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 - `is_adopted`: `SUFFICIENT`와 재시도 초과에만 `true` (README 2.4 `is_adopted`를 세우는 판정)
 - 재시도 초과 턴의 고객 출력: B.4 다음 질문 전환 안내 (messages.md B.4)
 - FDS 결합: 동기 호출 + 실패 시 거래 저장 유지 + 멱등 (PRD 3.3의 원칙 문장 그대로)
+- 고객 안내 메일: **Agent 이상거래 안내 메일에 세션 URL을 주입해 한 통으로 보낸다**(8단계).
+  두 통(Agent 고정 URL + 챗봇 B.7)을 보내지 않고, 세션 생성이 멱등이라 누가 먼저
+  만들든 같은 세션 URL이 나간다
 - SSE: 대시보드당 연결 하나 + in-process pub/sub, 재연결 시 거래별 상태 재조회 (PRD 2.7)
 
 ## 이번 범위에서 제외 (설계 문서가 MVP 제외로 명시한 것)
