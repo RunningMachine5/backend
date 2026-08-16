@@ -32,9 +32,7 @@ END_CHAT_MESSAGE = (
 
 # B.3 평가 판정별 안내 — SUFFICIENT는 문구가 없고 WANT_END는 B.6을 쓴다.
 TOO_VAGUE_MESSAGE = "좀 더 구체적으로 다시 말해주실 수 있을까요?"
-NON_ANSWER_MESSAGE = (
-    "이해하지 못했어요, 질문과 관련된 내용으로 다시 말해주실 수 있을까요?"
-)
+# B.4 재시도 소진 또는 평가 LLM 장애 시 다음 질문 전환 안내
 NEXT_QUESTION_MESSAGE = "알겠습니다 다음 질문을 할게요"
 
 # B.5 안내를 만들지 못한 가이드 검색 질의 — 검색 0건이거나 Generate가 답하지 못한 경우
@@ -74,7 +72,6 @@ __all__ = [
     "HANDOFF_WAITING_MESSAGE",
     "INITIAL_NOTIFICATION_TEMPLATE",
     "NEXT_QUESTION_MESSAGE",
-    "NON_ANSWER_MESSAGE",
     "TOO_VAGUE_MESSAGE",
     "UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE",
     "WANT_END_HANDOFF_MESSAGE",

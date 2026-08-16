@@ -50,7 +50,6 @@ from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
     HANDOFF_WAITING_MESSAGE,
     NEXT_QUESTION_MESSAGE,
-    NON_ANSWER_MESSAGE,
     TOO_VAGUE_MESSAGE,
     WANT_END_HANDOFF_MESSAGE,
 )
@@ -66,7 +65,7 @@ class FakeEvaluator:
 
     def __init__(self, *verdicts: AnswerQualityVerdict) -> None:
         self.outcomes = [
-            AnswerEvaluationOutcome(routing_verdict=verdict, quality_verdict=verdict)
+            AnswerEvaluationOutcome(quality_verdict=verdict)
             for verdict in verdicts
         ]
         self.calls: list[tuple[str, str]] = []
@@ -393,14 +392,15 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         self.assertEqual(result.question_step, 1)
         self.assertFalse(self._answers()[0].is_adopted)
 
-    def test_non_answer_uses_its_own_reask_message(self) -> None:
+    def test_refusal_like_answer_uses_too_vague_reask(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.NON_ANSWER)
+            evaluator=FakeEvaluator(AnswerQualityVerdict.TOO_VAGUE)
         )
 
-        result = pipeline.handle_message("점심 뭐 먹지")
+        result = pipeline.handle_message("말하기 싫어요")
 
-        self.assertEqual(result.messages, (NON_ANSWER_MESSAGE,))
+        self.assertEqual(result.messages, (TOO_VAGUE_MESSAGE,))
+        self.assertEqual(result.question_step, 1)
 
     def test_third_vague_answer_is_adopted_and_moves_on(self) -> None:
         pipeline = self._start_chat(
@@ -425,25 +425,10 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
             [False, False, True],
         )
 
-    def test_refusal_advances_without_adopting(self) -> None:
-        pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.REFUSAL)
-        )
-
-        result = pipeline.handle_message("말하기 싫어요")
-
-        self.assertEqual(
-            result.messages,
-            (NEXT_QUESTION_MESSAGE, FOLLOW_UP_QUESTION),
-        )
-        self.assertEqual(result.question_step, 2)
-        self.assertFalse(self._answers()[0].is_adopted)
-
-    def test_evaluator_failure_advances_like_refusal(self) -> None:
+    def test_evaluator_failure_uses_separate_next_question_route(self) -> None:
         class FailingEvaluator:
             def evaluate(self, *, question_text: str, customer_answer: str):
                 return AnswerEvaluationOutcome(
-                    routing_verdict=AnswerQualityVerdict.REFUSAL,
                     quality_verdict=None,
                     verdict_skip_reason="EVALUATOR_FAILED",
                 )
@@ -570,7 +555,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_ai_and_human_messages_are_logged(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.REFUSAL)
+            evaluator=FakeEvaluator(AnswerQualityVerdict.TOO_VAGUE)
         )
         pipeline.handle_message("말하기 싫어요")
 
@@ -579,7 +564,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         )
         self.assertEqual(
             [message.sender_type for message in messages],
-            ["AI", "HUMAN", "AI", "AI"],
+            ["AI", "HUMAN", "AI"],
         )
         self.assertEqual(
             self.chat_session.last_message_id,

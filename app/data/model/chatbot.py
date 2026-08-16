@@ -200,7 +200,7 @@ class ChatAnswer(SQLModel, table=True):
         # 평가를 수행하지 못한 경우를 표현하기 위해 NULL은 허용한다.
         CheckConstraint(
             "quality_verdict IS NULL OR quality_verdict IN "
-            "('SUFFICIENT', 'TOO_VAGUE', 'NON_ANSWER', 'REFUSAL', 'WANT_END')",
+            "('SUFFICIENT', 'TOO_VAGUE', 'WANT_END')",
             name="ck_chat_answers_quality_verdict",
         ),
         # 평가 결과가 NULL일 때 기록할 수 있는 생략 사유를 정해진 값으로 제한한다.

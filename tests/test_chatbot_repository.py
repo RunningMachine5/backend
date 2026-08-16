@@ -217,6 +217,32 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         self.assertIsNone(answer.quality_verdict)
         self.assertEqual(answer.verdict_skip_reason, "MAX_RETRY_EXCEEDED")
 
+    def test_database_rejects_removed_quality_verdicts(self) -> None:
+        chat_session = self.repository.create_or_get(
+            chat_session_id="CHAT-REMOVED-VERDICTS",
+            transaction_id=116,
+        )
+        message = self.repository.add_message(
+            chat_session,
+            sender_type=ChatSenderType.HUMAN,
+            message_text="답변",
+        )
+        self.session.commit()
+
+        for verdict in ("NON_ANSWER", "REFUSAL"):
+            with self.subTest(verdict=verdict), self.assertRaises(IntegrityError):
+                self.session.add(
+                    ChatAnswer(
+                        chat_session_id=chat_session.chat_session_id,
+                        question_step=1,
+                        attempt_no=1,
+                        message_id=message.message_id,
+                        quality_verdict=verdict,
+                    )
+                )
+                self.session.flush()
+            self.session.rollback()
+
     def test_rejects_attempt_number_outside_contract(self) -> None:
         chat_session = self.repository.create_or_get(
             chat_session_id="CHAT-INVALID-ATTEMPT",

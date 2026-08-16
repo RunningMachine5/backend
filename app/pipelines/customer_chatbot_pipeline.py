@@ -16,7 +16,7 @@
   턴 단위 invoke 는 ``attempt_no`` 만 유실되고 ``question_step`` 은
   DB(``chat_sessions.question_step``)에서 다시 seed 할 수 있지만, 재개 방식은 멈춘
   노드 자체가 사라져 그 턴을 이어갈 수 없다.
-- 분기(판정 5종·버튼 3종)를 노드와 조건부 엣지로 그대로 표현할 수 있어, 재개 흐름을
+- 분기(판정 3종·버튼 3종)를 노드와 조건부 엣지로 그대로 표현할 수 있어, 재개 흐름을
   모킹하지 않고 분기만 검증하는 테스트가 가능하다.
 """
 
@@ -52,7 +52,6 @@ from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
     HANDOFF_WAITING_MESSAGE,
     NEXT_QUESTION_MESSAGE,
-    NON_ANSWER_MESSAGE,
     TOO_VAGUE_MESSAGE,
     WANT_END_HANDOFF_MESSAGE,
     render_initial_notification,
@@ -355,19 +354,26 @@ class CustomerChatbotPipeline:
             ),
             customer_answer=message_text,
         )
-        # 고객 답변 평가 결과 확인(충분/모호/답변없음/거부/종료희망)
-        verdict = outcome.routing_verdict
-        # TOO_VAGUE 또는 NON_ANSWER가 세 번째 응답까지 이어지면 재질문을 중단하고,
-        # 마지막 응답을 해당 질문의 채택 답변으로 기록한 뒤 다음 질문으로 넘어간다
-        retry_exhausted = (
-            verdict
-            in (
-                AnswerQualityVerdict.TOO_VAGUE,
-                AnswerQualityVerdict.NON_ANSWER,
+        verdict = outcome.quality_verdict
+        if verdict is None:
+            # 평가 장애는 고객 판정이 아니며, 미채택으로 저장한 뒤 다음 질문으로 간다.
+            retry_exhausted = False
+            is_adopted = False
+            route = "announce_next"
+        else:
+            # TOO_VAGUE가 세 번째 응답까지 이어지면 재질문을 중단하고,
+            # 마지막 응답을 채택한 뒤 추출 없이 다음 질문으로 넘어간다.
+            retry_exhausted = (
+                verdict is AnswerQualityVerdict.TOO_VAGUE
+                and attempt_no >= MAX_ATTEMPTS_PER_QUESTION
             )
-            and attempt_no >= MAX_ATTEMPTS_PER_QUESTION
-        )
-        is_adopted = verdict is AnswerQualityVerdict.SUFFICIENT or retry_exhausted
+            is_adopted = (
+                verdict is AnswerQualityVerdict.SUFFICIENT or retry_exhausted
+            )
+            route = _route_for_verdict(
+                verdict,
+                retry_exhausted=retry_exhausted,
+            )
 
         # 고객 메시지에 대한 평가 데이터를 맵핑한다
         answer = self.repository.add_answer(
@@ -385,24 +391,23 @@ class CustomerChatbotPipeline:
         return {
             "attempt_no": attempt_no,
             "answer_id": answer.answer_id,
-            "route": _route_for_verdict(verdict, retry_exhausted=retry_exhausted),
+            "route": route,
         }
 
     def _reask(self, state: ChatGraphState) -> dict[str, Any]:
         """재질문 안내만 출력한다. question_step 은 그대로다(PRD 2.4)."""
 
-        verdict = self._last_verdict(state)
-        guidance = (
-            TOO_VAGUE_MESSAGE
-            if verdict == AnswerQualityVerdict.TOO_VAGUE.value
-            else NON_ANSWER_MESSAGE
-        )
-        return {"outbound": self._emit(state.get("outbound", []), guidance)}
+        return {
+            "outbound": self._emit(
+                state.get("outbound", []),
+                TOO_VAGUE_MESSAGE,
+            )
+        }
 
     def _announce_next(self, state: ChatGraphState) -> dict[str, Any]:
-        """다음 질문으로 넘어간다는 전이 안내(B.3 REFUSAL 문구).
+        """재시도 소진 또는 평가 장애 후 다음 질문 전환 안내(B.4).
 
-        REFUSAL, 평가 LLM 실패(EVALUATOR_FAILED), 재시도 초과가 같은 문구를 쓴다.
+        평가 LLM 실패(EVALUATOR_FAILED)와 재시도 초과가 같은 문구를 쓴다.
         """
 
         return {"outbound": self._emit(state.get("outbound", []), NEXT_QUESTION_MESSAGE)}
@@ -549,13 +554,6 @@ class CustomerChatbotPipeline:
             raise ChatTurnRejectedError("평가된 답변을 찾을 수 없습니다")
         return answer
 
-    def _last_verdict(self, state: ChatGraphState) -> str | None:
-        answer_id = state.get("answer_id")
-        if answer_id is None:
-            return None
-        answer = self.session.get(ChatAnswer, answer_id)
-        return answer.quality_verdict if answer is not None else None
-
     def _load_transaction(self) -> Transaction:
         """B.1 치환에 쓰는 거래 원장을 읽는다."""
 
@@ -607,16 +605,13 @@ def _route_for_verdict(
     *,
     retry_exhausted: bool,
 ) -> str:
-    """판정 5종을 그래프 경로로 옮긴다(PRD 2.4 조건 2 표)."""
+    """판정 3종을 그래프 경로로 옮긴다(PRD 2.4 조건 2 표)."""
 
     if verdict is AnswerQualityVerdict.WANT_END:
         return "finish"
     if verdict is AnswerQualityVerdict.SUFFICIENT:
         return "process_sufficient_answer"
-    if verdict is AnswerQualityVerdict.REFUSAL:
-        # 평가 LLM 실패도 REFUSAL 로 들어온다(README 2.4 평가 LLM 실패 시 동작).
-        return "announce_next"
-    # TOO_VAGUE / NON_ANSWER — 재질문 2회까지, 초과하면 채택하고 다음 질문으로.
+    # TOO_VAGUE — 재질문 2회까지, 초과하면 채택하고 다음 질문으로.
     return "announce_next" if retry_exhausted else "reask"
 
 

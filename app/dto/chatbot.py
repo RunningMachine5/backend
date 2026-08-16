@@ -53,8 +53,6 @@ class AnswerQualityVerdict(StrEnum):
 
     SUFFICIENT = "SUFFICIENT"
     TOO_VAGUE = "TOO_VAGUE"
-    NON_ANSWER = "NON_ANSWER"
-    REFUSAL = "REFUSAL"
     WANT_END = "WANT_END"
 
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758183824&cot=14

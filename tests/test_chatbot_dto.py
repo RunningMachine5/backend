@@ -110,8 +110,9 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
             )
 
     def test_rejects_answer_quality_verdict_outside_contract(self) -> None:
-        with self.assertRaises(ValidationError):
-            AnswerEvaluationResult.model_validate({"verdict": "UNKNOWN"})
+        for verdict in ("NON_ANSWER", "REFUSAL", "UNKNOWN"):
+            with self.subTest(verdict=verdict), self.assertRaises(ValidationError):
+                AnswerEvaluationResult.model_validate({"verdict": verdict})
 
         result = AnswerEvaluationResult.model_validate({"verdict": "SUFFICIENT"})
         self.assertEqual(result.verdict, AnswerQualityVerdict.SUFFICIENT)
