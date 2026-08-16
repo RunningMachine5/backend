@@ -13,7 +13,7 @@ from app.dto.agent import FraudAlertEmailCommand
 from app.repositories.chat_session import ChatSessionRepository
 from app.services.agent.email_sender import FraudAlertEmailService
 from app.services.chatbot.session_creator import ChatSessionCreator
-from app.services.chatbot.session_url_mailer import build_chat_url
+from app.services.chatbot.session_url import build_chat_url
 
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,6 @@ class ChatSessionAlertNotifier:
                 command.primary_suspected_type,
                 command.secondary_suspected_type,
             ],
-            send_notification=False,
         )
         # 기존 챗봇 세션이 있으면 이메일을 다시 보내지 않고 종료
         if not creation.created:

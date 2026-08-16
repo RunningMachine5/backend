@@ -81,7 +81,6 @@ class ChatSessionAlertNotifierTest(unittest.TestCase):
                         "ACCOUNT_TAKEOVER",
                         "MESSENGER_PHISHING",
                     ],
-                    "send_notification": False,
                 }
             ],
         )
@@ -162,7 +161,6 @@ class ChatSessionAlertNotifierTest(unittest.TestCase):
             created=created,
             notified_email="customer@example.com",
             used_fallback_email=False,
-            email_sent=not created,
         )
 
     @staticmethod
