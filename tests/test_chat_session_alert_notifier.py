@@ -1,11 +1,17 @@
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine, func, select
 
 from app.data.model.chatbot import ChatSession, ChatSessionStatus
+from app.data.model.customer import Customer
+from app.data.model.transaction import Transaction
 from app.domain.agent_status import ClassificationStatus
 from app.dto.agent import FraudAlertEmailCommand
 from app.services.chatbot.session_alert_notifier import ChatSessionAlertNotifier
 from app.services.chatbot.session_creator import ChatSessionCreationResult
+from app.services.chatbot.session_creator import ChatSessionCreator
 
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
@@ -171,6 +177,123 @@ class ChatSessionAlertNotifierTest(unittest.TestCase):
             secondary_suspected_type="MESSENGER_PHISHING",
             classification_status=ClassificationStatus.CONFIDENT,
         )
+
+
+class ChatSessionAlertNotifierIntegrationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Customer.__table__.create(self.engine)
+        Transaction.__table__.create(self.engine)
+        ChatSession.__table__.create(self.engine)
+        self.session = Session(self.engine)
+        self.transaction_id = self._seed_transaction()
+
+    def tearDown(self) -> None:
+        self.session.close()
+        self.engine.dispose()
+
+    def test_reuses_one_session_and_sends_integrated_email_once(self) -> None:
+        email_notifier = FakeEmailNotifier()
+        notifier = self._notifier(email_notifier)
+
+        notifier.send(self._command())
+        self.session.commit()
+        notifier.send(self._command())
+        self.session.commit()
+
+        chat_session = self.session.exec(select(ChatSession)).one()
+        self.assertEqual(
+            self.session.exec(select(func.count()).select_from(ChatSession)).one(),
+            1,
+        )
+        self.assertEqual(len(email_notifier.calls), 1)
+        self.assertEqual(chat_session.status, ChatSessionStatus.URL_SENT.value)
+        self.assertEqual(chat_session.notified_email, "hong@example.com")
+        self.assertEqual(
+            chat_session.top_fraud_types,
+            ["ACCOUNT_TAKEOVER", "MESSENGER_PHISHING"],
+        )
+
+    def test_email_failure_keeps_transaction_and_marks_session_failed(
+        self,
+    ) -> None:
+        notifier = self._notifier(
+            FakeEmailNotifier(error=RuntimeError("smtp"))
+        )
+
+        with self.assertRaises(RuntimeError):
+            notifier.send(self._command())
+        self.session.commit()
+
+        self.assertIsNotNone(
+            self.session.get(Transaction, self.transaction_id)
+        )
+        chat_session = self.session.exec(select(ChatSession)).one()
+        self.assertEqual(chat_session.status, ChatSessionStatus.FAILED.value)
+        self.assertEqual(chat_session.notified_email, "hong@example.com")
+        self.assertIsNone(chat_session.email_sent_at)
+
+    def _notifier(self, email_notifier: FakeEmailNotifier):
+        creator = ChatSessionCreator(
+            self.session,
+            chat_session_id_factory=lambda: "CHAT-INTEGRATION",
+            now_factory=lambda: NOW,
+        )
+        return ChatSessionAlertNotifier(
+            session=self.session,
+            session_creator=creator,
+            email_notifier=email_notifier,  # type: ignore[arg-type]
+            now_factory=lambda: NOW,
+        )
+
+    def _command(self) -> FraudAlertEmailCommand:
+        return FraudAlertEmailCommand(
+            transaction_id=self.transaction_id,
+            primary_suspected_type="ACCOUNT_TAKEOVER",
+            secondary_suspected_type="MESSENGER_PHISHING",
+            classification_status=ClassificationStatus.CONFIDENT,
+        )
+
+    def _seed_transaction(self) -> int:
+        customer = Customer(
+            id="CUST-INTEGRATION",
+            name="홍길동",
+            birth_date=date(1990, 3, 1),
+            gender="male",
+            identification_number="900301-1234567",
+            email="hong@example.com",
+            registration_datetime=NOW,
+            credit_rating=3,
+            loan_type="a",
+        )
+        transaction = Transaction(
+            customer_id=customer.id,
+            source_account_number="source-integration",
+            transaction_datetime=NOW,
+            transaction_amount=-1_000_000,
+            channel="mobile",
+            type_general_automatic="general",
+            access_medium="a",
+            num_connection_failure=0,
+            location="서울특별시 중구",
+            rooting_jailbreak_indicator=False,
+            mobile_roaming_indicator=False,
+            vpn_indicator=False,
+            flag_terminal_malicious_behavior_1=False,
+            flag_terminal_malicious_behavior_2=False,
+            flag_terminal_malicious_behavior_3=False,
+            flag_terminal_malicious_behavior_5=False,
+            flag_terminal_malicious_behavior_6=False,
+        )
+        self.session.add(customer)
+        self.session.add(transaction)
+        self.session.commit()
+        assert transaction.id is not None
+        return transaction.id
 
 
 if __name__ == "__main__":

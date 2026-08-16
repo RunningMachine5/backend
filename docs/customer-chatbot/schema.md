@@ -78,9 +78,11 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 | `DONE` | 챗봇 상담 완료 |
 | `FAILED` | 챗봇 상담 실패 |
 
-별도의 "생성됨" 상태는 두지 않는다. 세션 생성 시 기본값은 `URL_SENT`다.
+별도의 "생성됨" 상태는 두지 않는다. 세션 생성 시 기본값은 `URL_SENT`지만 운영 경로에서는
+Agent 통합 메일 결과가 정해질 때까지 세션을 커밋하지 않는다. 발송 성공은 그대로
+`URL_SENT`, 실패는 `FAILED`로 바꾼 뒤 Agent 사건 상태와 함께 커밋한다.
 
-`FAILED`로 분기하는 경로는 **접속 URL 메일 발송 실패 하나**다
+`FAILED`로 분기하는 경로는 **세션 URL을 포함한 Agent 안내 메일 발송 실패 하나**다
 ([2.1 발송 구현](README.md#발송-구현과-기본-주소-폴백)). 고객이 URL을 받지 못해 챗봇이 시작될 수
 없는 상태이므로 `URL_SENT`로 둘 수 없다. 고객 이메일이 없는 경우는 같은 절의 기본 주소
 폴백으로 처리되므로 실패가 아니다.
@@ -107,7 +109,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 | --- | --- | --- |
 | `top_fraud_types` | `jsonb NULL` | 룰 채점 점수 내림차순 상위 2개 사기유형 코드([3.1](#31-사기-유형)). [유형판별 질문](README.md#유형판별-질문) 선택에 쓰고, `NULL`이면 일반 질문 폴백 |
 | `question_step` | `integer NOT NULL DEFAULT 0` | 현재 질문 단계. 담당자 화면에서 "이 세션이 몇 번 질문에서 멈춰 있는지"를 세션 목록 조회 한 번으로 보기 위한 값 |
-| `email_sent_at` | `timestamptz NULL` | 챗봇 URL 메일을 보낸 시각 |
+| `email_sent_at` | `timestamptz NULL` | 세션 URL을 포함한 Agent 안내 메일을 보낸 시각 |
 | `notified_email` | `varchar(255) NULL` | 실제로 보낸 수신 주소. 기본 주소 폴백이 있어 `customers.email`과 다를 수 있으므로 보낸 값을 그대로 남긴다 |
 | `completed_at` | `timestamptz NULL` | 종료 시각 |
 

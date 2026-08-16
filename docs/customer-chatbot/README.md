@@ -42,17 +42,17 @@ SQLAlchemy, SQLModel, langchain-openai.
 가이드 검색 질의 테이블로 교체한다. 자세한 완료 범위는
 [스키마 문서](schema.md#구현-상태)를 따른다.
 
-**상담 흐름은 세션 생성부터 상담사 반환까지 실제로 동작한다.** 챗봇 리포지토리
+**상담 흐름은 이상거래 Agent 결합부터 상담사 반환까지 실제로 동작한다.** 챗봇 리포지토리
 ([chat_session.py](../../app/repositories/chat_session.py)), 평가·추출 LLM 호출부와 RAG 응답
 조립(`app/services/chatbot/`), LangGraph 턴 파이프라인
 ([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)),
-세션 생성·URL 발송([session_creator.py](../../app/services/chatbot/session_creator.py)),
+Agent 통합 세션·메일 조정([session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)),
 [2.8의 API 6종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
 Fake 체인 `app/services/chatbot/customer_chatbot.py`는 제거했다.
 
-**남은 것은 FDS 파이프라인 결합이다.** 이상거래 판정 시 세션 생성을 부르고 첫 상태 SSE를
-발행하는 경로가 아직 없어([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)), 지금은
-[테스트용 세션 생성](#테스트용-세션-생성) 스크립트로만 세션을 만든다.
+이상거래 거래는 `POST /transactions`가 Agent 백그라운드 작업을 등록하고, Agent의 고객 안내
+노드가 챗봇 세션을 만든 뒤 세션별 URL을 포함한 이메일 한 통을 보낸다. Agent 작업이 상태를
+커밋한 뒤 [task_runner.py](../../app/services/agent/task_runner.py)가 최초 상태 SSE를 발행한다.
 
 RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
@@ -65,13 +65,14 @@ RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbo
 
 ### 2.1 채팅 세션 생성 및 이메일 전송
 
-FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 세션 생성 함수를 호출한다.
-거래 하나당 채팅 세션은 하나이며, 하나의 거래는 한 번만 판단된다.
+FDS 파이프라인이 이상거래의 ML 결과와 룰 점수를 저장하면 거래 API가 Agent 작업을
+백그라운드로 등록한다. Agent의 `send_alert_email` 노드가 실행될 때 거래당 채팅 세션 하나를
+멱등 생성하고, 기존 이상거래 안내 메일에 `/chat/{chat_session_id}` URL을 넣어 한 통만 보낸다.
 
-**세션 생성은 HTTP 엔드포인트로 열지 않는다.** 호출자는 FDS 파이프라인뿐이므로
-[session_creator.py](../../app/services/chatbot/session_creator.py)의
-`ChatSessionCreator.create`를 함수로 부른다. 사기 판정을 기다리지 않고 접속 URL이 필요한
-로컬·데모 상황은 [테스트용 세션 생성](#테스트용-세션-생성)의 스크립트가 대신한다.
+**세션 생성은 HTTP 엔드포인트로 열지 않는다.** 운영 호출자는
+[workflow_factory.py](../../app/services/agent/workflow_factory.py)가 Agent에 주입한
+`ChatSessionAlertNotifier`다. 사기 판정을 기다리지 않고 접속 URL만 필요한 로컬·데모 상황은
+[테스트용 세션 생성](#테스트용-세션-생성)의 스크립트가 대신한다.
 
 | 입력 | 내용 |
 | --- | --- |
@@ -83,8 +84,8 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 룰 채점이 실패해 유형 점수가 없는 거래는 이 필드를 생략하고, 해당 세션은 유형판별 질문
 대신 [일반 질문 폴백](#유형판별-질문)을 쓴다.
 
-생성된 채팅 세션에 접속 가능한 URL을 만들어, 해당 `transactions`의 연관 테이블
-(`customers.email`)에 저장된 유저 이메일로 메일을 보낸다.
+생성된 세션 URL은 Agent 이상거래 안내 메일 본문에 포함한다. 별도의 챗봇 접속 안내 메일은
+보내지 않는다. 수신 주소는 해당 거래의 `customers.email`이다.
 
 `chat_sessions.status = URL_SENT`, `email_sent_at`에 발송 시각을 기록한다.
 
@@ -95,24 +96,18 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 
 #### 발송 구현과 기본 주소 폴백
 
-**SMTP로 실제 발송한다.** Agent의 이상거래 안내 메일이 이미 쓰고 있는
-[`SmtpEmailMessageSender`](../../app/services/agent/email_sender.py)(`SMTP_*` env var)를 그대로
-재사용하고, 챗봇 세션 메일의 제목·본문은 [B.7](messages.md#b7-챗봇-접속-안내-이메일)이다.
-메시지 조립과 발송은 [session_url_mailer.py](../../app/services/chatbot/session_url_mailer.py),
-세션 생성과 상태 기록은 [session_creator.py](../../app/services/chatbot/session_creator.py)가 맡는다.
-
-어떤 주소로 어떤 URL을 보냈는지는 로컬·데모에서 눈으로 확인할 수 있도록 로그로 남긴다.
-
-```
-[챗봇 URL 발송] 수신자=hong@example.com 세션=chat-2026-0001 URL=http://localhost:8000/chat/chat-2026-0001
-[챗봇 URL 발송] 수신자=abcd@kosa.com (기본 주소) 세션=chat-2026-0002 URL=http://localhost:8000/chat/chat-2026-0002
-```
+**SMTP로 실제 발송한다.** [session_creator.py](../../app/services/chatbot/session_creator.py)는
+세션과 수신 예정 주소만 만들고, [session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)가
+세션별 URL을 [FraudAlertEmailService](../../app/services/agent/email_sender.py)에 전달해 기존
+Agent 안내 메일을 발송하고 상태를 기록한다. 실제 SMTP 전송은 같은 파일의
+`SmtpEmailMessageSender`가 맡는다.
 
 **발송에 실패하면 세션은 남기고 `status = FAILED`로 둔다.** 고객이 URL을 받지 못했으므로
 `URL_SENT`라고 기록할 수 없고, 세션 행 자체를 지우면 담당자가 발송 실패 사실을 볼 수 없다.
 `email_sent_at`은 비우고 `notified_email`에는 시도한 주소를 남긴다
-([스키마 3.3](schema.md#33-챗봇-상태-정의)). SMTP 예외는 호출부로 전파하지 않는다 —
-FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을 막지 않는다"와 같은 원칙이다.
+([스키마 3.3](schema.md#33-챗봇-상태-정의)). SMTP 예외는 Agent의 이메일 노드가 로그로 남기고
+나머지 Agent 처리를 계속한다. 원본 거래와 ML·룰 결과는 Agent 작업 등록 전에 이미 커밋되므로
+세션 생성이나 메일 실패가 거래 저장을 롤백하지 않는다([3.3](#33-보안운영)).
 
 `CHAT_BASE_URL`은 **고객이 브라우저로 여는 챗봇 화면의 주소**다. 챗봇 UI를 프론트가 서빙하면
 기본값(`http://localhost:8000`)이 아니라 프론트 주소를 넣어야 한다.
@@ -132,7 +127,7 @@ FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을
 
 #### 테스트용 세션 생성
 
-세션 생성 경로가 FDS 파이프라인뿐이라 로컬에서 화면을 확인하려면 이상거래 판정을 기다려야
+운영 세션 생성 경로가 Agent뿐이라 로컬에서 화면을 확인하려면 이상거래 판정을 기다려야
 한다. 임의 거래로 접속 URL을 뽑는 용도로
 [scripts/create_chat_session.py](../../scripts/create_chat_session.py)를 둔다. 레포 루트에서
 모듈로 실행한다.
@@ -141,13 +136,12 @@ FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을
 uv run --env-file .env python -m scripts.create_chat_session <transaction_id>
 ```
 
-- `--no-email` — SMTP를 부르지 않고 URL만 출력한다. SMTP 설정이 없는 로컬에서도 상태가
-  `FAILED`로 떨어지지 않는다.
 - `--top-fraud-types FIRST SECOND` — 유형판별 질문([2.4](#유형판별-질문))을 확인할 때 쓴다.
 - `--recreate` — 생성이 멱등이라 같은 거래로 다시 돌리면 기존 URL이 나온다. 새 대화로 다시
   시작하려면 이 플래그로 기존 세션과 대화 이력을 지우고 만든다.
 
-**운영에서 쓰지 않는다.** 서버와 다른 프로세스라 in-process 브로커에 상태 변경을 발행하지
+스크립트는 세션과 URL만 만들며 이메일을 보내지 않는다. **운영에서 쓰지 않는다.** 서버와
+다른 프로세스라 in-process 브로커에 상태 변경을 발행하지
 못하므로([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)) 담당자 화면에는 SSE 이벤트가
 뜨지 않는다. 거래별 상태 조회로 새로고침하면 보인다.
 
@@ -512,8 +506,9 @@ response = assemble(augmented, guidance)
 재연결 시 각 거래에 연결된 채팅 세션의 현재 상태를 개별 조회한다.
 
 세션 생성 직후의 첫 상태(`URL_SENT`, 발송 실패면 `FAILED`)는 **세션을 만든 쪽이 커밋한 뒤**
-발행한다. 세션 생성 HTTP 경로가 없으므로([2.1](#21-채팅-세션-생성-및-이메일-전송)) 이 발행
-책임은 FDS 파이프라인에 있다. 턴 실행 중의 전이는
+발행한다. Agent 작업의 마지막 커밋이 세션 상태까지 확정한 뒤
+[task_runner.py](../../app/services/agent/task_runner.py)가 상태를 다시 조회해 발행한다.
+턴 실행 중의 전이는
 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 발행한다.
 
 이후 상태 변경은 대시보드가 SSE 연결 하나로 수신한다. 이벤트는 `transaction_id`,
@@ -598,12 +593,11 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
   제한, 세션 잠금, 별도 URL 토큰, 세션 만료(TTL)는 추가하지 않는다.
   출생연도 4자리의 무차별 대입과 이메일 URL의 영구 유효 위험은 알고 있으며,
   운영 배포 전 후속 단계에서 구현한다.
-- **FDS 파이프라인과의 결합 방식이 미정이다.** 세션 생성이 `POST /transactions` 동기 경로
-  안이면 이메일 발송까지 거래 응답이 기다린다.
-  [fraud_detection_pipeline.py](../../app/pipelines/fraud_detection_pipeline.py)는 "룰 실패가
-  ML 결과 저장을 막지 않는다"는 원칙으로 짜여 있으니, 챗봇 세션 생성 실패도 거래 저장을
-  롤백하지 않는다를 같은 방식으로 명시해야 한다. `rule_replay` 재처리 경로가 있으므로
-  멱등 규칙(이미 있으면 기존 세션 반환)도 필요하다.
+- **FDS·Agent 결합은 백그라운드 Agent 경로로 확정했다.** `POST /transactions`는 원본 거래와
+  ML·룰 결과를 먼저 커밋하고 Agent 작업을 등록한다. Agent가 세션 생성과 SMTP 발송을
+  동기적으로 수행하지만 HTTP 거래 응답 이후의 백그라운드 작업이므로 응답을 지연시키지 않는다.
+  세션 생성·메일·최초 SSE 실패는 로그로 격리하며 이미 저장된 거래를 롤백하지 않는다.
+  실제 작업 큐와 자동 재시도를 도입하면 SMTP 호출의 비동기화와 재발송 정책을 다시 검토한다.
 - **담당자 접수·처리 중 상태는 MVP 범위에서 제외한다.**
   `HANDOFF_REQUESTED` 이후의 담당자 접수 상태를 추가하지 않는다. 접수 여부·담당자
   소유권·처리 완료 흐름은 MVP 이후에 상태값과 API를 확장해 구현한다.
@@ -661,7 +655,6 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [B.4](messages.md#b4-다음-질문-전환-안내) | 다음 질문 전환 안내 | 재시도 소진·[평가 LLM 실패](#평가-llm-실패-시-동작) |
 | [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내) | 안내를 만들지 못한 가이드 검색 질의 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
 | [B.6](messages.md#b6-상담-종료-요청-시-상담사-연결-안내) | 상담 종료 요청 시 상담사 연결 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
-| [B.7](messages.md#b7-챗봇-접속-안내-이메일) | 챗봇 접속 안내 이메일 | [2.1 발송 구현](#발송-구현과-기본-주소-폴백) |
 
 ### [DB·스키마](schema.md) · [내부 채점표](scoring.md)
 
