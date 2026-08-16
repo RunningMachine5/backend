@@ -243,7 +243,8 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 권장 실행 순서는 다음과 같습니다.
 
 1. 이미 준비된 GCS CSV는 `POST /mlops/datasets`로 등록합니다. DB 확정 라벨을
-   반영할 때는 `POST /mlops/datasets/build`로 기존 버전에서 새 불변 CSV와
+   반영할 때는 `POST /mlops/datasets/build`로 고정 원본
+   `gs://fdshield-ml-data-801817539291/base/train1.csv`에서 새 불변 CSV와
    데이터셋 버전을 함께 만듭니다.
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
    `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
@@ -277,8 +278,7 @@ POST /mlops/datasets
  "row_count": 210000}
 
 POST /mlops/datasets/build
-{"base_dataset_version_id": 1,
- "version": "generated-v2",
+{"version": "generated-v2",
  "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv"}
 
 POST /mlops/training/runs
@@ -320,12 +320,13 @@ Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution �
 champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않고 MLflow를 원본으로
 조회합니다. alias와 Serving 트래픽 변경은 Backend 관리자 승인 API에서만 수행합니다.
 
-`POST /mlops/datasets/build`는 `transaction_labels`의 확정 이진 라벨을 기준으로
-동작합니다. 기준 CSV에 같은 `transaction_id`가 있으면 `is_fraud`를 확정값으로 교체하고, 없는
-거래는 `customers`, 출금·수취 `accounts`, `transactions`, `derived_features`를 한 번에
-조인해 raw59와 학습 메타데이터를 재조립한 raw64 행으로 추가합니다. 기준 객체는
-수정하지 않으며 GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다.
-병합 결과의 행 수와 교체·추가 라벨 수는 API 응답에 포함됩니다.
+`POST /mlops/datasets/build`는 고정 원본 CSV의 모든 행을 그대로 복사한 뒤
+`transaction_labels`의 확정 이진 라벨 거래를 모두 추가합니다. DB 행은 `customers`,
+출금·수취 `accounts`, `transactions`, `derived_features`를 한 번에 조인해 raw59와
+학습 메타데이터를 재조립한 raw64 행입니다. 학습에서 `transaction_id`를 피처로 쓰지
+않으므로 원본 ID와 DB ID를 비교하거나 변환하지 않습니다. 기준 객체는 수정하지 않으며
+GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다. 병합 결과의 원본 행 수와
+추가 라벨 수는 API 응답에 포함됩니다.
 
 Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
 Secret Manager로 주입합니다.

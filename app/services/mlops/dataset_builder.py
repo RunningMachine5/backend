@@ -80,6 +80,9 @@ TRAINING_CSV_COLUMNS = (
     TRAINING_BALANCE_DRAIN_RATIO_COLUMN,
     TRAINING_LABEL_COLUMN,
 )
+MLOPS_BASE_DATASET_URI = (
+    "gs://fdshield-ml-data-801817539291/base/train1.csv"
+)
 if len(TRAINING_CSV_COLUMNS) != 64:  # pragma: no cover - import invariant
     raise RuntimeError("TRAINING_CSV_COLUMNS must contain exactly 64 columns.")
 if len(TRAINING_CSV_COLUMNS) != len(  # pragma: no cover - import invariant
@@ -195,7 +198,6 @@ class DatasetBuildResult:
     source_row_count: int
     output_row_count: int
     confirmed_label_count: int
-    replaced_label_count: int
     appended_label_count: int
 
 
@@ -212,14 +214,20 @@ class ConfirmedTransaction:
 
 
 class LabeledDatasetBuilder:
-    """기존 train1 CSV에 확정 라벨 거래를 반영해 새 버전을 만든다.
+    """고정 train1 CSV에 확정 라벨 거래를 추가해 새 버전을 만든다.
 
-    기존 GCS 객체는 수정하지 않는다. 같은 거래 ID가 있으면 라벨과 원천 값을
-    교체하고, 없으면 DB의 정규화 테이블을 raw64 한 행으로 복원해 추가한다.
+    기존 GCS 객체는 수정하지 않는다. 원본 행은 그대로 복사하고 DB의 정규화
+    테이블에서 확정 라벨 거래를 raw64 행으로 복원해 모두 추가한다.
     """
 
-    def __init__(self, storage: ObjectStorage) -> None:
+    def __init__(
+        self,
+        storage: ObjectStorage,
+        *,
+        source_uri: str = MLOPS_BASE_DATASET_URI,
+    ) -> None:
         self._storage = storage
+        self._source_uri = source_uri
 
     @staticmethod
     def _confirmed_transactions(
@@ -267,19 +275,6 @@ class LabeledDatasetBuilder:
             )
             for transaction, label, customer, source, recipient, derived in rows
         }
-
-    @staticmethod
-    def _transaction_id(value: str) -> int:
-        """train1의 기존 T00000001 형식과 신규 정수 ID를 같은 값으로 본다."""
-
-        normalized = value.strip()
-        if normalized[:1].upper() == "T":
-            normalized = normalized[1:]
-        if not normalized.isdigit() or int(normalized) <= 0:
-            raise DatasetBuildError(
-                f"기존 학습 CSV의 transaction_id가 올바르지 않습니다: {value}"
-            )
-        return int(normalized)
 
     @staticmethod
     def _validate_header(fieldnames: list[str] | None) -> list[str]:
@@ -397,10 +392,9 @@ class LabeledDatasetBuilder:
         self,
         session: Session,
         *,
-        source_uri: str,
         destination_uri: str,
     ) -> DatasetBuildResult:
-        if parse_gcs_uri(source_uri) == parse_gcs_uri(destination_uri):
+        if parse_gcs_uri(self._source_uri) == parse_gcs_uri(destination_uri):
             raise DatasetBuildError("새 데이터셋은 기존 GCS 객체와 달라야 합니다.")
 
         confirmed = self._confirmed_transactions(session)
@@ -410,11 +404,9 @@ class LabeledDatasetBuilder:
         with TemporaryDirectory(prefix="fdshield-dataset-") as temp_directory:
             source_path = Path(temp_directory) / "source.csv"
             output_path = Path(temp_directory) / "output.csv"
-            self._storage.download(source_uri, source_path)
+            self._storage.download(self._source_uri, source_path)
 
             source_row_count = 0
-            replaced_label_count = 0
-            seen_transaction_ids: set[int] = set()
 
             with (
                 source_path.open("r", encoding="utf-8-sig", newline="") as source_file,
@@ -430,28 +422,7 @@ class LabeledDatasetBuilder:
                 writer.writeheader()
 
                 for row in reader:
-                    transaction_id_text = (
-                        row.get(TRAINING_TRANSACTION_ID_COLUMN) or ""
-                    ).strip()
-                    if not transaction_id_text:
-                        raise DatasetBuildError(
-                            "기존 학습 CSV에 transaction_id가 비어 있는 행이 있습니다."
-                        )
-                    transaction_id = self._transaction_id(transaction_id_text)
-                    if transaction_id in seen_transaction_ids:
-                        raise DatasetBuildError(
-                            "기존 학습 CSV에 중복 transaction_id가 있습니다: "
-                            f"{transaction_id_text}"
-                        )
-                    seen_transaction_ids.add(transaction_id)
                     source_row_count += 1
-
-                    labeled = confirmed.pop(transaction_id, None)
-                    if labeled is not None:
-                        row[TRAINING_LABEL_COLUMN] = str(
-                            int(labeled.label.confirmed_is_fraud)
-                        )
-                        replaced_label_count += 1
                     writer.writerow(row)
 
                 for transaction_id in sorted(confirmed):
@@ -489,8 +460,7 @@ class LabeledDatasetBuilder:
         return DatasetBuildResult(
             source_row_count=source_row_count,
             output_row_count=output_row_count,
-            confirmed_label_count=(replaced_label_count + appended_label_count),
-            replaced_label_count=replaced_label_count,
+            confirmed_label_count=appended_label_count,
             appended_label_count=appended_label_count,
         )
 
@@ -507,6 +477,7 @@ LabeledDatasetBuilderDep = Annotated[
 
 
 __all__ = [
+    "MLOPS_BASE_DATASET_URI",
     "TRAINING_CSV_COLUMNS",
     "ConfirmedTransaction",
     "DatasetBuildError",

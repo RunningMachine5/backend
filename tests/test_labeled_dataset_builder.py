@@ -221,9 +221,11 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
 
         event.listen(self.engine, "before_cursor_execute", record_select)
         try:
-            result = LabeledDatasetBuilder(storage).build(
-                self.session,
+            result = LabeledDatasetBuilder(
+                storage,
                 source_uri=source_uri,
+            ).build(
+                self.session,
                 destination_uri=destination_uri,
             )
         finally:
@@ -258,7 +260,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertNotIn(FLAG_DEPOSIT_CANONICAL, first_row)
         self.assertEqual(first_row["is_fraud"], "1")
 
-    def test_replaces_existing_label_without_changing_source_values(self) -> None:
+    def test_preserves_source_row_and_appends_db_row_when_ids_match(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id="C-DATASET-1",
@@ -277,20 +279,28 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         destination_uri = "gs://bucket/generated/v2/transactions.csv"
         storage = FakeObjectStorage({source_uri: _csv_bytes([source_row])})
 
-        result = LabeledDatasetBuilder(storage).build(
-            self.session,
+        result = LabeledDatasetBuilder(
+            storage,
             source_uri=source_uri,
+        ).build(
+            self.session,
             destination_uri=destination_uri,
         )
 
-        self.assertEqual(result.replaced_label_count, 1)
-        self.assertEqual(result.appended_label_count, 0)
-        row = next(
+        self.assertEqual(result.source_row_count, 1)
+        self.assertEqual(result.appended_label_count, 1)
+        self.assertEqual(result.output_row_count, 2)
+        rows = list(
             csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
         )
-        self.assertEqual(row["is_fraud"], "1")
-        self.assertEqual(row["customer_name"], "source-preserved")
-        self.assertEqual(row["account_account_number"], "source-preserved")
+        self.assertEqual(rows[0]["transaction_id"], "1")
+        self.assertEqual(rows[0]["is_fraud"], "False")
+        self.assertEqual(rows[0]["customer_name"], "source-preserved")
+        self.assertEqual(rows[0]["account_account_number"], "source-preserved")
+        self.assertEqual(rows[1]["transaction_id"], "1")
+        self.assertEqual(rows[1]["is_fraud"], "1")
+        self.assertEqual(rows[1]["customer_name"], "테스트고객-1")
+        self.assertEqual(rows[1]["account_account_number"], "stored-source-account")
 
     def test_zero_initial_balance_emits_empty_metadata_ratio(self) -> None:
         payload = _transaction_payload(
@@ -306,9 +316,11 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         destination_uri = "gs://bucket/generated/v2/train1.csv"
         storage = FakeObjectStorage({source_uri: _csv_bytes([])})
 
-        LabeledDatasetBuilder(storage).build(
-            self.session,
+        LabeledDatasetBuilder(
+            storage,
             source_uri=source_uri,
+        ).build(
+            self.session,
             destination_uri=destination_uri,
         )
 
@@ -333,9 +345,11 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         destination_uri = "gs://bucket/generated/v2/train1.csv"
         storage = FakeObjectStorage({source_uri: _csv_bytes([])})
 
-        LabeledDatasetBuilder(storage).build(
-            self.session,
+        LabeledDatasetBuilder(
+            storage,
             source_uri=source_uri,
+        ).build(
+            self.session,
             destination_uri=destination_uri,
         )
 
@@ -365,9 +379,11 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         storage = FakeObjectStorage({source_uri: output.getvalue().encode("utf-8")})
 
         with self.assertRaisesRegex(DatasetBuildError, "train1 raw64"):
-            LabeledDatasetBuilder(storage).build(
-                self.session,
+            LabeledDatasetBuilder(
+                storage,
                 source_uri=source_uri,
+            ).build(
+                self.session,
                 destination_uri="gs://bucket/generated/v2/transactions.csv",
             )
 
