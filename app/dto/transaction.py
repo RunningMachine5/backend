@@ -15,9 +15,7 @@ class TransactionRequestDTO(BaseModel):
     # ATM·지점 거래는 고객 식별자가 전달되지 않을 수 있다.
     customer_id: str | None = Field(default=None, min_length=1, max_length=64)
     source_account_number: str = Field(min_length=8, max_length=32)
-    # ATM 입금은 상대 계좌가 없을 수 있다.
     recipient_account_number: str = Field(
-        default=None,
         min_length=8,
         max_length=32,
     )
