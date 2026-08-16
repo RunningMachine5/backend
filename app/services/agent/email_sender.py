@@ -97,10 +97,15 @@ class FraudAlertEmailService:
             ),
         )
 
-    def send(self, command: FraudAlertEmailCommand) -> None:
+    def send(
+        self,
+        command: FraudAlertEmailCommand,
+        *,
+        chatbot_url: str | None = None,
+    ) -> bool: # 응답을 불리언으로 바꾼 이유: ChatSessionAlertNotifier 가 메일이 잘 보내졌는지 확인하기 위해
         context = self.repository.get_email_context(command.transaction_id)
         if context is None:
-            return
+            return False
 
         self.sender.send(
             build_fraud_alert_email_message(
@@ -108,9 +113,10 @@ class FraudAlertEmailService:
                 context,
                 from_email=self.from_email,
                 from_name=self.from_name,
-                chatbot_url=self.chatbot_url,
+                chatbot_url=chatbot_url or self.chatbot_url,
             )
         )
+        return True
 
 
 class NoOpFraudAlertEmailService:

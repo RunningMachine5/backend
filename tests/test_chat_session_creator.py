@@ -187,6 +187,21 @@ class ChatSessionCreatorTest(unittest.TestCase):
         # 어느 주소로 시도했는지는 남긴다.
         self.assertEqual(chat_session.notified_email, "hong@example.com")
 
+    def test_can_defer_notification_to_agent_email(self) -> None:
+        transaction_id = self._seed_transaction()
+
+        result = self._creator().create(
+            transaction_id=transaction_id,
+            send_notification=False,
+        )
+
+        self.assertTrue(result.created)
+        self.assertFalse(result.email_sent)
+        self.assertEqual(result.notified_email, "hong@example.com")
+        self.assertEqual(self.notifier.calls, [])
+        self.assertIsNone(result.chat_session.email_sent_at)
+        self.assertIsNone(result.chat_session.notified_email)
+
     def test_marks_customer_born_60_years_ago_as_older(self) -> None:
         transaction_id = self._seed_transaction(birth_year=NOW.year - 60)
 

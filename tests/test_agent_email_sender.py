@@ -59,6 +59,30 @@ class FraudAlertEmailServiceTest(unittest.TestCase):
 
         self.assertEqual(len(sender.messages), 1)
 
+    def test_uses_chatbot_url_passed_by_agent_session_notifier(self) -> None:
+        sender = FakeMessageSender()
+        service = FraudAlertEmailService(
+            FakeEmailRepository(self._context()),  # type: ignore[arg-type]
+            sender,
+            from_email="alert@fdshield.test",
+            chatbot_url="https://legacy.test/customer-chat",
+        )
+
+        sent = service.send(
+            self._command(),
+            chatbot_url="https://fdshield.test/chat/CHAT-001",
+        )
+
+        self.assertTrue(sent)
+        self.assertIn(
+            "https://fdshield.test/chat/CHAT-001",
+            sender.messages[0].get_content(),
+        )
+        self.assertNotIn(
+            "https://legacy.test/customer-chat",
+            sender.messages[0].get_content(),
+        )
+
     def test_skips_sending_when_email_context_is_missing(self) -> None:
         sender = FakeMessageSender()
         service = FraudAlertEmailService(

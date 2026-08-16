@@ -57,7 +57,7 @@ class ChatSessionCreationResult:
     notified_email: str | None
     # 기본 주소 폴백으로 보냈는지(``customers.email`` 이 비어 있었는지).
     used_fallback_email: bool
-    # 메일이 실제로 나갔는지. False 면 세션은 ``FAILED`` 다.
+    # 메일이 실제로 나갔는지. 발송을 호출부에 맡긴 경우에도 False 다.
     email_sent: bool
 
 
@@ -87,10 +87,13 @@ class ChatSessionCreator:
         *,
         transaction_id: int,
         top_fraud_types: list[str] | None = None,
+        send_notification: bool = True,
     ) -> ChatSessionCreationResult:
         """세션을 만들고 접속 URL 안내를 발송한다.
 
-        이미 세션이 있으면 그대로 돌려주고 안내를 다시 보내지 않는다.
+        이미 세션이 있으면 그대로 돌려주고 안내를 다시 보내지 않는다. Agent의
+        이상거래 안내 메일에 URL을 합칠 때는 ``send_notification=False``로 세션만
+        만든 뒤 호출부가 발송 결과를 기록한다.
         """
 
         existing = self.repository.find_by_transaction(transaction_id)
@@ -127,6 +130,15 @@ class ChatSessionCreator:
 
         customer_email = _usable_email(customer)
         notified_email = customer_email or CHAT_FALLBACK_EMAIL
+        if not send_notification:
+            return ChatSessionCreationResult(
+                chat_session=chat_session,
+                created=True,
+                notified_email=notified_email,
+                used_fallback_email=customer_email is None,
+                email_sent=False,
+            )
+
         email_sent = self._send_chat_url(
             chat_session=chat_session,
             transaction=transaction,
