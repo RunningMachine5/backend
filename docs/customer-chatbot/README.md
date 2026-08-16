@@ -604,11 +604,12 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 
 ### 3.4 스키마·계약
 
-- **`transaction_amount` 부호 규칙이 코드와 어긋난다.** 이 문서는 음수=출금, 양수=입금을
-  전제하지만 [app/dto/ml_prediction.py:69](../../app/dto/ml_prediction.py#L69)의
-  `Transaction_Amount: int = Field(gt=0)`가 살아 있어 음수 거래는 `POST /transactions`에서
-  422로 걸린다. DB에는 CHECK가 없어 저장 자체는 가능하다. ML 계약을 바꿀지, 방향을 다른
-  값에서 파생할지(`source_account.customer_id == transaction.customer_id`면 출금) 정해야 한다. -> ML 계약을 바꾼다 ML 계약의 ge 부분을 수정한다
+- ~~**`transaction_amount` 부호 규칙과 API 계약이 어긋난다.**~~ 해결됐다.
+  거래 입력 계약([transaction.py](../../app/dto/transaction.py))과 ML 전달 계약
+  ([ml_features.py](../../app/dto/ml_features.py)) 모두 `transaction_amount`에 양수 제약을
+  두지 않는다. 따라서 음수(출금) 거래도 `POST /transactions`에서 검증을 통과하며,
+  [2.3](#23-최초-알림-메시지와-버튼)의 부호 기반 입금·출금 판정을 그대로 사용한다.
+  금액의 크기만 필요한 룰·화면에서는 각 사용처가 절대값으로 정규화한다.
 - **외부 조회(더치트·Safe Browsing) 관련**
   - 더치트는 공개 API가 아니라 제휴 기반이다. 조달 가능 여부를 먼저 확인하고,
     안 되면 대체 경로(경찰청 사이버안전국 링크 안내)를 잡아둬야 한다.
@@ -634,7 +635,9 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [messages.md](messages.md) | 고객 안내 문구 B.1~B.6 |
 | [scoring.md](scoring.md) | 사기 정황 내부 채점표 (20종 × 4유형) |
 | [schema.md](schema.md) | 스키마 구현 상태와 테이블·컬럼 정의 3.1~3.10 |
-| [erd.md](erd.md) | 챗봇 테이블 관계 Mermaid ERD |
+
+별도 `erd.md`는 두지 않는다. 챗봇 관련 테이블 목록과 관계는
+[schema.md 3.2](schema.md#32-관련-테이블) 및 각 테이블의 FK·제약조건 설명에서 확인한다.
 
 ### [LLM 프롬프트](prompts.md)
 

@@ -3,11 +3,12 @@
 [고객 대응 챗봇 설계 (PRD)](README.md)의 부속 문서다.
 챗봇이 쓰는 테이블·컬럼 정의와 마이그레이션 적용 순서를 담는다.
 각 값을 언제 쓰는지는 PRD의 [2. 작동 시나리오](README.md#2-작동-시나리오)에 있다.
-전체 테이블 관계는 [Mermaid ERD](erd.md)에서 확인할 수 있다.
+전체 테이블 목록과 관계는 [3.2](#32-관련-테이블) 및 각 테이블의 FK·제약조건 설명에서
+확인할 수 있다.
 
 ## 구현 상태
 
-**챗봇 영속 스키마 구현 완료 (2026-08-15).**
+**챗봇 스키마와 애플리케이션 흐름 구현 완료 (2026-08-16).**
 
 - `fraud_circumstance` 20종과 유형별 점수표를 `app/domain/`에 정의했다.
 - [app/data/model/chatbot.py](../../app/data/model/chatbot.py)에 세션·메시지·답변·가이드 검색 질의·
@@ -19,9 +20,14 @@
   사용처가 생긴 `chat_sessions.top_fraud_types`를 재추가했다 (2026-08-15).
 - Alembic revision `f8a1b2c3d4e5`가 `chat_customer_actions`를 제거하고
   `chat_guide_search_queries`로 교체했다. 기존 고객행동 행은 백필하지 않는다.
+- Alembic revision `a6b8c9d0e1f2`가 고객 답변 판정을 `SUFFICIENT`, `TOO_VAGUE`,
+  `WANT_END` 3종으로 단순화했다.
+- 리포지토리·DTO·LLM 추출과 RAG·LangGraph 파이프라인·세션 API·Agent 통합 이메일 및
+  최초 상태 SSE까지 위 스키마를 사용하는 애플리케이션 흐름을 구현했다.
 
-이 완료 표시는 이 문서의 챗봇 영속 구조(3.1~3.8)에 한정한다. 리포지토리·DTO·LLM·API와
-[3.9의 이메일 확보 경로](#39-customersemail-확보-경로)는 후속 애플리케이션 작업이다.
+실제 고객 이메일을 거래 수집 시점에 확보하는 경로는 아직 없다. 현재는
+[3.9의 기본 주소 폴백](#39-customersemail-확보-경로)으로 데모 동작만 보장하며,
+실주소 수집은 거래 수집 영역의 별도 후속 작업이다.
 
 | 절 | 내용 |
 | --- | --- |

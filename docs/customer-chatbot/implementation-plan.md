@@ -4,12 +4,12 @@
 `docs/customer-chatbot/`의 5개 설계 문서이며, 이 문서는 무엇을 어떤 순서로 만들고
 각 단계에서 어느 문서 절을 참조하는지만 담는다. 설계와 이 계획이 어긋나면 설계 문서가 이긴다.
 
-작성일: 2026-08-14. 구현이 끝난 단계는 체크박스를 채우고, 전 단계 완료 후 이 문서는
-삭제하거나 보관으로 옮긴다.
+작성일: 2026-08-14. 전체 9단계 구현 완료일: 2026-08-16.
+완료된 구현의 의사결정과 작업 순서를 추적할 수 있도록 이 문서는 기록으로 보관한다.
 
 ---
 
-## 0. 현재 상태 (2026-08-15 기준)
+## 0. 계획 시작 당시 상태 (2026-08-15 기준)
 
 ### 이미 완료된 것 — 다시 만들지 않는다
 
@@ -22,10 +22,11 @@
 | pgvector 코사인 검색 + `MAX_DISTANCE = 0.6` | [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py) |
 | 의존성: `langgraph`, `langchain`, `langchain-openai` | `pyproject.toml` |
 
-### 없는 것 — 이 계획이 만드는 것
+### 시작 당시 없었던 것 — 이 계획에서 구현 완료
 
 챗봇 리포지토리, 세션 기반 API, 평가·추출 LLM 호출부, RAG 응답 조립, 채점 집계,
-LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 세션 상태 조회·변경 SSE, FDS 결합.
+LangGraph 파이프라인, 세션 생성·Agent 통합 이메일 발송, 거래별 세션 상태 조회·변경 SSE,
+FDS·Agent 결합.
 
 ### 대체·수정 대상
 
@@ -44,7 +45,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 
 - **`transaction_amount` 부호 제약은 이미 해소됐다.** PRD 3.4가 지적한
   `Transaction_Amount: int = Field(gt=0)`는 raw60 계약 정렬 이후 사라졌고, 현재
-  [ml_features.py](../../app/dto/ml_features.py)의 `transaction_amount: int`에는 부호 제약이
+  [ml_features.py](../../app/dto/ml_features.py)의 `transaction_amount: float`에는 부호 제약이
   없다. 음수(출금) 거래가 422로 걸리지 않으므로 [2.3의 입금/출금 판정](README.md#23-최초-알림-메시지와-버튼)은
   바로 구현 가능하다. → README 3.4 해당 항목 갱신 필요 (9단계).
 - **`erd.md`가 없다.** PRD 색인과 schema.md가 링크하지만 파일이 존재하지 않는다.
@@ -298,10 +299,13 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 | ~~messages.md B.1 / B.4~~ | ~~B.1 치환 표기 형식, B.4를 재시도 소진·평가 장애 공통 전이 안내로 확정~~ — 반영 완료 |
 | ~~README 2.1 / 신규 절~~ | ~~API 엔드포인트 형태 확정본~~ — 7단계에서 [2.8 신설](README.md#28-api-엔드포인트)로 반영 완료 |
 | ~~README 3.3~~ | ~~FDS 결합 방식 확정~~ — 거래 커밋 후 Agent 백그라운드 실행 + 실패 격리로 반영 완료 |
-| README 3.4 | `transaction_amount` 부호 제약 해소 반영 (`ml_prediction.py:69` 참조도 갱신) |
-| ~~README 1.3~~ / schema.md 구현 상태 | ~~"비즈니스 로직 없음" 문구~~ — README 1.3 은 7단계에서 갱신 완료. schema.md 구현 상태는 남아 있다 |
-| README 4 색인 | 절 구성이 바뀌면 색인·상호 링크 정리 (`erd.md` 부재 처리 포함) |
+| ~~README 3.4~~ | ~~`transaction_amount` 부호 제약 해소 및 현재 `ml_features.py` 계약 반영~~ — 완료 |
+| ~~README 1.3 / schema.md 구현 상태~~ | ~~스키마뿐 아니라 애플리케이션 흐름까지 완료된 현재 상태 반영~~ — 완료 |
+| ~~README 4 색인~~ | ~~절 구성과 상호 링크 정리, 존재하지 않는 `erd.md` 링크 제거~~ — 완료 |
 | ~~messages.md~~ / prompts.md | ~~단독 B.7 안내 문구 제거~~. 프롬프트는 변경 없음 |
+
+9단계 완료와 함께 이 구현 계획의 모든 단계가 종료됐다. 이후 기능 확장은
+README 3장의 미해결 문제와 이번 범위 제외 항목을 새 작업의 출발점으로 삼는다.
 
 ---
 
