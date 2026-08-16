@@ -36,6 +36,7 @@ from app.services.mlops.cloud_run import (
     CloudRunAdminError,
 )
 from app.services.mlops.dataset_builder import (
+    MLOPS_BASE_DATASET_URI,
     DatasetBuildError,
     DatasetStorageError,
     LabeledDatasetBuilderDep,
@@ -194,17 +195,8 @@ def build_labeled_dataset_version(
     builder: LabeledDatasetBuilderDep,
     session: SessionDep,
 ) -> dict[str, Any]:
-    """기존 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
+    """고정 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
 
-    base_dataset = session.get(
-        DatasetVersion,
-        payload.base_dataset_version_id,
-    )
-    if base_dataset is None:
-        raise HTTPException(
-            status_code=404,
-            detail="기준 학습 데이터셋 버전을 찾을 수 없습니다.",
-        )
     existing_version = session.exec(
         select(DatasetVersion).where(DatasetVersion.version == payload.version)
     ).first()
@@ -217,7 +209,6 @@ def build_labeled_dataset_version(
     try:
         result = builder.build(
             session,
-            source_uri=base_dataset.gcs_uri,
             destination_uri=payload.gcs_uri,
         )
     except DatasetStorageError as exc:
@@ -242,11 +233,10 @@ def build_labeled_dataset_version(
     session.refresh(dataset)
     return {
         **_dataset_payload(dataset),
-        "base_dataset_version_id": base_dataset.id,
+        "base_dataset_uri": MLOPS_BASE_DATASET_URI,
         "build": {
             "source_row_count": result.source_row_count,
             "confirmed_label_count": result.confirmed_label_count,
-            "replaced_label_count": result.replaced_label_count,
             "appended_label_count": result.appended_label_count,
         },
     }
