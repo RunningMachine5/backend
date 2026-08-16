@@ -61,10 +61,14 @@ RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbo
 FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 세션 생성 함수를 호출한다.
 거래 하나당 채팅 세션은 하나이며, 하나의 거래는 한 번만 판단된다.
 
-| DTO | 내용 |
+**세션 생성은 HTTP 엔드포인트로 열지 않는다.** 호출자는 FDS 파이프라인뿐이므로
+[session_creator.py](../../app/services/chatbot/session_creator.py)의
+`ChatSessionCreator.create`를 함수로 부른다. 사기 판정을 기다리지 않고 접속 URL이 필요한
+로컬·데모 상황은 [테스트용 세션 생성](#테스트용-세션-생성)의 스크립트가 대신한다.
+
+| 입력 | 내용 |
 | --- | --- |
 | `CreateChatRequest` | 거래 id, 상위 2개 사기유형 코드 `top_fraud_types`(선택) |
-| `CreateChatResponse` | 생성된 채팅 세션 id |
 
 `top_fraud_types`는 룰 채점 결과(`rule_scores`)의 점수 내림차순 상위 2개 사기유형
 코드다([스키마 3.1](schema.md#31-사기-유형)의 4종 중 서로 다른 2개).
@@ -118,6 +122,27 @@ FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을
   (settings 클래스를 쓰지 않는 기존 패턴).
 - 기본 주소로 보냈는지는 세션의 `notified_email`을 `customers.email`과 비교해 구분한다.
   **폴백은 데모용 임시 조치이지 이메일 확보의 대체재가 아니다**([스키마 3.9](schema.md#39-customersemail-확보-경로)).
+
+#### 테스트용 세션 생성
+
+세션 생성 경로가 FDS 파이프라인뿐이라 로컬에서 화면을 확인하려면 이상거래 판정을 기다려야
+한다. 임의 거래로 접속 URL을 뽑는 용도로
+[scripts/create_chat_session.py](../../scripts/create_chat_session.py)를 둔다. 레포 루트에서
+모듈로 실행한다.
+
+```bash
+uv run --env-file .env python -m scripts.create_chat_session <transaction_id>
+```
+
+- `--no-email` — SMTP를 부르지 않고 URL만 출력한다. SMTP 설정이 없는 로컬에서도 상태가
+  `FAILED`로 떨어지지 않는다.
+- `--top-fraud-types FIRST SECOND` — 유형판별 질문([2.4](#유형판별-질문))을 확인할 때 쓴다.
+- `--recreate` — 생성이 멱등이라 같은 거래로 다시 돌리면 기존 URL이 나온다. 새 대화로 다시
+  시작하려면 이 플래그로 기존 세션과 대화 이력을 지우고 만든다.
+
+**운영에서 쓰지 않는다.** 서버와 다른 프로세스라 in-process 브로커에 상태 변경을 발행하지
+못하므로([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)) 담당자 화면에는 SSE 이벤트가
+뜨지 않는다. 거래별 상태 조회로 새로고침하면 보인다.
 
 ### 2.2 채팅 접속 및 본인인증
 
@@ -474,6 +499,11 @@ response = assemble(augmented, guidance)
 
 프론트에는 거래 목록이 있고 각 항목이 `transaction_id`를 알고 있으므로 최초 접속과 SSE
 재연결 시 각 거래에 연결된 채팅 세션의 현재 상태를 개별 조회한다.
+
+세션 생성 직후의 첫 상태(`URL_SENT`, 발송 실패면 `FAILED`)는 **세션을 만든 쪽이 커밋한 뒤**
+발행한다. 세션 생성 HTTP 경로가 없으므로([2.1](#21-채팅-세션-생성-및-이메일-전송)) 이 발행
+책임은 FDS 파이프라인에 있다. 턴 실행 중의 전이는
+[customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 발행한다.
 
 이후 상태 변경은 대시보드가 SSE 연결 하나로 수신한다. 이벤트는 `transaction_id`,
 `chat_session_id`, 변경된 `status`를 포함하며 프론트는 `transaction_id`가 같은 목록 항목만

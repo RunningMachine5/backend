@@ -83,8 +83,9 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
   - `CHAT_LLM_TIMEOUT_SECONDS`, `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용
 - [x] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
-  - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) /
-    `CreateChatResponse`(세션 id) — PRD 2.1의 표 그대로
+  - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) — PRD 2.1의 표.
+    세션 생성이 HTTP 경로를 갖지 않게 되면서 요청 본문이 아니라 생성 함수의 입력 검증이
+    됐고, 짝이던 `CreateChatResponse`는 7단계에서 제거했다
   - 평가 판정 결과 DTO — `SUFFICIENT`/`TOO_VAGUE`/`WANT_END`
   - 가이드 검색 질의 구조화 출력 — `title`, `search_query`, `evidence`와 최대 5개 제한
   - 사기 정황 `type`은 `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]`로 화이트리스트 강제
@@ -234,9 +235,12 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - 폴백: `customers.email`이 `NULL`·빈 문자열·공백뿐이면 `CHAT_FALLBACK_EMAIL`로.
     URL은 `CHAT_BASE_URL + /chat/{chat_session_id}`. `notified_email`·`email_sent_at` 기록,
     `status = URL_SENT`
-- [ ] [app/api/chat.py](../../app/api/chat.py) 재작성 — 엔드포인트 형태는 설계 문서에 없으므로
-  아래는 초안이며 **확정되는 대로 README에 반영한다** (9단계):
-  - `POST /chat/sessions` — 세션 생성 (`CreateChatRequest` → `CreateChatResponse`)
+- [ ] [app/api/chat.py](../../app/api/chat.py) 재작성 — 엔드포인트 형태는 설계 문서에 없었으므로
+  초안으로 만들었고, 확정된 형태를 README에 반영했다:
+  - ~~`POST /chat/sessions`~~ — **만들지 않는다.** 세션 생성의 호출자는 FDS 파이프라인뿐이라
+    함수 호출로 충분하다(PRD 2.1). 초안 단계에서 한 번 만들었다가 제거했다. 로컬에서 접속
+    URL이 필요하면 [scripts/create_chat_session.py](../../scripts/create_chat_session.py)를
+    쓴다(PRD 2.1 테스트용 세션 생성)
   - `POST /chat/{chat_session_id}/verify` — 출생연도 4자리 간이 본인인증
     (실패 횟수 제한·토큰·TTL 없음 — PRD 3.3의 MVP 제외 그대로)
   - `GET /chat/{chat_session_id}` — 세션 상태 + 메시지 이력 (접속, `is_older` 포함)
@@ -249,8 +253,10 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - 페이로드는 `transaction_id`/`chat_session_id`/`status`
   - 전체 세션 스냅샷은 보내지 않음. 최초 접속·재연결 시 거래별 상태 조회로 현재값 복구
   - in-process pub/sub (다중 인스턴스 미고려, MVP 전제)
-- [ ] 테스트 `tests/test_chat_api.py`: TestClient로 생성 멱등·본인인증·버튼 상태 전이·폴백
-  이메일(콘솔 출력 검증), 거래별 세션 상태 조회·SSE 상태 변경 이벤트
+- [ ] 테스트 `tests/test_chat_api.py`: TestClient로 본인인증·버튼 상태 전이,
+  거래별 세션 상태 조회·SSE 상태 변경 이벤트. 세션 생성 멱등·폴백 이메일은
+  `tests/test_chat_session_creator.py`가, 스크립트 인자 계약은
+  `tests/test_create_chat_session_script.py`가 맡는다
 
 ## 8단계 — FDS 파이프라인 결합
 
@@ -261,6 +267,10 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   원칙**으로, 세션 생성 실패는 로그만 남기고 거래 저장을 롤백하지 않는다.
   룰 채점 결과 점수 내림차순 상위 2개를 `top_fraud_types`로 전달하고, 룰 채점이 실패한
   거래는 생략한다(일반 질문 폴백, PRD 2.4)
+- [ ] **첫 상태 SSE 발행도 파이프라인이 맡는다.** 커밋한 뒤 새로 만든 세션에 대해
+  `chat_session_event_broker.publish_status_changed`를 부른다(`URL_SENT` 또는 발송 실패 시
+  `FAILED`). 7단계의 세션 생성 엔드포인트가 하던 일이며, 그 엔드포인트를 없앴으므로
+  지금은 발행 주체가 없다(PRD 2.7)
 - [ ] **고객 안내 메일은 한 통으로 합친다.** Agent 워크플로가 이미
   [`_send_alert_email`](../../app/services/agent/workflow.py#L313)로 이상거래 안내 메일을
   보내고 있고, 그 본문의 챗봇 링크는 `CUSTOMER_CHATBOT_URL` env의 **세션 id 없는 고정 주소**다.
