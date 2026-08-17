@@ -29,7 +29,7 @@ class PR118SchemaModelTests(unittest.TestCase):
         self.assertIn("name", self.tables["customers"].c)
         self.assertNotIn("personal_identifier", self.tables["customers"].c)
         self.assertIn(
-            "flag_deposit_more_than_tenMillion", self.tables["derived_features"].c
+            "flag_deposit_more_than_ten_million", self.tables["derived_features"].c
         )
 
     def test_account_number_and_customer_foreign_keys_match_final_contract(
