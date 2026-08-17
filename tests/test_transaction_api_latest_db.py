@@ -344,6 +344,9 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             source_account_number="11112222",
             recipient_account_number="33334444",
         )
+        # SQLite는 저장 시 timezone을 제거한다. 이 테스트는 임시 고객·계좌의
+        # 재사용만 확인하므로 두 요청 모두 timezone 없는 동일 시각을 사용한다.
+        payload["transaction_datetime"] = "2026-08-14T12:00:00"
 
         first = self.client.post("/transactions", json=payload)
         second = self.client.post("/transactions", json=payload)
