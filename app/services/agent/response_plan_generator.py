@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.agent_status import InformationStatus
 from app.domain.response_policy import ResponsePolicy
@@ -21,7 +21,8 @@ from app.dto.agent_guide import RetrievedGuideChunkDTO
 
 
 RESPONSE_PLAN_REASONING_EFFORT = "low"
-RESPONSE_PLAN_MAX_COMPLETION_TOKENS = 3000
+RESPONSE_PLAN_MAX_COMPLETION_TOKENS = 1200
+GUIDE_CONTEXT_MAX_CHARS = 1200
 
 
 class GeneratedActionDetail(BaseModel):
@@ -30,16 +31,15 @@ class GeneratedActionDetail(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action_code: str
-    procedure_steps: list[str]
-    cautions: list[str]
+    procedure_steps: list[str] = Field(max_length=3)
+    cautions: list[str] = Field(max_length=2)
 
 
 class GeneratedResponsePlan(BaseModel):
-    """LLM 구조화 출력 형식."""
+    """LLM이 정책에 보강할 조치별 상세정보 형식."""
 
     model_config = ConfigDict(extra="forbid")
 
-    summary: str
     actions: list[GeneratedActionDetail]
 
 
@@ -142,7 +142,10 @@ class RagResponsePlanGenerator:
             return ResponsePlanDTO(
                 applied_fraud_type=fraud_type,
                 information_status=InformationStatus.SUFFICIENT,
-                summary=generated.summary,
+                summary=(
+                    f"{fraud_type} 유형의 {policy.risk_grade} 위험 사건에 대한 "
+                    "대응 계획이다."
+                ),
                 recommended_actions=[
                     RecommendedActionDTO(
                         priority=action.priority,
@@ -196,7 +199,7 @@ def _build_messages(
             {
                 "title": guide.title,
                 "heading": guide.heading,
-                "content": guide.content,
+                "content": guide.content[:GUIDE_CONTEXT_MAX_CHARS],
             }
             for guide in guides
         ],
@@ -207,7 +210,8 @@ def _build_messages(
             "content": (
                 "금융 이상거래 모니터링 담당자의 대응 계획을 작성한다. "
                 "사기 유형과 정책 조치를 변경하지 말고, 검색 문서에 근거해 각 조치의 "
-                "구체적인 수행 절차와 주의사항만 작성한다. 개인정보나 인증정보를 "
+                "구체적인 수행 절차는 최대 3개, 주의사항은 최대 2개만 작성한다. "
+                "요약과 정책 조치 설명은 작성하지 않는다. 개인정보나 인증정보를 "
                 "요청하는 절차를 만들지 않는다."
             ),
         },
@@ -221,6 +225,7 @@ def _build_messages(
 __all__ = [
     "GeneratedActionDetail",
     "GeneratedResponsePlan",
+    "GUIDE_CONTEXT_MAX_CHARS",
     "PolicyResponsePlanGenerator",
     "RESPONSE_PLAN_MAX_COMPLETION_TOKENS",
     "RESPONSE_PLAN_REASONING_EFFORT",

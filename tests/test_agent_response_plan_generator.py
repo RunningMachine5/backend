@@ -33,7 +33,6 @@ class RagResponsePlanGeneratorTest(unittest.TestCase):
     def test_rag_context_enriches_policy_actions(self) -> None:
         llm = FakeStructuredLLM(
             GeneratedResponsePlan(
-                summary="원격제어 정황이 확인된 고위험 계정탈취 의심 사건이다.",
                 actions=[
                     GeneratedActionDetail(
                         action_code="VERIFY_CUSTOMER_TRANSACTION",
@@ -62,7 +61,6 @@ class RagResponsePlanGeneratorTest(unittest.TestCase):
     def test_unknown_action_code_uses_policy_fallback(self) -> None:
         llm = FakeStructuredLLM(
             GeneratedResponsePlan(
-                summary="임의 계획",
                 actions=[
                     GeneratedActionDetail(
                         action_code="UNKNOWN_ACTION",
