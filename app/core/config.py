@@ -16,12 +16,16 @@ ML_SERVING_RETRY_DELAY_SECONDS = max(
 
 CHAT_BASE_URL = os.getenv("CHAT_BASE_URL", "http://localhost:8000").rstrip("/")
 CHAT_FALLBACK_EMAIL = os.getenv("CHAT_FALLBACK_EMAIL", "abcd@kosa.com").strip()
-CHAT_LLM_TIMEOUT_SECONDS = float(os.getenv("CHAT_LLM_TIMEOUT_SECONDS", "5"))
+# 챗봇 LLM 타임아웃 설정
+CHAT_LLM_TIMEOUT_SECONDS = float(os.getenv("CHAT_LLM_TIMEOUT_SECONDS", "30"))
+# LLM 실패시 최대 재시도 횟수
 CHAT_LLM_MAX_ATTEMPTS = max(1, int(os.getenv("CHAT_LLM_MAX_ATTEMPTS", "2")))
-# 응답 속도를 위해 평가·추출 같은 중간 단계는 작은 모델로 돌리고,
-# 고객에게 나가는 대응 가이드 생성 한 번만 상위 모델을 쓴다.
-CHAT_LLM_MODEL = os.getenv("CHAT_LLM_MODEL", "gpt-5-nano").strip()
+# 챗봇 고객응답 평가 추출 시 사용할 LLM 모델
+CHAT_LLM_MODEL = os.getenv("CHAT_LLM_MODEL", "gpt-5.6-luna").strip()
+# 챗봇 고객 응답시 사용할 LLM 모델
 CHAT_RESPONSE_LLM_MODEL = os.getenv("CHAT_RESPONSE_LLM_MODEL", "gpt-5.6-luna").strip()
+# 추론 모델의 노력을 low 로 설정해 응답속도를 빠르게 한다
+CHAT_LLM_REASONING_EFFORT = os.getenv("CHAT_LLM_REASONING_EFFORT", "low").strip()
 
 # 챗봇 접속 URL 안내 메일은 Agent 이상거래 안내 메일과 같은 SMTP 계정을 쓴다.
 # 접속 정보(SMTP_HOST/PORT/PASSWORD/TIMEOUT)는 SmtpEmailMessageSender.from_env가 읽는다.

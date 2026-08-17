@@ -59,13 +59,17 @@ class AnswerEvaluator:
                 raw_result = self.structured_llm.invoke(prompt)
                 result = AnswerEvaluationResult.model_validate(raw_result)
             except Exception as exc:
+                # 소진 전 시도도 남긴다. 타임아웃 예산이 부족해 매 턴 재시도로
+                # 흘러가는 상황을 로그만 보고 구분할 수 있어야 한다.
+                logger.warning(
+                    "챗봇 답변 평가 LLM 호출 실패: attempt=%s/%s error=%s: %s",
+                    attempt,
+                    self.max_attempts,
+                    type(exc).__name__,
+                    exc,
+                )
                 if attempt < self.max_attempts:
                     continue
-                logger.warning(
-                    "챗봇 답변 평가 LLM 호출 실패: attempts=%s error=%s",
-                    attempt,
-                    type(exc).__name__,
-                )
                 # 고객 판정 대신 평가 실패 사유만 저장한다.
                 return AnswerEvaluationOutcome(
                     quality_verdict=None,
