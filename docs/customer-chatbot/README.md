@@ -145,6 +145,46 @@ uv run --env-file .env python -m scripts.create_chat_session <transaction_id>
 못하므로([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)) 담당자 화면에는 SSE 이벤트가
 뜨지 않는다. 거래별 상태 조회로 새로고침하면 보인다.
 
+##### 거래까지 함께 만들기
+
+`transactions`가 비어 있는 로컬 DB에서는 위 스크립트에 넘길 거래부터 없다. 본인인증이
+`customers.birth_date`와 대조하고 계좌번호에 FK가 걸려 있어 고객·계좌·거래 세 건을 함께
+넣어야 하는데, 그 앞 단계까지 한 번에 하는 것이
+[scripts/seed_chat_session.py](../../scripts/seed_chat_session.py)다.
+
+```bash
+uv run --env-file .env python -m scripts.seed_chat_session
+```
+
+이름·금액·지역·단말 플래그는 **매 실행마다 달라진다.** 같은 화면만 반복해 보면 값이 화면에
+어떻게 흘러가는지 확인할 수 없기 때문이다. 출력에 본인인증용 출생연도 4자리와 최초 알림
+금액을 함께 찍어준다.
+
+- `--seed N` — 같은 값을 재현한다. 다만 `accounts.account_number`가 UNIQUE라 계좌번호와
+  식별자는 시드와 무관하게 매번 새로 만든다(같은 시드로 두 번 돌려도 중복 키로 죽지 않는다).
+- `--older` / `--younger` — `is_older`([2.1](#21-채팅-세션-생성-및-이메일-전송)) 분기를
+  고정한다. 생략하면 무작위다.
+- `--top-fraud-types` / `--no-fraud-types` — 유형판별 질문과 일반 질문 폴백을 갈라 본다.
+  생략하면 서로 다른 두 유형을 무작위로 고른다.
+- `--email` — 생략하면 `NULL`이라 `CHAT_FALLBACK_EMAIL`로 폴백한다(폴백 경로 확인용 기본값).
+- `--amount` — 출금액을 원 단위 양수로 고정한다. 부호는 스크립트가 붙인다.
+
+원장 삽입과 세션 생성이 한 트랜잭션이라 세션 생성이 실패하면 넣던 고객·계좌·거래도 함께
+롤백된다. 같은 거래로 대화만 다시 시작하려면 출력 마지막 줄의 `create_chat_session
+--recreate` 명령을 쓴다.
+
+쌓인 시드 데이터는 `--cleanup`으로 지운다.
+
+```bash
+uv run --env-file .env python -m scripts.seed_chat_session --cleanup
+```
+
+지울 건수를 먼저 보여주고 확인을 받는다(`--yes`로 건너뛴다). **찾는 기준은 식별자
+접두어(`CUST-SEED-` / `ACCT-SEED-`)뿐이다.** 손으로 넣었거나 FDS 파이프라인이 만든 거래는
+접두어가 없어 지워지지 않는다. 삭제는 거래부터 한다 — `customers`·`accounts`로 향한 FK가
+`RESTRICT`라 부모부터 지우면 거부당하고, 챗봇 세션과 대화 이력은 거래에서 `CASCADE`로
+따라 지워진다.
+
 ### 2.2 채팅 접속 및 본인인증
 
 고객은 이메일로 채팅에 접속한 뒤 본인인증을 진행한다(출생연도 4자리 인증을 넣는 간이 방식).
