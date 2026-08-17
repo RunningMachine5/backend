@@ -11,15 +11,14 @@ from sqlmodel import Session, select
 
 from app.data.model.chatbot import (
     ChatAnswer,
-    ChatCustomerAction,
     ChatFraudCircumstance,
+    ChatGuideSearchQuery,
     ChatMessage,
     ChatSenderType,
     ChatSession,
     ChatSessionStatus,
     FraudTypeScoreAfterChat,
 )
-from app.domain.customer_action_codes import FINAL_CUSTOMER_ACTION_CODES
 from app.domain.fraud_circumstance_codes import FINAL_FRAUD_CIRCUMSTANCE_CODES
 from app.dto.chatbot import AnswerQualityVerdict
 
@@ -52,6 +51,7 @@ class ChatSessionRepository:
         chat_session_id: str,
         transaction_id: int,
         top_fraud_types: list[str] | None = None,
+        is_older: bool = False,
     ) -> ChatSession:
         """
         거래에 연결된 세션이 있으면 반환하고, 없으면 새로 추가한다.
@@ -70,6 +70,7 @@ class ChatSessionRepository:
             top_fraud_types=(
                 list(top_fraud_types) if top_fraud_types is not None else None
             ),
+            is_older=is_older,
         )
         self.session.add(chat_session)
         return chat_session
@@ -113,6 +114,21 @@ class ChatSessionRepository:
         self.session.add(chat_session)
         return chat_session
 
+    def request_handoff(
+        self,
+        chat_session: ChatSession,
+        *,
+        completed_at: datetime | None = None,
+    ) -> ChatSession:
+        """상담사 연결 대기로 전이
+        """
+
+        chat_session.status = ChatSessionStatus.HANDOFF_REQUESTED.value
+        if completed_at is not None:
+            chat_session.completed_at = completed_at
+        self.session.add(chat_session)
+        return chat_session
+
     def set_session_complete(
         self,
         chat_session: ChatSession,
@@ -147,6 +163,19 @@ class ChatSessionRepository:
         chat_session.last_message_id = message.message_id
         self.session.add(chat_session)
         return message
+
+    def list_messages(self, chat_session: ChatSession) -> list[ChatMessage]:
+        """세션의 대화 이력을 보낸 순서대로 조회한다(고객 화면 재접속용)."""
+
+        return list(
+            self.session.exec(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.chat_session_id == chat_session.chat_session_id
+                )
+                .order_by(ChatMessage.message_id)
+            ).all()
+        )
 
     def add_answer(
         self,
@@ -184,32 +213,49 @@ class ChatSessionRepository:
         self.session.add(answer)
         return answer
 
-    def add_customer_action(
+    def add_guide_search_query(
         self,
         chat_session: ChatSession,
         *,
-        action_code: str,
+        position: int,
+        title: str,
+        search_query: str,
         evidence: str,
-        source_answer: ChatAnswer | None = None,
+        source_answer: ChatAnswer,
     ) -> bool:
-        """같은 세션에서 같은 고객행동 코드는 한 번만 저장"""
+        """채택 답변에서 분해된 가이드 검색 질의를 위치별로 한 번만 저장한다."""
 
-        if action_code not in FINAL_CUSTOMER_ACTION_CODES:
+        normalized_title = title.strip()
+        normalized_query = " ".join(search_query.split())
+        if not 1 <= position <= 5:
+            return False
+        if not normalized_title or len(normalized_title) > 120:
+            return False
+        if not normalized_query or len(normalized_query) > 500:
+            return False
+        if not evidence or not source_answer.is_adopted:
+            return False
+
+        source_answer_id = self._source_answer_id(
+            chat_session,
+            source_answer,
+        )
+        source_message = self.session.get(ChatMessage, source_answer.message_id)
+        if source_message is None or evidence not in source_message.message_text:
             return False
 
         return self._insert_do_nothing(
-            ChatCustomerAction,
+            ChatGuideSearchQuery,
             values={
                 "chat_session_id": chat_session.chat_session_id,
-                "action_code": action_code,
+                "position": position,
+                "title": normalized_title,
+                "search_query": normalized_query,
                 "evidence": evidence,
                 "extracted_at": datetime.now(UTC),
-                "source_answer_id": self._source_answer_id(
-                    chat_session,
-                    source_answer,
-                ),
+                "source_answer_id": source_answer_id,
             },
-            index_elements=["chat_session_id", "action_code"],
+            index_elements=["source_answer_id", "position"],
         )
 
     def add_fraud_circumstance(

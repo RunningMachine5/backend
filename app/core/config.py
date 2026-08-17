@@ -19,6 +19,12 @@ CHAT_FALLBACK_EMAIL = os.getenv("CHAT_FALLBACK_EMAIL", "abcd@kosa.com").strip()
 CHAT_LLM_TIMEOUT_SECONDS = float(os.getenv("CHAT_LLM_TIMEOUT_SECONDS", "5"))
 CHAT_LLM_MAX_ATTEMPTS = max(1, int(os.getenv("CHAT_LLM_MAX_ATTEMPTS", "2")))
 
+# 챗봇 접속 URL 안내 메일은 Agent 이상거래 안내 메일과 같은 SMTP 계정을 쓴다.
+# 접속 정보(SMTP_HOST/PORT/PASSWORD/TIMEOUT)는 SmtpEmailMessageSender.from_env가 읽는다.
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "FDShield").strip()
+
 # Backend가 Cloud Run Training Job과 Serving Service를 제어할 때 사용하는 설정입니다.
 # 운영 VM에서는 연결된 서비스 계정의 ADC(메타데이터 자격 증명)를 사용합니다.
 GCP_PROJECT_ID = os.getenv(

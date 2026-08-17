@@ -10,11 +10,7 @@ from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.dto.transaction import TransactionRequestDTO
-from app.repositories.transaction import (
-    AccountOwnershipConflictError,
-    CustomerReferenceNotFoundError,
-    TransactionRepository,
-)
+from app.repositories.transaction import TransactionRepository
 
 
 def _payload(**overrides: object) -> TransactionRequestDTO:
@@ -85,10 +81,11 @@ class TransactionRepositoryTest(unittest.TestCase):
         return transaction
 
     def test_slim_request_saves_transaction_and_account_identifiers(self) -> None:
-        transaction = self._save(_payload())
+        transaction = self._save(_payload(operating_system="iOS"))
 
         self.assertIsInstance(transaction.id, int)
         self.assertEqual(transaction.transaction_amount, -10_000)
+        self.assertEqual(transaction.operating_system, "iOS")
         self.assertEqual(transaction.location, "37.5 127.0")
         source = self.session.exec(
             select(Account).where(Account.account_number == "source-0001")
@@ -113,18 +110,19 @@ class TransactionRepositoryTest(unittest.TestCase):
         assert features is not None
         self.assertEqual(features.account_account_type, "a")
         self.assertEqual(features.account_amount_daily_limit, 0)
+        self.assertEqual(features.operating_system, "ios")
         self.assertEqual(
             features.account_creation_datetime,
             transaction.transaction_datetime,
         )
 
-    def test_missing_customer_is_allowed_only_when_customer_id_is_null(self) -> None:
-        with self.assertRaises(CustomerReferenceNotFoundError):
-            self.repository.add_received(_payload(customer_id="C-MISSING"))
-        self.session.rollback()
-
+    def test_unknown_customer_uses_temporary_profile(self) -> None:
         transaction = self._save(
-            _payload(customer_id=None, recipient_account_number=None, channel="ATM")
+            _payload(
+                customer_id="C-MISSING",
+                recipient_account_number=None,
+                channel="ATM",
+            )
         )
         self.assertIsNone(transaction.customer_id)
         self.assertIsNone(transaction.recipient_account_number)
@@ -135,7 +133,7 @@ class TransactionRepositoryTest(unittest.TestCase):
         self.assertEqual(features.recipient_account_number, "unknown-recipient")
         self.assertEqual(features.customer_name, "unknown-customer")
 
-    def test_existing_account_cannot_be_claimed_by_another_customer(self) -> None:
+    def test_existing_account_uses_latest_transaction_customer(self) -> None:
         self.session.add(_customer("C-OTHER"))
         self.session.flush()
         self.session.add(
@@ -147,8 +145,13 @@ class TransactionRepositoryTest(unittest.TestCase):
         )
         self.session.commit()
 
-        with self.assertRaises(AccountOwnershipConflictError):
-            self.repository.add_received(_payload())
+        transaction = self._save(_payload())
+        source = self.session.get(Account, "source-0001")
+
+        self.assertEqual(transaction.customer_id, "C-REPOSITORY")
+        self.assertIsNotNone(source)
+        assert source is not None
+        self.assertEqual(source.customer_id, "C-REPOSITORY")
 
     def test_each_saved_transaction_gets_next_integer_id(self) -> None:
         first = self._save(_payload())

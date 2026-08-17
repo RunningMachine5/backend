@@ -45,6 +45,15 @@ class RuleExpressionEvaluator:
         context: Mapping[str, Any],
     ) -> bool:
         self.validate(expression)
+        return self.evaluate_validated(expression, context)
+
+    def evaluate_validated(
+        self,
+        expression: Mapping[str, Any],
+        context: Mapping[str, Any],
+    ) -> bool:
+        """이미 검증한 조건식을 다시 순회하지 않고 평가한다."""
+
         return self._evaluate_node(expression, context)
 
     def _validate_node(self, expression: Mapping[str, Any], *, depth: int) -> None:

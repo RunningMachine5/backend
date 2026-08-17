@@ -7,6 +7,7 @@ from datetime import datetime
 
 from sqlmodel import Session
 
+from app.core.config import CHAT_FALLBACK_EMAIL
 from app.data.model.customer import Customer
 from app.data.model.transaction import Transaction
 
@@ -37,11 +38,15 @@ class AgentEmailRepository:
             return None
 
         customer = self.session.get(Customer, transaction.customer_id)
-        if customer is None or not customer.email:
+        if customer is None:
             return None
 
+        # 값이 없으면 CHAT_FALLBACK_EMAIL 로 보낼건데 "  "이런 공백문자는 None 처리가 안되기때문에 통일
+        customer_email = (customer.email or "").strip()
+
         return FraudAlertEmailContext(
-            recipient_email=customer.email,
+            # 이메일이 없으면 CHAT_FALLBACK_EMAIL 에 있는 기본 메일 주소로 보낸다
+            recipient_email=customer_email or CHAT_FALLBACK_EMAIL,
             customer_name=customer.name,
             transaction_datetime=transaction.transaction_datetime,
             transaction_amount=transaction.transaction_amount,

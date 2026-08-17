@@ -51,8 +51,7 @@ class TransactionResponseDTO(BaseModel):
 
     transaction_id: int = Field(strict=True, gt=0)
 
-    # NOT_AVAILABLE은 ML 호출 실패가 아니라 아직 예측 결과가 없는 거래를 뜻한다.
-    prediction_status: Literal["COMPLETED", "FAILED", "NOT_AVAILABLE"]
+    prediction_status: Literal["COMPLETED", "FAILED"]
 
     predict_result: bool | None = None
     predict_proba: float | None = None

@@ -19,6 +19,7 @@ from app.services.agent.similar_case_investigator import (
     OpenAIInvestigationActionSelector,
 )
 from app.services.agent.workflow import AgentWorkflow
+from app.services.chatbot.session_alert_notifier import ChatSessionAlertNotifier
 
 
 def create_agent_workflow(session: Session) -> AgentWorkflow:
@@ -26,6 +27,9 @@ def create_agent_workflow(session: Session) -> AgentWorkflow:
 
     similar_case_tools = DatabaseSimilarCaseTools(
         AgentInvestigationRepository(session)
+    )
+    alert_email_service = FraudAlertEmailService.from_env(
+        AgentEmailRepository(session)
     )
     return AgentWorkflow(
         case_service=AgentCaseService(AgentCaseRepository(session)),
@@ -39,8 +43,9 @@ def create_agent_workflow(session: Session) -> AgentWorkflow:
             OpenAIInvestigationActionSelector(),
         ),
         response_plan_generator=RagResponsePlanGenerator(),
-        email_notifier=FraudAlertEmailService.from_env(
-            AgentEmailRepository(session)
+        email_notifier=ChatSessionAlertNotifier( # FraudEmailService를 사용하는 객체
+            session=session,
+            email_notifier=alert_email_service,
         ),
         dashboard_similar_case_finder=DashboardSimilarCaseService(
             similar_case_tools

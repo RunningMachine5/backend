@@ -15,14 +15,11 @@ from app.dto.transaction import (
     TransactionResponseDTO,
 )
 from app.pipelines.fraud_detection_pipeline import (
-    CustomerIdentificationConflictError,
     FraudDetectionPipeline,
     FraudDetectionResult,
 )
 from app.repositories.transaction import (
     AccountIdentifierConflictError,
-    AccountOwnershipConflictError,
-    CustomerReferenceNotFoundError,
     PredictionResultRepository,
     TransactionLabelRepository,
 )
@@ -84,7 +81,7 @@ def _transaction_response(
             "transaction_id": transaction.id,
             "created_at": transaction.created_at,
             "prediction_status": prediction_status
-            or ("COMPLETED" if prediction_result else "NOT_AVAILABLE"),
+            or ("COMPLETED" if prediction_result else "FAILED"),
             "predict_result": (
                 prediction_result.predict_result if prediction_result else None
             ),
@@ -122,22 +119,6 @@ def create_transaction(
             status_code=status.HTTP_409_CONFLICT,
             detail="계좌 식별값이 기존 원장과 일치하지 않습니다.",
         ) from exc
-    except AccountOwnershipConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="이미 다른 고객이 소유한 출금 계좌입니다.",
-        ) from exc
-    except CustomerIdentificationConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="이미 다른 고객에 사용 중인 identification_number입니다.",
-        ) from exc
-    except CustomerReferenceNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="고객 원장에서 customer_id를 찾을 수 없습니다.",
-        ) from exc
-
     agent_input = _build_agent_input(result)
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)
