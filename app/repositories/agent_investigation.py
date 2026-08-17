@@ -29,6 +29,7 @@ class AgentInvestigationRepository:
             .where(
                 AgentCase.case_id != current_case_id,
                 AgentCase.execution_status == AgentExecutionStatus.COMPLETED.value,
+                AgentReview.decision == "CONFIRMED_FRAUD",
                 AgentReview.confirmed_fraud_type.in_(candidate_fraud_types),
             )
         )

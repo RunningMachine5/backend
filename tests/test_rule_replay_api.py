@@ -57,13 +57,9 @@ def _transaction_features(
     transaction_datetime: datetime,
     loan_type: str = "c",
 ) -> MLTransactionFeatures:
-    suffix = transaction_id.lower()
     raw_features = valid_rule_raw_data()
     raw_features.update(
         {
-            "customer_name": "동명이인 허용 고객",
-            "account_account_number": f"source-{suffix}",
-            "recipient_account_number": f"recipient-{suffix}",
             "customer_loan_type": loan_type,
             "transaction_datetime": transaction_datetime.isoformat(),
         }
@@ -86,19 +82,19 @@ def _save_transaction(
     suffix = transaction_id.lower()
     customer = Customer(
         id=f"C-{suffix}",
-        name=features.customer_name,
+        name="동명이인 허용 고객",
         identification_number=f"identity-{suffix}",
         **build_customer_fields(features),
     )
     source = Account(
         id=f"source-{suffix}",
         customer_id=customer.id,
-        account_number=str(features.account_account_number),
+        account_number=f"source-{suffix}",
         **build_account_fields(features),
     )
     recipient = Account(
         id=f"recipient-{suffix}",
-        account_number=str(features.recipient_account_number),
+        account_number=f"recipient-{suffix}",
     )
     session.add(customer)
     session.flush()
@@ -110,8 +106,6 @@ def _save_transaction(
         customer_id=customer.id,
         source_account_number=source.account_number,
         recipient_account_number=recipient.account_number,
-        ip_address=features.ip_address,
-        mac_address=features.mac_address,
         **build_transaction_fields(features),
     )
     session.add(transaction)

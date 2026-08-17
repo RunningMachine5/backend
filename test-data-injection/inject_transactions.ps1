@@ -1,13 +1,18 @@
 ﻿param(
     [string]$BackendUrl = "http://127.0.0.1:8000",
-    [string]$MlServingUrl = "http://127.0.0.1:8001",
     [string]$AdminToken = "local-dev-mlops-token",
     [string]$CsvPath = "",
-    [string]$ExpectedModelName = "fdshield-fraud-detector-v2",
-    [string]$ExpectedModelVersion = "1",
     [ValidateRange(1, 1000)]
     [int]$TransactionsPerSecond = 100,
-    [string]$SmokePayloadPath = ""
+    [ValidateRange(-1, 1800)]
+    [int]$NormalRowLimit = -1,
+    [ValidateRange(-1, 200)]
+    [int]$FraudRowLimit = -1,
+    [switch]$WaitForAgent,
+    [ValidateRange(5, 600)]
+    [int]$AgentWaitTimeoutSeconds = 180,
+    [ValidateRange(1, 30)]
+    [int]$AgentPollIntervalSeconds = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,128 +22,39 @@ $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($CsvPath)) {
     $CsvPath = Join-Path `
         $PSScriptRoot `
-        "data\transactions_model80_10000.csv"
-}
-if ([string]::IsNullOrWhiteSpace($SmokePayloadPath)) {
-    $SmokePayloadPath = Join-Path `
-        $PSScriptRoot `
-        "..\..\ml\examples\local-model-predict-request.json"
+        "data\transactions_raw64_2000.csv"
 }
 
 if (-not (Test-Path -LiteralPath $CsvPath -PathType Leaf)) {
     throw (
-        "10,000건 raw64 샘플 CSV를 찾을 수 없습니다: $CsvPath. " +
-        "generate_transactions_sample.ps1을 먼저 실행하세요."
+        "2,000건 raw64 샘플 CSV를 찾을 수 없습니다: $CsvPath"
     )
 }
-if (-not (Test-Path -LiteralPath $SmokePayloadPath -PathType Leaf)) {
-    throw (
-        "ML Serving preflight payload를 찾을 수 없습니다: " +
-        "$SmokePayloadPath"
-    )
-}
+$normalTarget = 1800
+$fraudTarget = 200
 
-$totalRows = 10000
-$normalTarget = 9000
-$fraudTarget = 1000
-$expectedRaw64ColumnCount = 64
-$expectedOfficialShapCount = 56
-$expectedRuleTypes = @(
-    "ACCOUNT_TAKEOVER",
-    "FRAUD_USED_ACCOUNT",
-    "MESSENGER_PHISHING",
-    "VOICE_PHISHING"
-)
+$smallRun = $NormalRowLimit -ge 0 -or $FraudRowLimit -ge 0
+if ($smallRun -and ($NormalRowLimit -lt 0 -or $FraudRowLimit -lt 0)) {
+    throw "소량 실행 시 NormalRowLimit과 FraudRowLimit을 함께 지정해야 합니다."
+}
+if ($smallRun -and ($NormalRowLimit + $FraudRowLimit -eq 0)) {
+    throw "소량 실행 대상은 1건 이상이어야 합니다."
+}
+if ($WaitForAgent -and -not $smallRun) {
+    throw "WaitForAgent는 소량 실행 옵션과 함께 사용해야 합니다."
+}
+if ($WaitForAgent -and $FraudRowLimit -eq 0) {
+    throw "Agent E2E에는 사기 라벨 거래를 1건 이상 선택해야 합니다."
+}
 
 $backendHealth = Invoke-RestMethod -Uri "$BackendUrl/health" -TimeoutSec 10
-$mlHealth = Invoke-RestMethod -Uri "$MlServingUrl/health" -TimeoutSec 10
-if ($backendHealth.status -ne "ok" -or $mlHealth.status -ne "ok") {
-    throw "Backend 또는 ML Serving health 확인에 실패했습니다."
-}
-
-try {
-    $smokePayloadJson = Get-Content `
-        -LiteralPath $SmokePayloadPath `
-        -Raw `
-        -Encoding UTF8
-    $smokePayload = $smokePayloadJson | ConvertFrom-Json
-} catch {
-    throw (
-        "ML Serving preflight payload JSON을 읽을 수 없습니다: " +
-        "$SmokePayloadPath - $($_.Exception.Message)"
-    )
-}
-
-$smokePropertyNames = @($smokePayload.PSObject.Properties.Name)
-if (
-    $smokePayload.transaction_id -is [string] -or
-    [long]$smokePayload.transaction_id -le 0 -or
-    $smokePropertyNames.Count -ne 60 -or
-    $smokePropertyNames -contains "features"
-) {
-    throw (
-        "ML Serving preflight payload는 양의 정수 transaction_id를 포함한 " +
-        "flat raw60이어야 합니다: $SmokePayloadPath"
-    )
-}
-
-try {
-    $smokeResponse = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$MlServingUrl/ml/predict" `
-        -ContentType "application/json" `
-        -Body $smokePayloadJson `
-        -TimeoutSec 60
-} catch {
-    $detail = $_.ErrorDetails.Message
-    if ([string]::IsNullOrWhiteSpace([string]$detail)) {
-        $detail = $_.Exception.Message
-    }
-    throw "ML Serving preflight /ml/predict 실패: $detail"
-}
-
-if (
-    $smokeResponse.transaction_id -is [string] -or
-    [long]$smokeResponse.transaction_id -ne [long]$smokePayload.transaction_id
-) {
-    throw (
-        "ML Serving preflight transaction_id가 예상과 다릅니다: " +
-        "$($smokeResponse.transaction_id), " +
-        "expected=$($smokePayload.transaction_id)"
-    )
-}
-if (
-    $smokeResponse.model_name -ne $ExpectedModelName -or
-    [string]$smokeResponse.model_version -ne $ExpectedModelVersion
-) {
-    throw (
-        "ML Serving preflight 모델이 예상과 다릅니다: " +
-        "$($smokeResponse.model_name):$($smokeResponse.model_version), " +
-        "expected=$ExpectedModelName`:$ExpectedModelVersion"
-    )
-}
-if (
-    [int]$smokeResponse.predict_result -notin @(0, 1) -or
-    [double]$smokeResponse.predict_proba -lt 0.0 -or
-    [double]$smokeResponse.predict_proba -gt 1.0
-) {
-    throw "ML Serving preflight 판정 또는 확률 응답이 올바르지 않습니다."
-}
-$smokeShapCount = if ($null -eq $smokeResponse.shap_values) {
-    0
-} else {
-    @($smokeResponse.shap_values.PSObject.Properties).Count
-}
-if ($smokeShapCount -ne $expectedOfficialShapCount) {
-    throw (
-        "ML Serving preflight SHAP 그룹 수가 예상과 다릅니다: " +
-        "$smokeShapCount, expected=$expectedOfficialShapCount"
-    )
+if ($backendHealth.status -ne "ok") {
+    throw "Backend health 확인에 실패했습니다."
 }
 
 $rows = @(Import-Csv -LiteralPath $CsvPath)
-if ($rows.Count -ne $totalRows) {
-    throw "샘플 CSV는 정확히 $totalRows 행이어야 합니다: $($rows.Count)"
+if ($rows.Count -eq 0) {
+    throw "샘플 CSV가 비어 있습니다: $CsvPath"
 }
 $csvColumns = @($rows[0].PSObject.Properties.Name)
 $requiredCsvColumns = @(
@@ -168,24 +84,43 @@ $requiredCsvColumns = @(
 $missingCsvColumns = @(
     $requiredCsvColumns | Where-Object { $_ -notin $csvColumns }
 )
-if (
-    $csvColumns.Count -ne $expectedRaw64ColumnCount -or
-    $missingCsvColumns.Count -gt 0
-) {
-    throw (
-        "샘플 CSV가 raw64 계약과 다릅니다: columns=$($csvColumns.Count), " +
-        "missing=$($missingCsvColumns -join ',')"
-    )
+if ($missingCsvColumns.Count -gt 0) {
+    throw "샘플 CSV 필수 컬럼이 없습니다: $($missingCsvColumns -join ',')"
 }
 
 $normalRows = @($rows | Where-Object { [int]$_.is_fraud -eq 0 }).Count
 $fraudRows = @($rows | Where-Object { [int]$_.is_fraud -eq 1 }).Count
-if ($normalRows -ne $normalTarget -or $fraudRows -ne $fraudTarget) {
+$requiredNormalRows = if ($smallRun) { $NormalRowLimit } else { $normalTarget }
+$requiredFraudRows = if ($smallRun) { $FraudRowLimit } else { $fraudTarget }
+if ($normalRows -lt $requiredNormalRows -or $fraudRows -lt $requiredFraudRows) {
     throw (
-        "샘플 라벨 분포가 예상과 다릅니다: " +
-        "normal=$normalRows/$normalTarget, fraud=$fraudRows/$fraudTarget"
+        "요청한 라벨 수를 선택할 수 없습니다: " +
+        "normal=$normalRows/$requiredNormalRows 이상, " +
+        "fraud=$fraudRows/$requiredFraudRows 이상"
     )
 }
+
+if ($smallRun) {
+    # 앞에서 N건만 자르지 않고 두 라벨을 따로 선택한다.
+    $selectedRows = @(
+        $rows |
+            Where-Object { [int]$_.is_fraud -eq 0 } |
+            Select-Object -First $NormalRowLimit
+        $rows |
+            Where-Object { [int]$_.is_fraud -eq 1 } |
+            Select-Object -First $FraudRowLimit
+    )
+} else {
+    $selectedRows = @(
+        $rows |
+            Where-Object { [int]$_.is_fraud -eq 0 } |
+            Select-Object -First $normalTarget
+        $rows |
+            Where-Object { [int]$_.is_fraud -eq 1 } |
+            Select-Object -First $fraudTarget
+    )
+}
+$selectedRowCount = $selectedRows.Count
 
 # CSV transaction_id는 로그에서 원본 행을 찾기 위한 값이다. 실제 거래 ID는
 # POST /transactions마다 DB가 새 정수로 발급하므로 기존 거래가 있어도 계속
@@ -284,6 +219,24 @@ function Convert-ToApiDateTime {
     )
 }
 
+function Get-NearestRankPercentile {
+    param(
+        [double[]]$Values,
+        [ValidateRange(0.0, 1.0)]
+        [double]$Percentile
+    )
+
+    if ($Values.Count -eq 0) {
+        return $null
+    }
+    $sorted = @($Values | Sort-Object)
+    $index = [math]::Max(
+        0,
+        [math]::Ceiling($sorted.Count * $Percentile) - 1
+    )
+    return [math]::Round([double]$sorted[$index], 0)
+}
+
 # 생성된 DB ID가 같은 실행 안에서 중복되지 않는지도 별도로 확인한다.
 $createdTransactionIds = [System.Collections.Generic.HashSet[long]]::new()
 $processed = 0
@@ -296,12 +249,12 @@ $minimumTransactionIntervalMs = 1000.0 / $TransactionsPerSecond
 $injectionStopwatch = [Diagnostics.Stopwatch]::StartNew()
 $lastTransactionStartedAtMs = $null
 
-$results = foreach ($row in $rows) {
+$results = foreach ($row in $selectedRows) {
     $processed += 1
     Write-Progress `
-        -Activity "slim 거래 10,000건 주입" `
-        -Status "$processed / $totalRows" `
-        -PercentComplete (($processed / $totalRows) * 100)
+        -Activity "slim 거래 주입" `
+        -Status "$processed / $selectedRowCount" `
+        -PercentComplete (($processed / $selectedRowCount) * 100)
 
     $sourceRowId = [string]$row.transaction_id
     $csvLabel = Convert-ToCsvBoolean `
@@ -330,13 +283,12 @@ $results = foreach ($row in $rows) {
     )
 
     # POST /transactions에는 사용자가 실제로 입력할 수 있는 slim DTO 필드만
-    # 보낸다. 고객 상세·계좌 상태·파생 Feature는 현재 Backend의 임시 기본값이
-    # raw59의 빈자리를 채우므로 raw64 전체를 억지로 전송하지 않는다.
+    # 보낸다. 고객 상세·계좌 상태·파생 Feature는 Backend가 조회·계산하므로
+    # raw64 전체를 거래 API에 전송하지 않는다.
     $requestPayload = [ordered]@{
         customer_id = $null
         source_account_number = [string]$row.account_account_number
-        recipient_account_number = Convert-ToNullableString `
-            -Value $row.recipient_account_number
+        recipient_account_number = [string]$row.recipient_account_number
         transaction_datetime = Convert-ToApiDateTime `
             -Value $row.transaction_datetime `
             -FieldName "transaction_datetime" `
@@ -401,6 +353,7 @@ $results = foreach ($row in $rows) {
     }
     $lastTransactionStartedAtMs = $injectionStopwatch.Elapsed.TotalMilliseconds
 
+    $transactionRequestStopwatch = [Diagnostics.Stopwatch]::StartNew()
     try {
         $response = Invoke-RestMethod `
             -Method Post `
@@ -414,6 +367,8 @@ $results = foreach ($row in $rows) {
             $detail = $_.Exception.Message
         }
         throw "거래 $sourceRowId POST 실패: $detail"
+    } finally {
+        $transactionRequestStopwatch.Stop()
     }
 
     if (
@@ -454,12 +409,6 @@ $results = foreach ($row in $rows) {
         $ruleTypes = @(
             $response.rule_scores.PSObject.Properties.Name | Sort-Object
         )
-        if (($ruleTypes -join ",") -ne ($expectedRuleTypes -join ",")) {
-            throw (
-                "거래 $sourceRowId의 룰 유형이 예상과 다릅니다: " +
-                "$($ruleTypes -join ',')"
-            )
-        }
     } else {
         if ($null -ne $response.rule_set_id -or $null -ne $response.rule_scores) {
             throw "정상 판정 거래 $sourceRowId에 룰 점수가 생성됐습니다."
@@ -491,15 +440,106 @@ $results = foreach ($row in $rows) {
         Probability = [double]$response.predict_proba
         RuleSetId = $response.rule_set_id
         RuleTypes = if ($ruleTypes.Count) { $ruleTypes -join "," } else { "-" }
+        TransactionApiLatencyMs = [math]::Round(
+            $transactionRequestStopwatch.Elapsed.TotalMilliseconds,
+            0
+        )
+        AgentEligibleAtUtc = [datetime]::UtcNow
     }
 }
-Write-Progress -Activity "slim 거래 10,000건 주입" -Completed
+Write-Progress -Activity "slim 거래 주입" -Completed
+
+$agentResults = @()
+if ($WaitForAgent) {
+    $pendingAgents = @{}
+    foreach ($result in @($results | Where-Object { $_.MlFraud })) {
+        $pendingAgents[[string]$result.TransactionId] = $result
+    }
+    $agentWaitStopwatch = [Diagnostics.Stopwatch]::StartNew()
+
+    while (
+        $pendingAgents.Count -gt 0 -and
+        $agentWaitStopwatch.Elapsed.TotalSeconds -lt $AgentWaitTimeoutSeconds
+    ) {
+        foreach ($transactionIdText in @($pendingAgents.Keys)) {
+            try {
+                $agentResponse = Invoke-RestMethod `
+                    -Uri (
+                        "$BackendUrl/api/transactions/" +
+                        "$transactionIdText/agent-case"
+                    ) `
+                    -TimeoutSec 30
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode.value__
+                if ($statusCode -eq 404) {
+                    continue
+                }
+                throw (
+                    "거래 $transactionIdText Agent 조회 실패: " +
+                    "$($_.Exception.Message)"
+                )
+            }
+
+            $agentCase = $agentResponse.data
+            if ($agentCase.execution_status -notin @("COMPLETED", "FAILED")) {
+                continue
+            }
+
+            $sourceResult = $pendingAgents[$transactionIdText]
+            $recommendedActions = @(
+                $agentCase.response_result.recommended_actions
+            )
+            $hasDetailedProcedures = @(
+                $recommendedActions |
+                    Where-Object { @($_.procedure_steps).Count -gt 0 }
+            ).Count -gt 0
+            $agentResults += [pscustomobject]@{
+                TransactionId = [long]$transactionIdText
+                CaseId = [string]$agentCase.case_id
+                ExecutionStatus = [string]$agentCase.execution_status
+                FailureReason = [string]$agentCase.failure_reason
+                HasResponsePlan = $null -ne $agentCase.response_result
+                PolicyOnlyPlan = (
+                    $null -ne $agentCase.response_result -and
+                    -not $hasDetailedProcedures
+                )
+                ObservedAgentLatencyMs = [math]::Round(
+                    ([datetime]::UtcNow - $sourceResult.AgentEligibleAtUtc).
+                        TotalMilliseconds,
+                    0
+                )
+            }
+            $pendingAgents.Remove($transactionIdText)
+        }
+
+        if ($pendingAgents.Count -gt 0) {
+            Start-Sleep -Seconds $AgentPollIntervalSeconds
+        }
+    }
+    $agentWaitStopwatch.Stop()
+
+    foreach ($transactionIdText in @($pendingAgents.Keys)) {
+        $sourceResult = $pendingAgents[$transactionIdText]
+        $agentResults += [pscustomobject]@{
+            TransactionId = [long]$transactionIdText
+            CaseId = $null
+            ExecutionStatus = "TIMEOUT"
+            FailureReason = "Agent 완료 대기시간을 초과했습니다."
+            HasResponsePlan = $false
+            PolicyOnlyPlan = $false
+            ObservedAgentLatencyMs = [math]::Round(
+                ([datetime]::UtcNow - $sourceResult.AgentEligibleAtUtc).
+                    TotalMilliseconds,
+                0
+            )
+        }
+    }
+}
 
 Write-Output (
-    "Backend=$($backendHealth.status), ML=$($mlHealth.status), " +
-    "MLPreflight=$($smokeResponse.model_name):$($smokeResponse.model_version), " +
-    "SHAPGroups=$smokeShapCount, ActiveRuleSet=$($activeRuleSet.id), " +
-    "TransactionRateLimit=$TransactionsPerSecond/sec"
+    "Backend=$($backendHealth.status), ActiveRuleSet=$($activeRuleSet.id), " +
+    "TransactionRateLimit=$TransactionsPerSecond/sec, " +
+    "SmallRun=$smallRun, WaitForAgent=$WaitForAgent"
 )
 $agreementCount = @($results | Where-Object { $_.CsvLabel -eq $_.MlFraud }).Count
 $summary = [pscustomobject]@{
@@ -510,6 +550,10 @@ $summary = [pscustomobject]@{
     MlFraudRows = @($results | Where-Object { $_.MlFraud }).Count
     RuleScoredRows = @($results | Where-Object { $null -ne $_.RuleSetId }).Count
     LabelAgreement = "$agreementCount / $($results.Count)"
+    TransactionApiAverageMs = [math]::Round(
+        ($results | Measure-Object TransactionApiLatencyMs -Average).Average,
+        0
+    )
 }
 $matrix = foreach ($csvLabel in @($false, $true)) {
     foreach ($mlFraud in @($false, $true)) {
@@ -534,6 +578,51 @@ $results |
     Select-Object -First 10 `
         SourceRowId,TransactionId,CsvLabel,MlFraud,Probability,RuleSetId,RuleTypes |
     Format-Table -AutoSize
+
+if ($WaitForAgent) {
+    $agentLatencyValues = @(
+        $agentResults | ForEach-Object { [double]$_.ObservedAgentLatencyMs }
+    )
+    $agentSummary = [pscustomobject]@{
+        AgentTargets = $agentResults.Count
+        Completed = @(
+            $agentResults | Where-Object { $_.ExecutionStatus -eq "COMPLETED" }
+        ).Count
+        Failed = @(
+            $agentResults | Where-Object { $_.ExecutionStatus -eq "FAILED" }
+        ).Count
+        TimedOut = @(
+            $agentResults | Where-Object { $_.ExecutionStatus -eq "TIMEOUT" }
+        ).Count
+        ResponsePlanCreated = @(
+            $agentResults | Where-Object { $_.HasResponsePlan }
+        ).Count
+        PolicyOnlyPlans = @(
+            $agentResults | Where-Object { $_.PolicyOnlyPlan }
+        ).Count
+        ObservedAgentLatencyP50Ms = Get-NearestRankPercentile `
+            -Values $agentLatencyValues `
+            -Percentile 0.50
+        ObservedAgentLatencyP95Ms = Get-NearestRankPercentile `
+            -Values $agentLatencyValues `
+            -Percentile 0.95
+    }
+    Write-Output "Agent background E2E summary"
+    $agentSummary | Format-List
+    $agentResults |
+        Sort-Object TransactionId |
+        Format-Table `
+            TransactionId,CaseId,ExecutionStatus,HasResponsePlan,PolicyOnlyPlan,
+            ObservedAgentLatencyMs,FailureReason `
+            -AutoSize
+
+    if ($agentSummary.Failed -gt 0 -or $agentSummary.TimedOut -gt 0) {
+        throw "완료되지 않은 Agent 사건이 있습니다. Agent 요약을 확인하세요."
+    }
+    if ($agentSummary.ResponsePlanCreated -ne $agentSummary.Completed) {
+        throw "COMPLETED Agent 사건 중 대응 계획이 없는 사건이 있습니다."
+    }
+}
 
 if ($summary.RuleScoredRows -ne $summary.MlFraudRows) {
     throw "ML 사기 판정 수와 룰 점수 저장 수가 일치하지 않습니다."

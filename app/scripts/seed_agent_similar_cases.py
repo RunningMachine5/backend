@@ -40,7 +40,15 @@ FRAUD_TYPES = (
     ACCOUNT_TAKEOVER,
     FRAUD_USED_ACCOUNT,
 )
-CASES_PER_TYPE = 4
+CASES_PER_TYPE = 6
+RISK_SCORES = (58, 62, 66, 69, 76, 91)
+RISK_GRADES = ("MEDIUM", "MEDIUM", "MEDIUM", "MEDIUM", "HIGH", "VERY_HIGH")
+REPRESENTATIVE_EVIDENCE = {
+    VOICE_PHISHING: "severe_amount_context",
+    MESSENGER_PHISHING: "remote_control",
+    ACCOUNT_TAKEOVER: "remote_control",
+    FRAUD_USED_ACCOUNT: "rapid_repeat",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +61,7 @@ class SimilarCaseSeedResult:
 
 
 def seed_agent_similar_cases(session: Session) -> SimilarCaseSeedResult:
-    """4개 사기 유형별 완료·검토 사건을 생성하고 중복 사건은 건너뛴다."""
+    """4개 사기 유형별 검토 사건 6건을 만들고 중복 사건은 건너뛴다."""
 
     rule_set = session.exec(
         select(FraudRuleSet)
@@ -107,7 +115,15 @@ def seed_agent_similar_cases(session: Session) -> SimilarCaseSeedResult:
 
         for case_index in range(CASES_PER_TYPE):
             case_id = _case_id(type_index, case_index)
-            if session.get(AgentCase, case_id) is not None:
+            existing_case = session.get(AgentCase, case_id)
+            if existing_case is not None:
+                _synchronize_existing_case(
+                    session,
+                    agent_case=existing_case,
+                    fraud_type=fraud_type,
+                    case_index=case_index,
+                    component_keys=component_keys,
+                )
                 skipped_count += 1
                 continue
             _add_resolved_case(
@@ -184,8 +200,8 @@ def _add_resolved_case(
     )
     session.flush()
 
-    amounts = (15_000_000, 12_000_000, 9_000_000, 6_000_000)
-    channels = ("mobile", "internet", "atm", "mobile")
+    amounts = (15_000_000, 12_000_000, 9_000_000, 6_000_000, 3_000_000, 800_000)
+    channels = ("mobile", "internet", "atm", "mobile", "internet", "atm")
     transaction_amount = amounts[case_index]
     transaction = Transaction(
         customer_id=customer_id,
@@ -222,7 +238,7 @@ def _add_resolved_case(
         MLPredictionResult(
             transaction_id=transaction_id,
             predict_result=True,
-            predict_proba=(0.96, 0.91, 0.86, 0.80)[case_index],
+            predict_proba=(0.96, 0.91, 0.86, 0.80, 0.74, 0.67)[case_index],
             model_name="demo-fraud-model",
             model_version="seed-1.0",
             latency_ms=25 + case_index,
@@ -236,7 +252,11 @@ def _add_resolved_case(
         primary_fraud_type=fraud_type,
         type_scores=_type_scores(fraud_type, case_index),
         matched_components={
-            fraud_type: _select_component_keys(component_keys, case_index)
+            fraud_type: _select_component_keys(
+                component_keys,
+                fraud_type,
+                case_index,
+            )
         },
         created_at=occurred_at,
     )
@@ -245,10 +265,7 @@ def _add_resolved_case(
     if score_result.id is None:
         raise RuntimeError("시연용 Rule 결과 식별자를 생성하지 못했다.")
 
-    # 같은 유형의 시연 사건끼리는 위험등급을 맞추고 점수 차이만 둔다.
-    # 현재 사건을 제외한 동종 사건 3건이 Top 3 비교 후보가 되기 위한 구성이다.
-    risk_scores = (94, 90, 86, 82)
-    risk_grades = ("VERY_HIGH", "VERY_HIGH", "VERY_HIGH", "VERY_HIGH")
+    # 실제 거래의 위험등급이 달라도 동종 완료 사건을 찾을 수 있도록 분산한다.
     completed_at = occurred_at + timedelta(seconds=5)
     session.add(
         AgentCase(
@@ -256,8 +273,8 @@ def _add_resolved_case(
             transaction_id=transaction_id,
             fraud_type_score_result_id=score_result.id,
             execution_status=AgentExecutionStatus.COMPLETED.value,
-            risk_score=risk_scores[case_index],
-            risk_grade=risk_grades[case_index],
+            risk_score=RISK_SCORES[case_index],
+            risk_grade=RISK_GRADES[case_index],
             response_result={
                 "applied_fraud_type": fraud_type,
                 "information_status": "SUFFICIENT",
@@ -277,19 +294,16 @@ def _add_resolved_case(
             reviewer_id="DEMO-REVIEWER",
             decision="CONFIRMED_FRAUD",
             confirmed_fraud_type=fraud_type,
-            performed_actions=[
-                {
-                    "action_code": "VERIFY_CUSTOMER_TRANSACTION",
-                    "completed": True,
-                }
-            ],
+            performed_actions=_performed_actions(fraud_type),
             checklist_results=[
                 {
                     "item_code": "CUSTOMER_CONFIRMED",
                     "checked": True,
                 }
             ],
-            resolution_summary=f"담당자가 {fraud_type} 유형으로 확정한 시연 사건이다.",
+            resolution_summary=(
+                f"담당자가 {fraud_type} 유형으로 확정하고 대응을 완료했다."
+            ),
             reviewed_at=completed_at,
         )
     )
@@ -299,20 +313,86 @@ def _case_id(type_index: int, case_index: int) -> str:
     return f"DEMO-CASE-{type_index + 1:02d}-{case_index + 1:02d}"
 
 
+def _synchronize_existing_case(
+    session: Session,
+    *,
+    agent_case: AgentCase,
+    fraud_type: str,
+    case_index: int,
+    component_keys: list[str],
+) -> None:
+    """이전 Seed 사건의 위험도와 담당자 확정 결과를 최신 구성으로 맞춘다."""
+
+    agent_case.risk_score = RISK_SCORES[case_index]
+    agent_case.risk_grade = RISK_GRADES[case_index]
+    score_result = session.get(
+        FraudTypeScoreResult,
+        agent_case.fraud_type_score_result_id,
+    )
+    if score_result is not None:
+        score_result.type_scores = _type_scores(fraud_type, case_index)
+        score_result.matched_components = {
+            fraud_type: _select_component_keys(
+                component_keys,
+                fraud_type,
+                case_index,
+            )
+        }
+    review = session.get(AgentReview, agent_case.case_id)
+    if review is None:
+        return
+    review.decision = "CONFIRMED_FRAUD"
+    review.confirmed_fraud_type = fraud_type
+    review.performed_actions = _performed_actions(fraud_type)
+    review.resolution_summary = (
+        f"담당자가 {fraud_type} 유형으로 확정하고 대응을 완료했다."
+    )
+
+
 def _type_scores(primary_type: str, case_index: int) -> dict[str, float]:
-    primary_scores = (0.90, 0.84, 0.78, 0.72)
+    primary_scores = (0.90, 0.84, 0.78, 0.72, 0.63, 0.57)
     scores = {fraud_type: 0.10 for fraud_type in FRAUD_TYPES}
     scores[primary_type] = primary_scores[case_index]
     secondary_index = (FRAUD_TYPES.index(primary_type) + 1) % len(FRAUD_TYPES)
-    scores[FRAUD_TYPES[secondary_index]] = (0.42, 0.38, 0.34, 0.30)[case_index]
+    scores[FRAUD_TYPES[secondary_index]] = (
+        0.42,
+        0.38,
+        0.34,
+        0.30,
+        0.55,
+        0.53,
+    )[case_index]
     return scores
 
 
-def _select_component_keys(keys: list[str], case_index: int) -> list[str]:
+def _select_component_keys(
+    keys: list[str],
+    fraud_type: str,
+    case_index: int,
+) -> list[str]:
+    representative = REPRESENTATIVE_EVIDENCE[fraud_type]
+    if case_index < 3 and representative in keys:
+        return [representative]
     maximum = min(len(keys), 3)
     count = max(1, maximum - (case_index % maximum))
     start = case_index % len(keys)
     return [keys[(start + offset) % len(keys)] for offset in range(count)]
+
+
+def _performed_actions(fraud_type: str) -> list[dict[str, object]]:
+    action_code = {
+        VOICE_PHISHING: "GUIDE_VOICE_PHISHING_RESPONSE",
+        MESSENGER_PHISHING: "GUIDE_MESSENGER_PHISHING_RESPONSE",
+        ACCOUNT_TAKEOVER: "GUIDE_SECURITY_CHECK",
+        FRAUD_USED_ACCOUNT: "REVIEW_ACCOUNT_FLOW",
+    }[fraud_type]
+    return [
+        {
+            "action_code": action_code,
+            "completed": True,
+            "fraud_type": fraud_type,
+        }
+    ]
 
 
 def main() -> None:

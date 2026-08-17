@@ -8,7 +8,6 @@ from sqlalchemy import (
     Float,
     Index,
     SmallInteger,
-    Text,
 )
 from sqlmodel import Field, SQLModel
 
@@ -88,10 +87,9 @@ class Transaction(SQLModel, table=True):
         max_length=255,
         index=True,
     )
-    recipient_account_number: str | None = Field(
-        default=None,
+    recipient_account_number: str = Field(
         foreign_key="accounts.account_number",
-        ondelete="SET NULL",
+        ondelete="RESTRICT",
         max_length=255,
         index=True,
     )
@@ -125,7 +123,6 @@ class Transaction(SQLModel, table=True):
         default=None,
         sa_column=Column(MACADDR_COLUMN, nullable=True),
     )
-    location: str = Field(sa_column=Column(Text, nullable=False))
     location_lat: float | None = Field(
         default=None,
         sa_column=Column(Float, nullable=True),

@@ -14,7 +14,6 @@ from urllib.parse import quote, urlsplit
 from fastapi import Depends
 from google import auth as google_auth
 from google.auth.transport.requests import AuthorizedSession
-from pydantic import ValidationError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -23,10 +22,7 @@ from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
-from app.dto.ml_features import (
-    RAW_TRANSACTION_FEATURE_COLUMNS,
-    MLTransactionFeatures,
-)
+from app.dto.ml_features import MLTransactionFeatures
 from app.services.features.ml_feature_assembler import assemble_ml_features
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -63,18 +59,78 @@ TRAINING_LABEL_COLUMN = "is_fraud"
 TRAINING_FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
 TRAINING_FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
 
-# ML 담당자가 전달한 train1.csv는 raw59에 식별/메타데이터 4개와 라벨을
-# 정해진 위치에 끼운 raw64 계약이다. 실제 파일의 known typo 한 개도 헤더
-# 호환을 위해 그대로 출력하고 ML loader가 canonical 이름으로 정규화한다.
+# 실시간 추론은 담당자의 raw51을 사용하지만 기존 train1.csv는 64열 원본이다.
+# 재학습 데이터는 기존 파일에 행을 추가하므로 이 헤더 순서를 그대로 유지한다.
+TRAINING_MODEL_INPUT_COLUMNS = (
+    "customer_birth_date",
+    "customer_gender",
+    "customer_name",
+    "customer_registration_datetime",
+    "customer_credit_rating",
+    "customer_flag_change_of_authentication_1",
+    "customer_flag_change_of_authentication_2",
+    "customer_flag_change_of_authentication_3",
+    "customer_flag_change_of_authentication_4",
+    "customer_rooting_jailbreak_indicator",
+    "customer_mobile_roaming_indicator",
+    "customer_vpn_indicator",
+    "customer_loan_type",
+    "customer_flag_terminal_malicious_behavior_1",
+    "customer_flag_terminal_malicious_behavior_2",
+    "customer_flag_terminal_malicious_behavior_3",
+    "customer_flag_terminal_malicious_behavior_5",
+    "customer_flag_terminal_malicious_behavior_6",
+    "customer_inquery_atm_limit",
+    "customer_increase_atm_limit",
+    "account_account_number",
+    "account_account_type",
+    "account_creation_datetime",
+    "account_initial_balance",
+    "account_balance",
+    "account_indicator_release_limit_excess",
+    "account_amount_daily_limit",
+    "account_indicator_openbanking",
+    "account_remaining_amount_daily_limit_exceeded",
+    "account_release_suspention",
+    "account_one_month_max_amount",
+    "account_one_month_std_dev",
+    "account_dawn_one_month_max_amount",
+    "account_dawn_one_month_std_dev",
+    "transaction_datetime",
+    "transaction_amount",
+    "channel",
+    "operating_system",
+    "error_code",
+    "type_general_automatic",
+    "ip_address",
+    "mac_address",
+    "access_medium",
+    "location",
+    "recipient_account_number",
+    "transaction_num_connection_failure",
+    "another_person_account",
+    "distance",
+    "time_difference",
+    "unused_terminal_status",
+    "last_atm_transaction_datetime",
+    "last_bank_branch_transaction_datetime",
+    "flag_deposit_more_than_ten_million",
+    "unused_account_status",
+    "recipient_account_suspend_status",
+    "number_of_transaction_with_the_account",
+    "transaction_history_with_the_account",
+    "first_time_ios_by_vulnerable_user",
+    "transaction_resumed_date",
+)
 TRAINING_CSV_COLUMNS = (
     TRAINING_TRANSACTION_ID_COLUMN,
-    *RAW_TRANSACTION_FEATURE_COLUMNS[:3],
+    *TRAINING_MODEL_INPUT_COLUMNS[:3],
     TRAINING_IDENTIFICATION_COLUMN,
     *(
         TRAINING_FLAG_DEPOSIT_ALIAS
         if column == TRAINING_FLAG_DEPOSIT_CANONICAL
         else column
-        for column in RAW_TRANSACTION_FEATURE_COLUMNS[3:]
+        for column in TRAINING_MODEL_INPUT_COLUMNS[3:]
     ),
     TRAINING_CUSTOMER_ID_COLUMN,
     TRAINING_BALANCE_DRAIN_RATIO_COLUMN,
@@ -350,13 +406,7 @@ class LabeledDatasetBuilder:
         assembled: MLTransactionFeatures,
     ) -> dict[str, object]:
         transaction = confirmed.transaction
-        try:
-            features = assembled.model_dump(mode="python", by_alias=False)
-        except ValidationError as exc:
-            raise DatasetBuildError(
-                "확정 라벨 거래의 원본 Feature가 학습 계약과 맞지 않습니다: "
-                f"{transaction.id}"
-            ) from exc
+        features = assembled.model_dump(mode="python", by_alias=False)
 
         row: dict[str, object] = {name: "" for name in fieldnames}
         for field_name, value in features.items():
@@ -369,6 +419,41 @@ class LabeledDatasetBuilder:
                 field_name,
                 value,
             )
+
+        # train1.csv에는 남아 있지만 raw51에서는 모델 입력에서 빠진 원본 컬럼이다.
+        # 저장된 정규화 값으로 채우고, 더 이상 계산하지 않는 iOS 파생값만 0으로 둔다.
+        row.update(
+            {
+                "customer_name": confirmed.customer.name,
+                "account_account_number": confirmed.source_account.account_number,
+                "account_release_suspention": int(
+                    assembled.recipient_release_suspension
+                ),
+                "error_code": transaction.error_code or "",
+                "ip_address": LabeledDatasetBuilder._csv_feature_value(
+                    "ip_address",
+                    transaction.ip_address,
+                ),
+                "mac_address": LabeledDatasetBuilder._csv_feature_value(
+                    "mac_address",
+                    transaction.mac_address,
+                ),
+                "location": (
+                    f"{transaction.location_lat} {transaction.location_lon}"
+                    if transaction.location_lat is not None
+                    and transaction.location_lon is not None
+                    else ""
+                ),
+                "recipient_account_number": transaction.recipient_account_number,
+                "first_time_ios_by_vulnerable_user": 0,
+                "transaction_resumed_date": (
+                    LabeledDatasetBuilder._csv_feature_value(
+                        "transaction_resumed_date",
+                        assembled.recipient_transaction_resumed_date,
+                    )
+                ),
+            }
+        )
 
         balance_drain_ratio: float | str = ""
         if transaction.initial_balance is not None and transaction.initial_balance > 0:

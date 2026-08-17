@@ -104,6 +104,13 @@ class CaseListItemResponse(BaseModel):
     transaction_datetime: str
     review_status: str
 
+# 처리 페이지 목록 전체 응답
+class CaseListResponse(BaseModel):
+    items: list[CaseListItemResponse]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+    total_count: int = Field(ge=0)
+
 # 대시보드 요약 정보를 담는 DTO. 이걸 왜 담음?
 class DashboardSummaryResponse(BaseModel):
     pending_case_count: int = Field(ge=0)
