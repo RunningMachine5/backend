@@ -13,12 +13,11 @@ from app.services.rules.feature_builder import (
 
 
 def valid_rule_raw_data() -> dict[str, object]:
-    """공통 신호가 모두 꺼진 ML raw60의 59개 Feature를 반환한다."""
+    """공통 신호가 모두 꺼진 ML raw51을 반환한다."""
 
     return {
         "customer_birth_date": "1986-08-08T00:00:00+09:00",
         "customer_gender": "female",
-        "customer_name": "테스트 고객",
         "customer_registration_datetime": "2020-01-01T09:00:00+09:00",
         "customer_credit_rating": 5,
         "customer_flag_change_of_authentication_1": 0,
@@ -36,7 +35,6 @@ def valid_rule_raw_data() -> dict[str, object]:
         "customer_flag_terminal_malicious_behavior_6": 0,
         "customer_inquery_atm_limit": 0,
         "customer_increase_atm_limit": 0,
-        "account_account_number": "source-001",
         "account_account_type": "a",
         "account_creation_datetime": "2021-01-01T09:00:00+09:00",
         "account_initial_balance": 10_000_000,
@@ -45,7 +43,7 @@ def valid_rule_raw_data() -> dict[str, object]:
         "account_amount_daily_limit": 10_000_000,
         "account_indicator_openbanking": 0,
         "account_remaining_amount_daily_limit_exceeded": 9_900_000,
-        "account_release_suspention": 0,
+        "recipient_release_suspension": 0,
         "account_one_month_max_amount": 2_000_000,
         "account_one_month_std_dev": 100_000.0,
         "account_dawn_one_month_max_amount": 1_000_000,
@@ -54,13 +52,8 @@ def valid_rule_raw_data() -> dict[str, object]:
         "transaction_amount": 100_000,
         "channel": "internet",
         "operating_system": "windows",
-        "error_code": "a",
         "type_general_automatic": "automatic",
-        "ip_address": "192.0.2.1",
-        "mac_address": "00:11:22:33:44:55",
         "access_medium": "a",
-        "location": "37.5665,126.9780",
-        "recipient_account_number": "recipient-001",
         "transaction_num_connection_failure": 0,
         "another_person_account": 0,
         "distance": 0.0,
@@ -73,8 +66,7 @@ def valid_rule_raw_data() -> dict[str, object]:
         "recipient_account_suspend_status": 0,
         "number_of_transaction_with_the_account": 2,
         "transaction_history_with_the_account": 2,
-        "first_time_ios_by_vulnerable_user": 0,
-        "transaction_resumed_date": None,
+        "recipient_transaction_resumed_date": None,
     }
 
 
@@ -91,10 +83,10 @@ class RuleFeatureBuilderTest(unittest.TestCase):
     def build(self, raw_data: dict[str, object]) -> dict[str, object]:
         return self.builder.build(valid_rule_features(raw_data))
 
-    def test_raw_contract_has_exactly_59_model_inputs(self) -> None:
+    def test_raw_contract_has_exactly_51_model_inputs(self) -> None:
         raw_data = valid_rule_raw_data()
 
-        self.assertEqual(len(raw_data), 59)
+        self.assertEqual(len(raw_data), 51)
         self.assertEqual(set(raw_data), set(RULE_RAW_FEATURES))
 
     def test_accepts_shared_ml_transaction_features(self) -> None:
@@ -125,10 +117,12 @@ class RuleFeatureBuilderTest(unittest.TestCase):
                 "transaction_amount": 9_000_000,
                 "account_balance": 1_000_000,
                 "account_remaining_amount_daily_limit_exceeded": 500_000,
-                "account_release_suspention": 1,
+                "recipient_release_suspension": 1,
                 "recipient_account_suspend_status": 1,
                 "unused_account_status": 1,
-                "transaction_resumed_date": "2026-07-20T14:30:00+09:00",
+                "recipient_transaction_resumed_date": (
+                    "2026-07-20T14:30:00+09:00"
+                ),
                 "another_person_account": 1,
                 "transaction_history_with_the_account": 1,
                 "number_of_transaction_with_the_account": 3,
@@ -214,38 +208,6 @@ class RuleFeatureBuilderTest(unittest.TestCase):
         self.assertTrue(context["daily_limit_pressure"])
         self.assertFalse(context["amount_anomaly"])
         self.assertFalse(context["severe_amount_context"])
-
-    def test_nullable_ml_owner_fields_do_not_break_rule_context(self) -> None:
-        raw_data = valid_rule_raw_data()
-        raw_data.update(
-            {
-                "account_account_type": "e",
-                "account_initial_balance": None,
-                "account_balance": None,
-                "account_remaining_amount_daily_limit_exceeded": None,
-                "access_medium": None,
-            }
-        )
-
-        context = self.build(raw_data)
-
-        self.assertEqual(context["account_account_type"], "e")
-        self.assertIsNone(context["account_initial_balance"])
-        self.assertIsNone(context["account_balance"])
-        self.assertIsNone(
-            context["account_remaining_amount_daily_limit_exceeded"]
-        )
-        self.assertIsNone(context["access_medium"])
-        self.assertFalse(context["balance_depletion"])
-        self.assertFalse(context["daily_limit_pressure"])
-
-    def test_empty_error_code_is_preserved_for_rules(self) -> None:
-        raw_data = valid_rule_raw_data()
-        raw_data["error_code"] = ""
-
-        context = self.build(raw_data)
-
-        self.assertEqual(context["error_code"], "")
 
     def test_impossible_travel_uses_distance_and_two_hour_boundary(self) -> None:
         raw_data = valid_rule_raw_data()

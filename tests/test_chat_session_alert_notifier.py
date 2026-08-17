@@ -273,6 +273,7 @@ class ChatSessionAlertNotifierIntegrationTest(unittest.TestCase):
         transaction = Transaction(
             customer_id=customer.id,
             source_account_number="source-integration",
+            recipient_account_number="recipient-integration",
             transaction_datetime=NOW,
             transaction_amount=-1_000_000,
             channel="mobile",

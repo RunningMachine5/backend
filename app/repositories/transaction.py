@@ -1,5 +1,4 @@
-from datetime import UTC, datetime, timedelta
-from hashlib import sha256
+from datetime import UTC, datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import aliased
@@ -16,27 +15,6 @@ from app.dto.transaction import TransactionRequestDTO
 from app.services.features.ml_feature_assembler import assemble_ml_features
 
 
-def _account_id(account_number: str) -> str:
-    """CSV 계좌번호를 accounts.id에 저장할 내부 식별자로 안정적으로 변환한다."""
-
-    if len(account_number) <= 64:
-        return account_number
-    digest = sha256(account_number.encode("utf-8")).hexdigest()
-    return f"ACC_{digest[:32]}"
-
-
-class AccountIdentifierConflictError(RuntimeError):
-    """하나의 내부 계좌 ID가 서로 다른 원본 계좌번호를 가리키는 경우."""
-
-    def __init__(self, account_id: str, conflicting_fields: list[str]) -> None:
-        self.account_id = account_id
-        self.conflicting_fields = tuple(conflicting_fields)
-        super().__init__(
-            f"계좌 식별값이 기존 원장과 다릅니다: {account_id} "
-            f"({', '.join(conflicting_fields)})"
-        )
-
-
 class TransactionRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -48,7 +26,7 @@ class TransactionRepository:
         self,
         transaction: Transaction,
     ) -> MLTransactionFeatures:
-        """저장된 정규화 컬럼에서 ML raw59 Feature 계약을 다시 조립한다."""
+        """저장된 정규화 컬럼에서 ML raw51 Feature 계약을 다시 조립한다."""
 
         derived = self.session.get(DerivedFeatures, transaction.id)
         customer = (
@@ -78,18 +56,26 @@ class TransactionRepository:
             derived=derived,
         )
 
-    def add_received(self, payload: TransactionRequestDTO) -> Transaction:
-        customer = self._find_customer(payload.customer_id)
-        source_account_number = self._upsert_source_account(payload, customer)
-        recipient_account_number = self._upsert_recipient_account(payload)
-        # Transaction은 출금·수취 계좌 FK를 모두 참조한다. ORM relationship이
-        # 없는 mapper들의 순서에 기대지 않고 계좌 INSERT/UPDATE를 먼저 확정한다.
-        self.session.flush()
+    def add_received(
+        self,
+        payload: TransactionRequestDTO,
+        features: MLTransactionFeatures,
+    ) -> Transaction:
+        source_account = self.session.exec(
+            select(Account).where(
+                Account.account_number == payload.source_account_number
+            )
+        ).one()
+        recipient_account = self.session.exec(
+            select(Account).where(
+                Account.account_number == payload.recipient_account_number
+            )
+        ).one()
 
         transaction = Transaction(
-            customer_id=(customer.id if customer is not None else None),
-            source_account_number=source_account_number,
-            recipient_account_number=recipient_account_number,
+            customer_id=source_account.customer_id,
+            source_account_number=source_account.account_number,
+            recipient_account_number=recipient_account.account_number,
             transaction_datetime=payload.transaction_datetime,
             transaction_amount=payload.transaction_amount,
             channel=payload.channel.lower(),
@@ -99,14 +85,15 @@ class TransactionRepository:
             ),
             error_code=None,
             num_connection_failure=payload.num_connection_failure,
-            another_person_account=False,
-            initial_balance=None,
-            balance=None,
-            remaining_amount_daily_limit_exceeded=None,
+            another_person_account=features.another_person_account,
+            initial_balance=features.account_initial_balance,
+            balance=features.account_balance,
+            remaining_amount_daily_limit_exceeded=(
+                features.account_remaining_amount_daily_limit_exceeded
+            ),
             operating_system=payload.operating_system,
             ip_address=payload.ip_address,
             mac_address=payload.mac_address,
-            location=f"{payload.location_lat} {payload.location_lon}",
             location_lat=payload.location_lat,
             location_lon=payload.location_lon,
             rooting_jailbreak_indicator=(payload.customer_rooting_jailbreak_indicator),
@@ -132,115 +119,82 @@ class TransactionRepository:
         self.session.flush()
         assert transaction.id is not None
 
-        # 아직 실시간 파생 계산기가 없으므로, ML 입력 59개의 자리를
-        # 비워 두지 않고 중립적인 기본값으로 저장한다. 나중에 계산 로직이
-        # 준비되면 같은 transaction.id의 행을 실제 값으로 갱신하면 된다.
-        self.session.add(self._default_derived_features(transaction.id))
+        # 담당자 Feature 서비스가 ML에 보낸 값과 같은 스냅샷을 저장한다.
+        # 룰과 재학습 데이터도 이 행을 읽으므로 다시 계산하지 않는다.
+        self.session.add(self._derived_features_from_ml(transaction.id, features))
         return transaction
 
     @staticmethod
-    def _default_derived_features(transaction_id: int) -> DerivedFeatures:
-        """실제 파생 계산기가 없는 동안 사용할 임시 스냅샷을 만든다.
-
-        수치형은 0, 상태형은 False, 과거 시각은 None을 사용한다.
-        이 값은 '이상 징후 없음'을 가정한 테스트용 기본값이지,
-        실제 거래 이력을 계산한 결과가 아니다.
-        """
+    def _derived_features_from_ml(
+        transaction_id: int,
+        features: MLTransactionFeatures,
+    ) -> DerivedFeatures:
+        """담당자 Feature 서비스의 계산 결과를 저장 모델로 옮긴다."""
 
         return DerivedFeatures(
             id=transaction_id,
-            distance=0.0,
-            time_difference=timedelta(0),
-            one_month_max_amount=0,
-            one_month_std_dev=0.0,
-            dawn_one_month_max_amount=0,
-            dawn_one_month_std_dev=0.0,
-            unused_terminal_status=False,
-            unused_account_status=False,
-            transaction_history_with_the_account=0,
-            flag_deposit_more_than_tenMillion=False,
-            number_of_transaction_with_the_account=0,
-            last_atm_transaction_datetime=None,
-            last_bank_branch_transaction_datetime=None,
-            flag_change_of_authentication_1=False,
-            flag_change_of_authentication_2=False,
-            flag_change_of_authentication_3=False,
-            flag_change_of_authentication_4=False,
-            inquiry_atm_limit=False,
-            increase_atm_limit=False,
-            release_suspension=False,
-            transaction_resumed_date=None,
-            recipient_account_suspend_status=False,
-            first_time_ios_by_vulnerable_user=False,
+            distance=features.distance,
+            time_difference=features.time_difference,
+            one_month_max_amount=features.account_one_month_max_amount,
+            one_month_std_dev=features.account_one_month_std_dev,
+            dawn_one_month_max_amount=features.account_dawn_one_month_max_amount,
+            dawn_one_month_std_dev=features.account_dawn_one_month_std_dev,
+            unused_terminal_status=features.unused_terminal_status,
+            unused_account_status=features.unused_account_status,
+            transaction_history_with_the_account=(
+                features.transaction_history_with_the_account
+            ),
+            flag_deposit_more_than_ten_million=(
+                features.flag_deposit_more_than_ten_million
+            ),
+            number_of_transaction_with_the_account=(
+                features.number_of_transaction_with_the_account
+            ),
+            last_atm_transaction_datetime=features.last_atm_transaction_datetime,
+            last_bank_branch_transaction_datetime=(
+                features.last_bank_branch_transaction_datetime
+            ),
+            flag_change_of_authentication_1=(
+                features.customer_flag_change_of_authentication_1
+            ),
+            flag_change_of_authentication_2=(
+                features.customer_flag_change_of_authentication_2
+            ),
+            flag_change_of_authentication_3=(
+                features.customer_flag_change_of_authentication_3
+            ),
+            flag_change_of_authentication_4=(
+                features.customer_flag_change_of_authentication_4
+            ),
+            inquiry_atm_limit=features.customer_inquery_atm_limit,
+            increase_atm_limit=features.customer_increase_atm_limit,
+            release_suspension=features.recipient_release_suspension,
+            recipient_transaction_resumed_date=(
+                features.recipient_transaction_resumed_date
+            ),
+            recipient_account_suspend_status=(
+                features.recipient_account_suspend_status
+            ),
         )
 
-    def _find_customer(self, customer_id: str | None) -> Customer | None:
-        if customer_id is None:
-            return None
-        return self.session.get(Customer, customer_id)
-
-    def _upsert_source_account(
+    def apply_approved_balance(
         self,
-        payload: TransactionRequestDTO,
-        customer: Customer | None,
-    ) -> str:
-        """출금 계좌를 준비하고 마지막 요청의 고객 연결을 반영한다."""
+        transaction: Transaction,
+        features: MLTransactionFeatures,
+    ) -> None:
+        """정상 거래로 판정된 경우에만 출금 계좌 잔액을 반영한다."""
 
-        source_account_id = _account_id(payload.source_account_number)
         source_account = self.session.exec(
             select(Account).where(
-                Account.account_number == payload.source_account_number
+                Account.account_number == transaction.source_account_number
             )
-        ).first()
-        if source_account is None:
-            conflicting_account = self.session.get(Account, source_account_id)
-            if conflicting_account is not None:
-                raise AccountIdentifierConflictError(
-                    source_account_id,
-                    ["account_number"],
-                )
-            source_account = Account(
-                id=source_account_id,
-                customer_id=(customer.id if customer is not None else None),
-                account_number=payload.source_account_number,
-            )
-        else:
-            source_account.customer_id = customer.id if customer is not None else None
-            source_account.updated_at = datetime.now(UTC)
+        ).one()
+        source_account.current_balance = features.account_balance
+        source_account.remaining_daily_limit = (
+            features.account_remaining_amount_daily_limit_exceeded
+        )
+        source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
-        return source_account.account_number
-
-    def _upsert_recipient_account(
-        self,
-        payload: TransactionRequestDTO,
-    ) -> str | None:
-        """외부 수취 계좌는 식별 정보만 알 수 있으므로 나머지는 NULL로 둔다."""
-
-        if not payload.recipient_account_number:
-            return None
-
-        recipient_account_id = _account_id(payload.recipient_account_number)
-        recipient_account = self.session.exec(
-            select(Account).where(
-                Account.account_number == payload.recipient_account_number
-            )
-        ).first()
-        if recipient_account is None:
-            conflicting_account = self.session.get(Account, recipient_account_id)
-            if conflicting_account is not None:
-                raise AccountIdentifierConflictError(
-                    recipient_account_id,
-                    ["account_number"],
-                )
-            self.session.add(
-                Account(
-                    id=recipient_account_id,
-                    customer_id=None,
-                    account_number=payload.recipient_account_number,
-                )
-            )
-        return payload.recipient_account_number
-
 
 class TransactionLabelRepository:
     """담당자가 확정한 이진 라벨을 거래별 한 행으로 관리한다."""
@@ -308,13 +262,13 @@ class PredictionResultRepository:
         ],
         bool,
     ]:
-        """최신 ML 결과가 양성인 최근 거래와 raw59 조립 행을 한 번에 읽는다.
+        """최신 ML 결과가 양성인 최근 거래와 raw51 조립 행을 한 번에 읽는다.
 
         양성 예측부터 거르면 과거 양성·최신 음성인 거래가 섞이므로 거래별 최신
         예측을 먼저 확정한다. 거래시각과 거래 ID를 함께 정렬해 같은 데이터에서는
         항상 같은 표본을 고르고, ``limit + 1``건으로 다음 표본 존재 여부를 구한다.
         출금계좌와 파생 피처가 조립된 거래만 고르고, 선택한 행은 별도 누락
-        검증 없이 바로 raw59로 재조립한다.
+        검증 없이 바로 raw51로 재조립한다.
         """
 
         ranked_predictions = select(
@@ -389,7 +343,6 @@ class PredictionResultRepository:
 
 
 __all__ = [
-    "AccountIdentifierConflictError",
     "PredictionResultRepository",
     "TransactionLabelRepository",
     "TransactionRepository",

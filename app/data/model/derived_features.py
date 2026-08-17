@@ -75,7 +75,7 @@ class DerivedFeatures(SQLModel, table=True):
     transaction_history_with_the_account: int
 
     # TXN 7일
-    flag_deposit_more_than_tenMillion: bool
+    flag_deposit_more_than_ten_million: bool
 
     # TXN 3시간 / 누적
     number_of_transaction_with_the_account: int
@@ -102,14 +102,14 @@ class DerivedFeatures(SQLModel, table=True):
 
     # EVENT 30일 (ERD 원문 release_suspention의 오타를 바로잡음)
     release_suspension: bool
-    transaction_resumed_date: datetime | None = Field(
+    recipient_transaction_resumed_date: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
     # 조인 결과 스냅샷
     recipient_account_suspend_status: bool
-    first_time_ios_by_vulnerable_user: bool
+    # first_time_ios_by_vulnerable_user: bool
 
     computed_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
