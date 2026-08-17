@@ -338,6 +338,43 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             assert transaction is not None
             self.assertEqual(transaction.customer_id, "C-DEV-001")
 
+    def test_missing_customer_and_accounts_use_reusable_placeholders(self) -> None:
+        payload = valid_transaction_request(
+            customer_id=None,
+            source_account_number="11112222",
+            recipient_account_number="33334444",
+        )
+
+        first = self.client.post("/transactions", json=payload)
+        second = self.client.post("/transactions", json=payload)
+
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(second.status_code, 201, second.text)
+        self.assertEqual(self.ml_client.calls, 2)
+        assert self.ml_client.last_features is not None
+        self.assertEqual(self.ml_client.last_features["customer_credit_rating"], 5)
+        self.assertEqual(self.ml_client.last_features["account_initial_balance"], 0)
+
+        with Session(self.engine) as session:
+            source = session.exec(
+                select(Account).where(Account.account_number == "11112222")
+            ).one()
+            recipient = session.exec(
+                select(Account).where(Account.account_number == "33334444")
+            ).one()
+            customer = session.get(Customer, "TEMP-CUSTOMER-11112222")
+            transactions = session.exec(
+                select(Transaction).where(
+                    Transaction.source_account_number == "11112222"
+                )
+            ).all()
+
+            self.assertEqual(source.id, "TEMP-ACCOUNT-11112222")
+            self.assertEqual(source.current_balance, 0)
+            self.assertEqual(recipient.id, "TEMP-ACCOUNT-33334444")
+            self.assertIsNotNone(customer)
+            self.assertEqual(len(transactions), 2)
+
     def test_existing_account_uses_latest_customer_without_blocking_detection(
         self,
     ) -> None:
