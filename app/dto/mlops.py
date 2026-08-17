@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit
@@ -61,12 +62,7 @@ class TrainingResultStatus(StrEnum):
 
 
 class TrainingResultRequest(StrictMLOpsDTO):
-    """Training Job callback.
-
-    ``model_version``과 ``comparison_result``는 배포 중인 구형 Job의 재시도를
-    깨지 않기 위한 호환 입력일 뿐이며 Backend DB에는 저장하지 않습니다.
-    모델 상세와 지표의 원본은 MLflow입니다.
-    """
+    """Training Job이 Backend에 기록하는 최소 callback 계약."""
 
     status: TrainingResultStatus
     mlflow_run_id: str | None = Field(default=None, min_length=1, max_length=255)
@@ -77,8 +73,6 @@ class TrainingResultRequest(StrictMLOpsDTO):
         pattern=r"^[A-Za-z0-9-]+$",
     )
     error_message: str | None = Field(default=None, max_length=2000)
-    model_version: str | None = Field(default=None, pattern=r"^[0-9]+$")
-    comparison_result: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_result(self) -> Self:
@@ -132,6 +126,59 @@ class MLflowDetailsPointer(StrictMLOpsDTO):
     details_endpoint: str | None
 
 
+class DatasetVersionResponse(StrictMLOpsDTO):
+    """프론트에서 선택할 수 있는 불변 학습 데이터셋 버전."""
+
+    id: int
+    version: str
+    gcs_uri: str
+    row_count: int
+    created_at: datetime
+
+
+class DatasetBuildSummaryResponse(StrictMLOpsDTO):
+    source_row_count: int
+    confirmed_label_count: int
+    appended_label_count: int
+
+
+class LabeledDatasetBuildResponse(DatasetVersionResponse):
+    base_dataset_uri: str
+    build: DatasetBuildSummaryResponse
+
+
+class TrainingRunResponse(StrictMLOpsDTO):
+    """DB 상태와 MLflow 상세 조회 위치를 함께 제공하는 학습 실행 응답."""
+
+    id: int
+    model_key: str
+    dataset_version_id: int
+    cloud_run_execution_name: str | None
+    mlflow_run_id: str | None
+    status: str
+    error_message: str | None
+    created_at: datetime
+    model_details: MLflowDetailsPointer
+
+
+class CloudRunOperationResponse(BaseModel):
+    """Cloud Run 장기 실행 operation의 공통 필드와 확장 필드."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str | None = None
+    done: bool | None = None
+    error: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class TrainingRunStartResponse(StrictMLOpsDTO):
+    training_run: TrainingRunResponse
+    operation_id: str | None
+    operation: CloudRunOperationResponse
+
+
 class MLflowModelDetails(StrictMLOpsDTO):
     source: Literal["MLFLOW"] = "MLFLOW"
     run_id: str
@@ -147,9 +194,13 @@ class MLflowModelDetails(StrictMLOpsDTO):
 
 
 __all__ = [
+    "CloudRunOperationResponse",
+    "DatasetBuildSummaryResponse",
     "DatasetVersionRequest",
+    "DatasetVersionResponse",
     "DeploymentCompleteRequest",
     "LabeledDatasetBuildRequest",
+    "LabeledDatasetBuildResponse",
     "MLflowDetailsPointer",
     "MLflowModelDetails",
     "ModelPromotionRequest",
@@ -158,4 +209,6 @@ __all__ = [
     "TrainingResultRequest",
     "TrainingResultStatus",
     "TrainingRunRequest",
+    "TrainingRunResponse",
+    "TrainingRunStartResponse",
 ]

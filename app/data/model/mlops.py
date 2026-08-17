@@ -51,6 +51,7 @@ class TrainingRun(SQLModel, table=True):
     cloud_run_execution_name: str | None = Field(default=None, max_length=512)
     mlflow_run_id: str | None = Field(default=None, max_length=255)
     status: str = Field(max_length=32, index=True)
+    error_message: str | None = Field(default=None, max_length=2000)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False, index=True),

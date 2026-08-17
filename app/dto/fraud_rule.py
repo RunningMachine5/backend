@@ -91,27 +91,6 @@ class FraudRuleComponentCreate(BaseModel):
     sort_order: int = Field(default=0, ge=0)
 
 
-class FraudRuleComponentUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    component_key: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=64,
-        pattern=r"^[a-z][a-z0-9_]{1,63}$",
-    )
-    name: str | None = Field(default=None, min_length=1, max_length=128)
-    condition_expression: RuleExpression | None = None
-    weight: float | None = Field(default=None, gt=0.0, le=1.0)
-    sort_order: int | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def reject_empty_update(self) -> Self:
-        if not self.model_fields_set:
-            raise ValueError("수정할 구성요소 필드가 하나 이상 필요합니다.")
-        return self
-
-
 class FraudRuleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -351,7 +330,6 @@ __all__ = [
     "GROUP_OPERATORS",
     "FraudRuleComponentCreate",
     "FraudRuleComponentResponse",
-    "FraudRuleComponentUpdate",
     "FraudRuleCreate",
     "FraudRuleReplayChangedTransactionResponse",
     "FraudRuleReplayComponentImpactResponse",
