@@ -246,23 +246,36 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             self.assertEqual(run.status, "FAILED")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_success_callback_is_legacy_compatible_and_idempotent(self) -> None:
+    def test_success_callback_rejects_legacy_fields_and_is_idempotent(self) -> None:
         run_id = self.make_run()
-        legacy_payload = {
+        with Session(self.engine) as session:
+            run = session.get(TrainingRun, run_id)
+            assert run is not None
+            run.error_message = "stale failure"
+            session.add(run)
+            session.commit()
+
+        obsolete = self.client.post(
+            f"/mlops/training/runs/{run_id}/result",
+            headers=self.headers,
+            json={
+                "status": "SUCCEEDED",
+                "mlflow_run_id": "run-candidate",
+                "model_version": "17",
+            },
+        )
+        self.assertEqual(obsolete.status_code, 422)
+
+        current_payload = {
             "status": "SUCCEEDED",
             "mlflow_run_id": "run-candidate",
             "cloud_run_execution_name": "fdshield-training-abc12",
-            "model_version": "17",
-            "comparison_result": {
-                "candidate": {"model_version": "17", "metrics": {"pr_auc": 0.9}},
-                "recommendation": "RECOMMENDED",
-            },
         }
 
         first = self.client.post(
             f"/mlops/training/runs/{run_id}/result",
             headers=self.headers,
-            json=legacy_payload,
+            json=current_payload,
         )
         second = self.client.post(
             f"/mlops/training/runs/{run_id}/result",
@@ -277,6 +290,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(second.json()["status"], "CANDIDATE")
+        self.assertIsNone(second.json()["error_message"])
         self.assertEqual(second.json()["mlflow_run_id"], "run-candidate")
         self.assertEqual(
             second.json()["cloud_run_execution_name"],
@@ -314,6 +328,12 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["status"], "FAILED")
+            self.assertEqual(response.json()["error_message"], "sanitized")
+
+        with Session(self.engine) as session:
+            failed_run = session.get(TrainingRun, failed_run_id)
+            self.assertIsNotNone(failed_run)
+            self.assertEqual(failed_run.error_message, "sanitized")
 
         candidate_run_id = self.make_run("CANDIDATE", "successful-run")
         conflict = self.client.post(
@@ -327,7 +347,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
     def test_approval_resolves_version_from_mlflow_run(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-run")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.stage_model_revision.return_value = {
+        self.cloud_run.verify_staged_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -347,7 +367,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.mlflow.resolve_model_version.assert_called_once_with(
             "fdshield-fraud-detector-v2", "candidate-run"
         )
-        self.cloud_run.stage_model_revision.assert_called_once_with("17")
+        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
         self.mlflow.set_model_version_tags.assert_called_once_with(
             "fdshield-fraud-detector-v2",
             "17",
@@ -361,7 +381,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
     def test_staged_candidate_can_be_revalidated_without_new_db_columns(self) -> None:
         run_id = self.make_run("STAGED", "candidate-restage")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.stage_model_revision.return_value = {
+        self.cloud_run.verify_staged_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -382,7 +402,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 202, response.text)
         self.assertEqual(response.json()["training_run"]["status"], "STAGED")
         self.assertIsNone(response.json()["operation_id"])
-        self.cloud_run.stage_model_revision.assert_called_once_with("17")
+        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
 
         duplicate_retry = self.client.post(
             f"/mlops/training/runs/{run_id}/decision",
@@ -390,13 +410,13 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             json={"decision": "APPROVE"},
         )
         self.assertEqual(duplicate_retry.status_code, 409)
-        self.cloud_run.stage_model_revision.assert_called_once_with("17")
+        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_approval_reuses_cd_prepared_revision_without_operation(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-prestaged")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.stage_model_revision.return_value = {
+        self.cloud_run.verify_staged_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -422,13 +442,13 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.json()["training_run"]["status"], "STAGED")
         self.assertIsNone(response.json()["operation_id"])
         self.assertTrue(response.json()["reused"])
-        self.cloud_run.stage_model_revision.assert_called_once_with("17")
+        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_staging_validation_error_keeps_candidate_status(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-reconciling")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.stage_model_revision.side_effect = CloudRunAdminError(
+        self.cloud_run.verify_staged_model_revision.side_effect = CloudRunAdminError(
             "Serving Service가 아직 리비전을 준비 중입니다."
         )
 
@@ -449,7 +469,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
     def test_approval_tag_write_failure_keeps_candidate_status(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-tag-failure")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.stage_model_revision.return_value = {
+        self.cloud_run.verify_staged_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -469,7 +489,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 502, response.text)
-        self.cloud_run.stage_model_revision.assert_called_once_with("17")
+        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
         self.mlflow.set_model_version_tags.assert_called_once_with(
             "fdshield-fraud-detector-v2",
             "17",

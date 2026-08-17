@@ -284,39 +284,6 @@ class CloudRunAdminClientTest(unittest.TestCase):
         self.assertTrue(raised.exception.request_may_have_been_accepted)
 
     @patch("app.services.mlops.cloud_run.httpx.request")
-    def test_create_revision_pins_current_traffic_and_preserves_secret_env(
-        self,
-        request: Mock,
-    ) -> None:
-        request.side_effect = [
-            api_response(current_service()),
-            api_response(
-                {"name": "projects/test/locations/region/operations/deploy-op"}
-            ),
-        ]
-        client = self.make_client(serving_container="serving")
-
-        result = client.create_model_revision("17")
-
-        self.assertEqual(result["tag"], "model-v17")
-        patch_call = request.call_args_list[1]
-        self.assertEqual(patch_call.args[0], "PATCH")
-        payload = patch_call.kwargs["json"]
-        self.assertNotIn("revision", payload["template"])
-        container = payload["template"]["containers"][0]
-        self.assertEqual(container["image"], "registry/serving@sha256:abc")
-        self.assertNotIn("buildInfo", container)
-        env_by_name = {item["name"]: item for item in container["env"]}
-        self.assertIn("valueSource", env_by_name["MLFLOW_TRACKING_PASSWORD"])
-        self.assertEqual(env_by_name["ML_MODEL_VERSION"]["value"], "17")
-        self.assertNotIn("ML_FRAUD_THRESHOLD", env_by_name)
-        self.assertEqual(payload["traffic"][0]["revision"], "serving-00001-old")
-        self.assertEqual(payload["traffic"][0]["percent"], 100)
-        self.assertEqual(payload["traffic"][1]["type"], TRAFFIC_LATEST)
-        self.assertEqual(payload["traffic"][1]["percent"], 0)
-        self.assertEqual(payload["traffic"][1]["tag"], "model-v17")
-
-    @patch("app.services.mlops.cloud_run.httpx.request")
     def test_stage_reuses_cd_prepared_ready_zero_traffic_revision(
         self,
         request: Mock,
@@ -324,7 +291,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         request.return_value = api_response(cd_prepared_service())
         client = self.make_client(serving_container="serving")
 
-        result = client.stage_model_revision("17")
+        result = client.verify_staged_model_revision("17")
 
         self.assertTrue(result["reused"])
         self.assertIsNone(result["operation"])
@@ -353,7 +320,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         request.return_value = api_response(service)
         client = self.make_client(serving_container="serving")
 
-        result = client.stage_model_revision("17")
+        result = client.verify_staged_model_revision("17")
 
         self.assertTrue(result["reused"])
         self.assertEqual(result["revision"], "serving-00002-candidate")
@@ -368,7 +335,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client(serving_container="serving")
 
         with self.assertRaisesRegex(CloudRunAdminError, "중복"):
-            client.stage_model_revision("17")
+            client.verify_staged_model_revision("17")
 
         self.assertEqual(request.call_count, 1)
 
@@ -378,7 +345,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client(serving_container="serving")
 
         with self.assertRaisesRegex(CloudRunAdminError, "ML Serving CD"):
-            client.stage_model_revision("17")
+            client.verify_staged_model_revision("17")
 
         self.assertEqual(request.call_count, 1)
         self.assertEqual(request.call_args.args[0], "GET")
@@ -395,7 +362,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client(serving_container="serving")
 
         with self.assertRaisesRegex(CloudRunAdminError, "모델 설정"):
-            client.stage_model_revision("17")
+            client.verify_staged_model_revision("17")
 
         self.assertEqual(request.call_count, 1)
 
@@ -410,7 +377,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         client = self.make_client(serving_container="serving")
 
         with self.assertRaisesRegex(CloudRunAdminError, "준비 중"):
-            client.stage_model_revision("17")
+            client.verify_staged_model_revision("17")
 
         self.assertEqual(request.call_count, 1)
 
@@ -442,7 +409,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
                 request.return_value = api_response(service)
 
                 with self.assertRaisesRegex(CloudRunAdminError, expected_message):
-                    client.stage_model_revision("17")
+                    client.verify_staged_model_revision("17")
 
                 self.assertEqual(request.call_count, 1)
 
@@ -470,7 +437,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
                 request.return_value = api_response(service)
 
                 with self.assertRaisesRegex(CloudRunAdminError, expected_message):
-                    client.stage_model_revision("17")
+                    client.verify_staged_model_revision("17")
 
                 self.assertEqual(request.call_count, 1)
 
