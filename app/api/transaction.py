@@ -1,8 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from sqlmodel import select
 
 from app.api.dependencies import DerivedFeatureServiceDep, DFraudDetectionPipelineDep
 from app.core.db import SessionDep
+from app.api.dependencies import DFraudDetectionPipelineDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction

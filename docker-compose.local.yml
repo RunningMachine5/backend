@@ -9,6 +9,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-fdshield-db}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
       ML_SERVING_URL: ${ML_SERVING_DOCKER_URL:-http://host.docker.internal:8001}
       ML_SERVING_TIMEOUT_SECONDS: ${ML_SERVING_TIMEOUT_SECONDS:-5}
       ML_SERVING_MAX_ATTEMPTS: ${ML_SERVING_MAX_ATTEMPTS:-2}

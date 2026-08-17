@@ -29,7 +29,12 @@ class FakeStructuredLLM:
 
 
 class TestGuideSearchQueryExtractor(unittest.TestCase):
-    def test_keeps_order_and_only_evidence_from_original_answer(self) -> None:
+    def test_keeps_queries_whose_evidence_is_not_verbatim(self) -> None:
+        """A.2가 evidence 원문 일치를 요구하지 않으므로 질의를 버리지 않는다.
+
+        버리면 프롬프트를 줄인 만큼 질의가 통째로 사라져 가이드가 나오지 않는다.
+        검색을 이끄는 것은 search_query 이고 evidence 는 감사 기록이다.
+        """
         answer = (
             "오늘 ATM기에서 십만원을 입금했고 모르는 사람한테 전화가 와서 "
             "받았어 그 사람에게 전화번호를 전송해줬어"
@@ -59,23 +64,24 @@ class TestGuideSearchQueryExtractor(unittest.TestCase):
         )
         extractor = GuideSearchQueryExtractor(structured_llm=llm)
 
+        # 원문에 없는 evidence("앱을 설치했어")도 버리지 않고 기록만 남긴다.
         with self.assertLogs(
             "app.services.chatbot.extractors",
-            level="WARNING",
-        ):
+            level="DEBUG",
+        ) as logs:
             result = extractor.extract(user_answers=answer)
 
         self.assertEqual(
             [query.title for query in result.guide_search_queries],
-            ["모르는 사람의 전화 수신", "전화번호 제공"],
+            ["모르는 사람의 전화 수신", "전화번호 제공", "꾸며낸 앱 설치"],
+        )
+        self.assertTrue(
+            any("답변 원문과 다릅니다" in line for line in logs.output),
         )
         self.assertEqual(
             llm.calls,
             [render_guide_search_query_extraction_prompt(user_answers=answer)],
         )
-        self.assertNotIn("ATM", " ".join(
-            query.search_query for query in result.guide_search_queries
-        ))
 
     def test_normalizes_and_deduplicates_search_queries(self) -> None:
         answer = "모르는 사람에게 전화번호를 보냈어요"

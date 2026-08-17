@@ -82,7 +82,15 @@ FDS·Agent 결합.
   settings 클래스 없음) + `.env.example` 갱신
   - `CHAT_BASE_URL` (기본 `http://localhost:8000`)
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
-  - `CHAT_LLM_TIMEOUT_SECONDS`, `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용
+  - `CHAT_LLM_TIMEOUT_SECONDS` (기본 `30`), `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용.
+    가장 느린 가이드 검색 질의 분해(A.2)가 최악 4.9초라 그 아래로 잡으면 모든 턴이
+    타임아웃으로 실패한다(PRD 2.4 「모델·reasoning effort와 타임아웃 예산」)
+  - `CHAT_LLM_MODEL` (기본 `gpt-5.6-luna`) — 네 LLM 호출 공용 모델
+  - `CHAT_RESPONSE_LLM_MODEL` (기본 `gpt-5.6-luna`) — 기본값은 위와 같다. 고객에게 나가는
+    대응 가이드 생성(A.4)만 따로 갈아끼울 여지를 두려고 변수를 남겨뒀다
+  - `CHAT_LLM_REASONING_EFFORT` (기본 `low`) — 네 LLM 호출 공용. 추론 토큰이 지연을
+    지배하므로 모델 크기보다 이 값이 응답 시간을 좌우한다. `minimal`은 평가 LLM이
+    오판해 쓰지 않는다
 - [x] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
   - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) — PRD 2.1의 표.
     세션 생성이 HTTP 경로를 갖지 않게 되면서 요청 본문이 아니라 생성 함수의 입력 검증이
