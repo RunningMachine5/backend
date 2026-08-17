@@ -1,10 +1,13 @@
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from pydantic.dataclasses import dataclass
 from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.data.model import Account, Customer, CustomerEvent, Transaction
+
+TEMP_ACCOUNT_ID_PREFIX = "TEMP-ACCOUNT-"
+TEMP_CUSTOMER_ID_PREFIX = "TEMP-CUSTOMER-"
 
 
 @dataclass(frozen=True)
@@ -21,19 +24,91 @@ class FeatureContextRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get_feature_context(self, account_number: str, recipient_account_number: str) -> FeatureContext:
+    def get_feature_context(
+        self,
+        account_number: str,
+        recipient_account_number: str,
+        customer_id: str | None = None,
+    ) -> FeatureContext:
+        """실제 원장을 우선 사용하고, 없는 고객·계좌만 임시값으로 보완한다."""
+
         source_account = self.get_account(account_number)
+        if source_account is None:
+            source_customer = self._get_or_create_customer(
+                customer_id or f"{TEMP_CUSTOMER_ID_PREFIX}{account_number}"
+            )
+            source_account = Account(
+                id=f"{TEMP_ACCOUNT_ID_PREFIX}{account_number}",
+                customer_id=source_customer.id,
+                account_number=account_number,
+            )
+            self.session.add(source_account)
+        else:
+            source_customer_id = (
+                source_account.customer_id
+                or customer_id
+                or f"{TEMP_CUSTOMER_ID_PREFIX}{account_number}"
+            )
+            source_customer = self._get_or_create_customer(source_customer_id)
+            if source_account.customer_id is None:
+                source_account.customer_id = source_customer.id
 
-        customer_id = source_account.customer_id if source_account is not None else None
+        self._fill_missing_source_account_values(source_account)
+        self.session.flush()
 
-        customer = self.get_customer(customer_id)
         recipient_account = self.get_account(recipient_account_number)
+        if recipient_account is None:
+            recipient_account = Account(
+                id=f"{TEMP_ACCOUNT_ID_PREFIX}{recipient_account_number}",
+                customer_id=None,
+                account_number=recipient_account_number,
+                suspend_status=False,
+            )
+            self.session.add(recipient_account)
+            self.session.flush()
 
         return FeatureContext(
             source_account = source_account,
-            customer = customer,
+            customer = source_customer,
             recipient_account = recipient_account,
         )
+
+    def _get_or_create_customer(self, customer_id: str) -> Customer:
+        customer = self.get_customer(customer_id)
+        if customer is not None:
+            return customer
+
+        now = datetime.now(UTC)
+        customer = Customer(
+            id=customer_id,
+            name="UNKNOWN",
+            birth_date=date(1990, 1, 1),
+            gender="male",
+            identification_number=f"TEMP-{customer_id}",
+            registration_datetime=now,
+            credit_rating=5,
+            loan_type="a",
+        )
+        self.session.add(customer)
+        self.session.flush()
+        return customer
+
+    def _fill_missing_source_account_values(self, account: Account) -> None:
+        """ML raw51에 필요한 계좌값만 단순 기본값으로 채운다."""
+
+        now = datetime.now(UTC)
+        account.account_type = account.account_type or "a"
+        account.creation_datetime = account.creation_datetime or now
+        account.amount_daily_limit = account.amount_daily_limit or 0
+        account.indicator_openbanking = account.indicator_openbanking or False
+        account.indicator_release_limit_excess = (
+            account.indicator_release_limit_excess or False
+        )
+        if account.current_balance is None:
+            account.current_balance = 0
+        if account.remaining_daily_limit is None:
+            account.remaining_daily_limit = 0
+        self.session.add(account)
 
     def get_account(self, account_number: str) -> Account | None:
         statement = select(Account).where(Account.account_number == account_number)
@@ -161,4 +236,8 @@ class FeatureContextRepository:
         )
         return self.session.exec(statement).one()
 
-__all__ = ["FeatureContextRepository", "FeatureContext"]
+__all__ = [
+    "TEMP_ACCOUNT_ID_PREFIX",
+    "FeatureContext",
+    "FeatureContextRepository",
+]

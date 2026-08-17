@@ -9,8 +9,10 @@ from app.data.model.account import Account
 from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
+from app.dto.ml_features import MLTransactionFeatures
 from app.dto.transaction import TransactionRequestDTO
 from app.repositories.transaction import TransactionRepository
+from tests.ml_feature_fixture import valid_ml_raw_data
 
 
 def _payload(**overrides: object) -> TransactionRequestDTO:
@@ -47,6 +49,24 @@ def _customer(customer_id: str) -> Customer:
     )
 
 
+def _features(payload: TransactionRequestDTO) -> MLTransactionFeatures:
+    data = valid_ml_raw_data()
+    data.update(
+        {
+            "transaction_datetime": payload.transaction_datetime,
+            "transaction_amount": payload.transaction_amount,
+            "channel": payload.channel,
+            "operating_system": payload.operating_system,
+            "type_general_automatic": payload.type_general_automatic,
+            "access_medium": payload.access_medium,
+            "transaction_num_connection_failure": (
+                payload.num_connection_failure
+            ),
+        }
+    )
+    return MLTransactionFeatures.model_validate(data)
+
+
 class TransactionRepositoryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = create_engine(
@@ -67,6 +87,28 @@ class TransactionRepositoryTest(unittest.TestCase):
         DerivedFeatures.__table__.create(self.engine)
         self.session = Session(self.engine)
         self.session.add(_customer("C-REPOSITORY"))
+        self.session.flush()
+        self.session.add_all(
+            [
+                Account(
+                    id="source-0001",
+                    customer_id="C-REPOSITORY",
+                    account_number="source-0001",
+                    account_type="a",
+                    creation_datetime=datetime(2020, 1, 1, tzinfo=UTC),
+                    amount_daily_limit=3_000_000,
+                    indicator_openbanking=True,
+                    indicator_release_limit_excess=False,
+                    current_balance=10_000_000,
+                    remaining_daily_limit=2_000_000,
+                ),
+                Account(
+                    id="recipient-0001",
+                    customer_id=None,
+                    account_number="recipient-0001",
+                ),
+            ]
+        )
         self.session.commit()
         self.repository = TransactionRepository(self.session)
 
@@ -75,7 +117,7 @@ class TransactionRepositoryTest(unittest.TestCase):
         self.engine.dispose()
 
     def _save(self, payload: TransactionRequestDTO) -> Transaction:
-        transaction = self.repository.add_received(payload)
+        transaction = self.repository.add_received(payload, _features(payload))
         self.session.commit()
         self.session.refresh(transaction)
         return transaction
@@ -86,7 +128,6 @@ class TransactionRepositoryTest(unittest.TestCase):
         self.assertIsInstance(transaction.id, int)
         self.assertEqual(transaction.transaction_amount, -10_000)
         self.assertEqual(transaction.operating_system, "iOS")
-        self.assertEqual(transaction.location, "37.5 127.0")
         source = self.session.exec(
             select(Account).where(Account.account_number == "source-0001")
         ).one()
@@ -98,63 +139,56 @@ class TransactionRepositoryTest(unittest.TestCase):
         derived = self.session.get(DerivedFeatures, transaction.id)
         self.assertIsNotNone(derived)
         assert derived is not None
-        self.assertEqual(derived.distance, 0.0)
-        self.assertEqual(derived.time_difference.total_seconds(), 0)
-        self.assertEqual(derived.one_month_max_amount, 0)
+        self.assertEqual(derived.distance, 1.5)
+        self.assertEqual(derived.time_difference.total_seconds(), 90)
+        self.assertEqual(derived.one_month_max_amount, 500_000)
         self.assertIs(derived.unused_terminal_status, False)
 
-        # 계좌 상세 프로필이 아직 없어도 DB 원본을 덮지 않고
-        # ML 조립 시에만 중립 기본값을 사용한다.
         features = self.repository.load_ml_features(transaction)
         self.assertIsNotNone(features)
         assert features is not None
         self.assertEqual(features.account_account_type, "a")
-        self.assertEqual(features.account_amount_daily_limit, 0)
-        self.assertEqual(features.operating_system, "ios")
+        self.assertEqual(features.account_amount_daily_limit, 3_000_000)
+        self.assertEqual(features.operating_system, "iOS")
         self.assertEqual(
-            features.account_creation_datetime,
-            transaction.transaction_datetime,
+            features.account_creation_datetime.replace(tzinfo=UTC),
+            datetime(2020, 1, 1, tzinfo=UTC),
         )
-
-    def test_unknown_customer_uses_temporary_profile(self) -> None:
-        transaction = self._save(
-            _payload(
-                customer_id="C-MISSING",
-                recipient_account_number=None,
-                channel="ATM",
-            )
-        )
-        self.assertIsNone(transaction.customer_id)
-        self.assertIsNone(transaction.recipient_account_number)
-        self.assertEqual(transaction.channel, "atm")
-        features = self.repository.load_ml_features(transaction)
-        self.assertIsNotNone(features)
-        assert features is not None
-        self.assertEqual(features.recipient_account_number, "unknown-recipient")
-        self.assertEqual(features.customer_name, "unknown-customer")
 
     def test_existing_account_uses_latest_transaction_customer(self) -> None:
         self.session.add(_customer("C-OTHER"))
         self.session.flush()
-        self.session.add(
-            Account(
-                id="source-0001",
-                customer_id="C-OTHER",
-                account_number="source-0001",
-            )
-        )
+        source = self.session.get(Account, "source-0001")
+        assert source is not None
+        source.customer_id = "C-OTHER"
+        self.session.add(source)
         self.session.commit()
 
         transaction = self._save(_payload())
         source = self.session.get(Account, "source-0001")
 
-        self.assertEqual(transaction.customer_id, "C-REPOSITORY")
+        self.assertEqual(transaction.customer_id, "C-OTHER")
         self.assertIsNotNone(source)
         assert source is not None
-        self.assertEqual(source.customer_id, "C-REPOSITORY")
+        self.assertEqual(source.customer_id, "C-OTHER")
 
     def test_each_saved_transaction_gets_next_integer_id(self) -> None:
         first = self._save(_payload())
+        self.session.add_all(
+            [
+                Account(
+                    id="source-0002",
+                    customer_id="C-REPOSITORY",
+                    account_number="source-0002",
+                ),
+                Account(
+                    id="recipient-0002",
+                    customer_id=None,
+                    account_number="recipient-0002",
+                ),
+            ]
+        )
+        self.session.commit()
         second = self._save(
             _payload(
                 source_account_number="source-0002",

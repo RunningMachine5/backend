@@ -42,17 +42,17 @@ SQLAlchemy, SQLModel, langchain-openai.
 가이드 검색 질의 테이블로 교체한다. 자세한 완료 범위는
 [스키마 문서](schema.md#구현-상태)를 따른다.
 
-**상담 흐름은 세션 생성부터 상담사 반환까지 실제로 동작한다.** 챗봇 리포지토리
+**상담 흐름은 이상거래 Agent 결합부터 상담사 반환까지 실제로 동작한다.** 챗봇 리포지토리
 ([chat_session.py](../../app/repositories/chat_session.py)), 평가·추출 LLM 호출부와 RAG 응답
 조립(`app/services/chatbot/`), LangGraph 턴 파이프라인
 ([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)),
-세션 생성·URL 발송([session_creator.py](../../app/services/chatbot/session_creator.py)),
+Agent 통합 세션·메일 조정([session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)),
 [2.8의 API 6종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
 Fake 체인 `app/services/chatbot/customer_chatbot.py`는 제거했다.
 
-**남은 것은 FDS 파이프라인 결합이다.** 이상거래 판정 시 세션 생성을 부르고 첫 상태 SSE를
-발행하는 경로가 아직 없어([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)), 지금은
-[테스트용 세션 생성](#테스트용-세션-생성) 스크립트로만 세션을 만든다.
+이상거래 거래는 `POST /transactions`가 Agent 백그라운드 작업을 등록하고, Agent의 고객 안내
+노드가 챗봇 세션을 만든 뒤 세션별 URL을 포함한 이메일 한 통을 보낸다. Agent 작업이 상태를
+커밋한 뒤 [task_runner.py](../../app/services/agent/task_runner.py)가 최초 상태 SSE를 발행한다.
 
 RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
@@ -65,13 +65,14 @@ RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbo
 
 ### 2.1 채팅 세션 생성 및 이메일 전송
 
-FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 세션 생성 함수를 호출한다.
-거래 하나당 채팅 세션은 하나이며, 하나의 거래는 한 번만 판단된다.
+FDS 파이프라인이 이상거래의 ML 결과와 룰 점수를 저장하면 거래 API가 Agent 작업을
+백그라운드로 등록한다. Agent의 `send_alert_email` 노드가 실행될 때 거래당 채팅 세션 하나를
+멱등 생성하고, 기존 이상거래 안내 메일에 `/chat/{chat_session_id}` URL을 넣어 한 통만 보낸다.
 
-**세션 생성은 HTTP 엔드포인트로 열지 않는다.** 호출자는 FDS 파이프라인뿐이므로
-[session_creator.py](../../app/services/chatbot/session_creator.py)의
-`ChatSessionCreator.create`를 함수로 부른다. 사기 판정을 기다리지 않고 접속 URL이 필요한
-로컬·데모 상황은 [테스트용 세션 생성](#테스트용-세션-생성)의 스크립트가 대신한다.
+**세션 생성은 HTTP 엔드포인트로 열지 않는다.** 운영 호출자는
+[workflow_factory.py](../../app/services/agent/workflow_factory.py)가 Agent에 주입한
+`ChatSessionAlertNotifier`다. 사기 판정을 기다리지 않고 접속 URL만 필요한 로컬·데모 상황은
+[테스트용 세션 생성](#테스트용-세션-생성)의 스크립트가 대신한다.
 
 | 입력 | 내용 |
 | --- | --- |
@@ -83,8 +84,8 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 룰 채점이 실패해 유형 점수가 없는 거래는 이 필드를 생략하고, 해당 세션은 유형판별 질문
 대신 [일반 질문 폴백](#유형판별-질문)을 쓴다.
 
-생성된 채팅 세션에 접속 가능한 URL을 만들어, 해당 `transactions`의 연관 테이블
-(`customers.email`)에 저장된 유저 이메일로 메일을 보낸다.
+생성된 세션 URL은 Agent 이상거래 안내 메일 본문에 포함한다. 별도의 챗봇 접속 안내 메일은
+보내지 않는다. 수신 주소는 해당 거래의 `customers.email`이다.
 
 `chat_sessions.status = URL_SENT`, `email_sent_at`에 발송 시각을 기록한다.
 
@@ -95,24 +96,18 @@ FDS 파이프라인에서 이상거래로 판단된 거래가 있으면 채팅 �
 
 #### 발송 구현과 기본 주소 폴백
 
-**SMTP로 실제 발송한다.** Agent의 이상거래 안내 메일이 이미 쓰고 있는
-[`SmtpEmailMessageSender`](../../app/services/agent/email_sender.py)(`SMTP_*` env var)를 그대로
-재사용하고, 챗봇 세션 메일의 제목·본문은 [B.7](messages.md#b7-챗봇-접속-안내-이메일)이다.
-메시지 조립과 발송은 [session_url_mailer.py](../../app/services/chatbot/session_url_mailer.py),
-세션 생성과 상태 기록은 [session_creator.py](../../app/services/chatbot/session_creator.py)가 맡는다.
-
-어떤 주소로 어떤 URL을 보냈는지는 로컬·데모에서 눈으로 확인할 수 있도록 로그로 남긴다.
-
-```
-[챗봇 URL 발송] 수신자=hong@example.com 세션=chat-2026-0001 URL=http://localhost:8000/chat/chat-2026-0001
-[챗봇 URL 발송] 수신자=abcd@kosa.com (기본 주소) 세션=chat-2026-0002 URL=http://localhost:8000/chat/chat-2026-0002
-```
+**SMTP로 실제 발송한다.** [session_creator.py](../../app/services/chatbot/session_creator.py)는
+세션과 수신 예정 주소만 만들고, [session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)가
+세션별 URL을 [FraudAlertEmailService](../../app/services/agent/email_sender.py)에 전달해 기존
+Agent 안내 메일을 발송하고 상태를 기록한다. 실제 SMTP 전송은 같은 파일의
+`SmtpEmailMessageSender`가 맡는다.
 
 **발송에 실패하면 세션은 남기고 `status = FAILED`로 둔다.** 고객이 URL을 받지 못했으므로
 `URL_SENT`라고 기록할 수 없고, 세션 행 자체를 지우면 담당자가 발송 실패 사실을 볼 수 없다.
 `email_sent_at`은 비우고 `notified_email`에는 시도한 주소를 남긴다
-([스키마 3.3](schema.md#33-챗봇-상태-정의)). SMTP 예외는 호출부로 전파하지 않는다 —
-FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을 막지 않는다"와 같은 원칙이다.
+([스키마 3.3](schema.md#33-챗봇-상태-정의)). SMTP 예외는 Agent의 이메일 노드가 로그로 남기고
+나머지 Agent 처리를 계속한다. 원본 거래와 ML·룰 결과는 Agent 작업 등록 전에 이미 커밋되므로
+세션 생성이나 메일 실패가 거래 저장을 롤백하지 않는다([3.3](#33-보안운영)).
 
 `CHAT_BASE_URL`은 **고객이 브라우저로 여는 챗봇 화면의 주소**다. 챗봇 UI를 프론트가 서빙하면
 기본값(`http://localhost:8000`)이 아니라 프론트 주소를 넣어야 한다.
@@ -132,7 +127,7 @@ FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을
 
 #### 테스트용 세션 생성
 
-세션 생성 경로가 FDS 파이프라인뿐이라 로컬에서 화면을 확인하려면 이상거래 판정을 기다려야
+운영 세션 생성 경로가 Agent뿐이라 로컬에서 화면을 확인하려면 이상거래 판정을 기다려야
 한다. 임의 거래로 접속 URL을 뽑는 용도로
 [scripts/create_chat_session.py](../../scripts/create_chat_session.py)를 둔다. 레포 루트에서
 모듈로 실행한다.
@@ -141,13 +136,12 @@ FDS 결합([3.3](#33-보안운영))의 "세션 생성 실패가 거래 저장을
 uv run --env-file .env python -m scripts.create_chat_session <transaction_id>
 ```
 
-- `--no-email` — SMTP를 부르지 않고 URL만 출력한다. SMTP 설정이 없는 로컬에서도 상태가
-  `FAILED`로 떨어지지 않는다.
 - `--top-fraud-types FIRST SECOND` — 유형판별 질문([2.4](#유형판별-질문))을 확인할 때 쓴다.
 - `--recreate` — 생성이 멱등이라 같은 거래로 다시 돌리면 기존 URL이 나온다. 새 대화로 다시
   시작하려면 이 플래그로 기존 세션과 대화 이력을 지우고 만든다.
 
-**운영에서 쓰지 않는다.** 서버와 다른 프로세스라 in-process 브로커에 상태 변경을 발행하지
+스크립트는 세션과 URL만 만들며 이메일을 보내지 않는다. **운영에서 쓰지 않는다.** 서버와
+다른 프로세스라 in-process 브로커에 상태 변경을 발행하지
 못하므로([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)) 담당자 화면에는 SSE 이벤트가
 뜨지 않는다. 거래별 상태 조회로 새로고침하면 보인다.
 
@@ -285,6 +279,37 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 ([app/core/config.py](../../app/core/config.py)), 재시도 중 고객에게는 아무것도 출력하지
 않는다.
 
+모델은 `CHAT_LLM_MODEL`(기본 `gpt-5.6-luna`)을 쓴다. **네 호출이 모두 같은 모델이다.**
+`CHAT_RESPONSE_LLM_MODEL`을 따로 남겨둔 것은 고객에게 나가는 생성(A.4)만 갈아끼울
+여지를 두기 위해서이고, 기본값은 둘이 같다([2.5](#25-정보-응답--rag-대응-가이드-4-1)).
+
+##### 모델·reasoning effort와 타임아웃 예산
+
+**작은 모델을 고르는 것으로는 지연이 줄지 않는다.** 추론 모델의 지연을 지배하는 것은
+파라미터 수가 아니라 생성한 토큰 수, 그중에서도 reasoning 토큰이다. 같은 `low` effort에서
+`gpt-5-nano`가 상위 모델보다 추론 토큰을 훨씬 많이 써서 **모든 호출에서 더 느렸다.**
+그래서 "중간 단계는 작은 모델" 방침을 버리고 네 호출을 `gpt-5.6-luna`로 통일했다.
+
+| 호출 | `gpt-5-nano` / `low` | `gpt-5.6-luna` / `low` |
+| --- | --- | --- |
+| 응답 평가 (A.1) | 2.51초 (출력 182토큰) | **1.21초** (16토큰) |
+| 가이드 검색 질의 분해 (A.2) | 5.11초 (519토큰) | **1.40초** (80토큰) |
+| 사기 정황 추출 (A.3) | 3.31초 (288토큰) | **1.32초** (52토큰) |
+| 대응 가이드 생성 (A.4) | 4.54초 (476토큰) | **1.44초** (62토큰) |
+
+reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 함께 적용한다
+([llm.py](../../app/services/chatbot/llm.py)). 값이 비어 있으면 인자를 넘기지 않으므로
+추론 모델이 아닌 모델로 바꿔 끼울 수 있다.
+
+`minimal`은 쓰지 않는다. 「입금받은 돈을 다른 계좌나 사람에게 다시 송금했어」처럼
+충실한 답변을 `TOO_VAGUE`로 오판하는 것을 확인했다. `low`는 같은 답변을 `SUFFICIENT`로
+판정한다.
+
+**타임아웃은 가장 느린 호출에 맞춘다.** 가장 느린 것은 언제나 A.2이고, 질의가 5개까지
+나오는 긴 답변에서 최악 4.9초였다. `CHAT_LLM_TIMEOUT_SECONDS`를 이보다 짧게 잡으면
+**정상 응답이 매번 타임아웃으로 버려져 모든 턴이 이 절의 기술 실패 경로로 빠진다.**
+기본값 30초는 그 여유분이다.
+
 상한을 소진하면 고객 판정과 분리된 기술 실패 경로로 다음 질문에 진행한다.
 
 | 항목 | 값 |
@@ -312,16 +337,29 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
     {
       "title": "고객에게 보여줄 소제목",
       "search_query": "독립적으로 검색 가능한 한국어 질문",
-      "evidence": "사용자 답변의 정확한 원문"
+      "evidence": "그 질의의 근거가 된 사용자 답변 부분"
     }
   ]
 }
 ```
 
-현재 고객 답변만 입력해 금융사기 대응에 의미 있는 행동·정보 노출·접촉을 최대 5개의
-검색 단위로 만든다. 각 `search_query`는 다른 대화 문맥 없이도 검색 가능해야 하며,
-`evidence`는 답변에 실제로 존재하는 연속 원문이어야 한다. 단순 배경 사실은 답변 안에서
-사기 위험과 연결된 경우에만 포함한다.
+현재 고객 답변만 입력해 금융사기 대응에 의미 있는 행동·정보 노출·접촉을 검색 단위로
+만든다. 각 `search_query`는 다른 대화 문맥 없이도 검색 가능해야 한다. 단순 배경 사실은
+답변 안에서 사기 위험과 연결된 경우에만 포함한다.
+
+**개수 상한 5는 구조화 출력 스키마가 강제한다**(`max_length=5`). 프롬프트는 상한을
+반복하지 않고 개수를 채우지 말라고만 지시한다 — 「최대 5개」라고 적었을 때 모델이 그것을
+목표치로 읽어 행동 하나짜리 답변에서도 5개를 지어냈기 때문이다. `title`·`search_query`의
+길이 상한도 마찬가지로 스키마가 강제한다. 자세한 근거는
+[A.2 규칙을 줄인 이유](prompts.md#규칙을-줄인-이유)에 있다.
+
+`evidence`는 **답변 원문의 연속 문자열임을 더 이상 요구하지 않는다.** 요구를 프롬프트에서
+빼면서 원문에 없는 `evidence`를 이유로 질의를 버리던 코드도 함께 걷어냈다
+([extractors.py](../../app/services/chatbot/extractors.py)) — 버리면 프롬프트를 줄인 만큼
+질의가 통째로 사라져 가이드가 나오지 않는다. 검색을 이끄는 것은 `search_query`이고
+`evidence`는 감사 기록이다. 다만 [외부 조회(추가 기능)](#외부-조회-추가-기능)은 `evidence`에
+담긴 URL·전화번호·계좌를 그대로 읽는 설계이므로, 그 기능을 구현할 때 원문 보존을 다시
+요구해야 한다.
 
 #### 검색 질의 구성
 
@@ -421,8 +459,17 @@ response = assemble(augmented, guidance)
 
 #### 검색·생성 실패 시 동작
 
-호출당 타임아웃과 재시도 상한은 평가·추출 LLM과 같은 `CHAT_LLM_TIMEOUT_SECONDS` /
-`CHAT_LLM_MAX_ATTEMPTS`를 쓴다.
+호출당 타임아웃·재시도 상한·reasoning effort는 평가·추출 LLM과 같은
+`CHAT_LLM_TIMEOUT_SECONDS` / `CHAT_LLM_MAX_ATTEMPTS` / `CHAT_LLM_REASONING_EFFORT`를
+쓴다([2.4의 모델·reasoning effort와 타임아웃 예산](#모델reasoning-effort와-타임아웃-예산)).
+
+**모델도 같다.** Generate(A.4)는 고객에게 그대로 나가는 유일한 생성이라 한때 상위 모델을
+따로 뒀지만, 측정해보니 작은 모델이 추론 토큰을 더 써서 오히려 느렸다. 지금은
+`CHAT_RESPONSE_LLM_MODEL`과 `CHAT_LLM_MODEL`의 기본값이 모두 `gpt-5.6-luna`이며,
+변수를 둘로 남긴 것은 A.4만 갈아끼울 여지를 두기 위해서다.
+
+이 단계에서 가장 느린 것은 Generate가 아니라 **가이드 검색 질의 분해(A.2)**다. 위 절의
+측정표를 참고해 타임아웃을 잡는다.
 
 | 실패 지점 | 동작 |
 | --- | --- |
@@ -512,8 +559,9 @@ response = assemble(augmented, guidance)
 재연결 시 각 거래에 연결된 채팅 세션의 현재 상태를 개별 조회한다.
 
 세션 생성 직후의 첫 상태(`URL_SENT`, 발송 실패면 `FAILED`)는 **세션을 만든 쪽이 커밋한 뒤**
-발행한다. 세션 생성 HTTP 경로가 없으므로([2.1](#21-채팅-세션-생성-및-이메일-전송)) 이 발행
-책임은 FDS 파이프라인에 있다. 턴 실행 중의 전이는
+발행한다. Agent 작업의 마지막 커밋이 세션 상태까지 확정한 뒤
+[task_runner.py](../../app/services/agent/task_runner.py)가 상태를 다시 조회해 발행한다.
+턴 실행 중의 전이는
 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 발행한다.
 
 이후 상태 변경은 대시보드가 SSE 연결 하나로 수신한다. 이벤트는 `transaction_id`,
@@ -591,6 +639,14 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 - **프롬프트 인젝션 대비가 없다.** 고객 자유 서술이 그대로 추출 프롬프트에 들어간다.
   사용자 입력을 구분자로 감싸고 시스템 규칙 우선을 명시해야 한다. `message_text`가 `Text`라
   입력 길이 제한도 없다.
+- **A.2에서 「부정한 행동 제외」 규칙을 뺐다.** 지연을 줄이려고 서술 규칙을 정리하면서
+  환각 가드 하나를 함께 걷어냈다([A.2 규칙을 줄인 이유](prompts.md#규칙을-줄인-이유)).
+  「링크는 안 눌렀어요」처럼 고객이 **하지 않았다고 부정한 행동**에 대해 대응 가이드가
+  나올 수 있다. 실제로 그런 안내가 나오는지 관찰하고, 나온다면 이 규칙만 되살리는 것과
+  조립 단계에서 거르는 것 중에 고른다.
+- **A.2의 `evidence`가 원문 보존을 보장하지 않는다.** 위와 같은 이유로 요구를 뺐다.
+  [외부 조회(추가 기능)](#외부-조회-추가-기능)이 `evidence`의 URL·전화번호·계좌를 그대로
+  읽는 설계라, 그 기능을 구현할 때 원문 보존을 다시 요구해야 한다.
 
 ### 3.3 보안·운영
 
@@ -598,23 +654,23 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
   제한, 세션 잠금, 별도 URL 토큰, 세션 만료(TTL)는 추가하지 않는다.
   출생연도 4자리의 무차별 대입과 이메일 URL의 영구 유효 위험은 알고 있으며,
   운영 배포 전 후속 단계에서 구현한다.
-- **FDS 파이프라인과의 결합 방식이 미정이다.** 세션 생성이 `POST /transactions` 동기 경로
-  안이면 이메일 발송까지 거래 응답이 기다린다.
-  [fraud_detection_pipeline.py](../../app/pipelines/fraud_detection_pipeline.py)는 "룰 실패가
-  ML 결과 저장을 막지 않는다"는 원칙으로 짜여 있으니, 챗봇 세션 생성 실패도 거래 저장을
-  롤백하지 않는다를 같은 방식으로 명시해야 한다. `rule_replay` 재처리 경로가 있으므로
-  멱등 규칙(이미 있으면 기존 세션 반환)도 필요하다.
+- **FDS·Agent 결합은 백그라운드 Agent 경로로 확정했다.** `POST /transactions`는 원본 거래와
+  ML·룰 결과를 먼저 커밋하고 Agent 작업을 등록한다. Agent가 세션 생성과 SMTP 발송을
+  동기적으로 수행하지만 HTTP 거래 응답 이후의 백그라운드 작업이므로 응답을 지연시키지 않는다.
+  세션 생성·메일·최초 SSE 실패는 로그로 격리하며 이미 저장된 거래를 롤백하지 않는다.
+  실제 작업 큐와 자동 재시도를 도입하면 SMTP 호출의 비동기화와 재발송 정책을 다시 검토한다.
 - **담당자 접수·처리 중 상태는 MVP 범위에서 제외한다.**
   `HANDOFF_REQUESTED` 이후의 담당자 접수 상태를 추가하지 않는다. 접수 여부·담당자
   소유권·처리 완료 흐름은 MVP 이후에 상태값과 API를 확장해 구현한다.
 
 ### 3.4 스키마·계약
 
-- **`transaction_amount` 부호 규칙이 코드와 어긋난다.** 이 문서는 음수=출금, 양수=입금을
-  전제하지만 [app/dto/ml_prediction.py:69](../../app/dto/ml_prediction.py#L69)의
-  `Transaction_Amount: int = Field(gt=0)`가 살아 있어 음수 거래는 `POST /transactions`에서
-  422로 걸린다. DB에는 CHECK가 없어 저장 자체는 가능하다. ML 계약을 바꿀지, 방향을 다른
-  값에서 파생할지(`source_account.customer_id == transaction.customer_id`면 출금) 정해야 한다. -> ML 계약을 바꾼다 ML 계약의 ge 부분을 수정한다
+- ~~**`transaction_amount` 부호 규칙과 API 계약이 어긋난다.**~~ 해결됐다.
+  거래 입력 계약([transaction.py](../../app/dto/transaction.py))과 ML 전달 계약
+  ([ml_features.py](../../app/dto/ml_features.py)) 모두 `transaction_amount`에 양수 제약을
+  두지 않는다. 따라서 음수(출금) 거래도 `POST /transactions`에서 검증을 통과하며,
+  [2.3](#23-최초-알림-메시지와-버튼)의 부호 기반 입금·출금 판정을 그대로 사용한다.
+  금액의 크기만 필요한 룰·화면에서는 각 사용처가 절대값으로 정규화한다.
 - **외부 조회(더치트·Safe Browsing) 관련**
   - 더치트는 공개 API가 아니라 제휴 기반이다. 조달 가능 여부를 먼저 확인하고,
     안 되면 대체 경로(경찰청 사이버안전국 링크 안내)를 잡아둬야 한다.
@@ -640,7 +696,9 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [messages.md](messages.md) | 고객 안내 문구 B.1~B.6 |
 | [scoring.md](scoring.md) | 사기 정황 내부 채점표 (20종 × 4유형) |
 | [schema.md](schema.md) | 스키마 구현 상태와 테이블·컬럼 정의 3.1~3.10 |
-| [erd.md](erd.md) | 챗봇 테이블 관계 Mermaid ERD |
+
+별도 `erd.md`는 두지 않는다. 챗봇 관련 테이블 목록과 관계는
+[schema.md 3.2](schema.md#32-관련-테이블) 및 각 테이블의 FK·제약조건 설명에서 확인한다.
 
 ### [LLM 프롬프트](prompts.md)
 
@@ -661,7 +719,6 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | [B.4](messages.md#b4-다음-질문-전환-안내) | 다음 질문 전환 안내 | 재시도 소진·[평가 LLM 실패](#평가-llm-실패-시-동작) |
 | [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내) | 안내를 만들지 못한 가이드 검색 질의 | [2.5 검색 결과 0건 처리](#검색-결과-0건-처리) |
 | [B.6](messages.md#b6-상담-종료-요청-시-상담사-연결-안내) | 상담 종료 요청 시 상담사 연결 | [2.4 조건 2](#조건-2-고객응답-평가-llm) |
-| [B.7](messages.md#b7-챗봇-접속-안내-이메일) | 챗봇 접속 안내 이메일 | [2.1 발송 구현](#발송-구현과-기본-주소-폴백) |
 
 ### [DB·스키마](schema.md) · [내부 채점표](scoring.md)
 

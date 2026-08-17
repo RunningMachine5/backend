@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 import sqlmodel
+import pgvector.sqlalchemy    # 임베딩 컬럼 렌더링에 필요
+import app.data.model.types   # 프로젝트 커스텀 타입 렌더링에 필요
 ${imports if imports else ""}
 
 # revision identifiers, used by Alembic.

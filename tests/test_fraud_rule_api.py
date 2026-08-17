@@ -83,7 +83,7 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         fields = {feature["field"] for feature in response.json()}
         self.assertEqual(fields, set(RULE_CONTEXT_FIELDS))
-        self.assertIn("account_release_suspention", fields)
+        self.assertIn("recipient_release_suspension", fields)
         self.assertNotIn("account_release_suspension", fields)
         self.assertNotIn("customer_name", fields)
         self.assertNotIn("account_account_number", fields)
@@ -175,7 +175,7 @@ class FraudRuleApiTest(unittest.TestCase):
 
         self.assertEqual(validation.status_code, 200, validation.text)
         self.assertFalse(validation.json()["valid"])
-        self.assertIn("raw60 snake_case", validation.text)
+        self.assertIn("raw51 snake_case", validation.text)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_activation_archives_previous_set_and_clone_is_editable(self) -> None:

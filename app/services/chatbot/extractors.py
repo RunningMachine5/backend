@@ -67,13 +67,15 @@ class GuideSearchQueryExtractor:
                     raw_result
                 )
             except Exception as exc:
+                logger.warning(
+                    "가이드 검색 질의 분해 LLM 호출 실패: attempt=%s/%s error=%s: %s",
+                    attempt,
+                    self.max_attempts,
+                    type(exc).__name__,
+                    exc,
+                )
                 if attempt < self.max_attempts:
                     continue
-                logger.warning(
-                    "가이드 검색 질의 분해 LLM 호출 실패: attempts=%s error=%s",
-                    attempt,
-                    type(exc).__name__,
-                )
                 raise GuideSearchQueryExtractionError(
                     "guide_search_query 분해에 실패했습니다."
                 ) from exc
@@ -81,13 +83,15 @@ class GuideSearchQueryExtractor:
             valid_queries = []
             seen_queries: set[str] = set()
             for query in result.guide_search_queries:
-                # 이상한 증거를 가져왔을때 거를려고
+                # A.2 프롬프트가 evidence 를 원문 그대로 요구하지 않게 되면서
+                # 원문에 없다는 이유로 질의를 버리지 않는다. 버리면 프롬프트를 줄인
+                # 만큼 질의가 통째로 사라져 가이드가 나오지 않는다. 검색을 이끄는 것은
+                # search_query 이고 evidence 는 감사 기록이므로 기록만 남긴다.
                 if query.evidence not in user_answers:
-                    logger.warning(
-                        "원문에 없는 가이드 검색 질의 evidence를 버립니다: evidence=%s",
+                    logger.debug(
+                        "가이드 검색 질의 evidence가 답변 원문과 다릅니다: evidence=%s",
                         query.evidence,
                     )
-                    continue
 
                 title = query.title.strip()
                 search_query = " ".join(query.search_query.split())
@@ -153,6 +157,13 @@ class FraudCircumstanceExtractor:
                     raw_result
                 )
             except Exception as exc:
+                logger.warning(
+                    "사기 정황 추출 LLM 호출 실패: attempt=%s/%s error=%s: %s",
+                    attempt,
+                    self.max_attempts,
+                    type(exc).__name__,
+                    exc,
+                )
                 if attempt < self.max_attempts:
                     continue
                 raise FraudCircumstanceExtractionError(
@@ -163,7 +174,8 @@ class FraudCircumstanceExtractor:
             for circumstance in result.fraud_circumstances:
                 if circumstance.evidence not in user_answers:
                     logger.warning(
-                        "LLM 이 꾸며낸 응답이므로 패스합니다=%s"
+                        "LLM 이 꾸며낸 응답이므로 패스합니다: evidence=%s",
+                        circumstance.evidence,
                     )
                     continue
                 valid_circumstances.append(circumstance)

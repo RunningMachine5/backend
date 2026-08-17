@@ -1,7 +1,4 @@
-"""채팅 세션 생성과 URL 안내 발송(PRD 2.1) 분기 검증.
-
-SMTP 는 실제로 부르지 않는다. 발송기는 프로토콜을 만족하는 Fake 로 주입한다.
-"""
+"""채팅 세션 생성과 통합 메일 수신 예정 주소 계산을 검증한다."""
 
 import unittest
 from datetime import UTC, date, datetime
@@ -23,19 +20,6 @@ from app.services.chatbot.session_creator import (
 NOW = datetime(2026, 8, 16, 9, 0, tzinfo=UTC)
 
 
-class FakeChatSessionUrlNotifier:
-    """발송 인자를 기록하고, 필요하면 SMTP 장애를 흉내낸다."""
-
-    def __init__(self, *, error: Exception | None = None) -> None:
-        self.error = error
-        self.calls: list[dict[str, object]] = []
-
-    def send(self, **kwargs) -> None:
-        self.calls.append(kwargs)
-        if self.error is not None:
-            raise self.error
-
-
 class ChatSessionCreatorTest(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = create_engine(
@@ -47,7 +31,6 @@ class ChatSessionCreatorTest(unittest.TestCase):
         Transaction.__table__.create(self.engine)
         ChatSession.__table__.create(self.engine)
         self.session = Session(self.engine)
-        self.notifier = FakeChatSessionUrlNotifier()
         self.ids = iter(["CHAT-FIRST", "CHAT-SECOND"])
 
     def tearDown(self) -> None:
@@ -61,7 +44,6 @@ class ChatSessionCreatorTest(unittest.TestCase):
     def _creator(self) -> ChatSessionCreator:
         return ChatSessionCreator(
             self.session,
-            notifier=self.notifier,
             chat_session_id_factory=lambda: next(self.ids),
             now_factory=lambda: NOW,
         )
@@ -86,6 +68,7 @@ class ChatSessionCreatorTest(unittest.TestCase):
         transaction = Transaction(
             customer_id="CUST-1",
             source_account_number="source-0001",
+            recipient_account_number="recipient-0001",
             transaction_datetime=NOW,
             transaction_amount=-1_000_000,
             channel="mobile",
@@ -117,7 +100,7 @@ class ChatSessionCreatorTest(unittest.TestCase):
     # 테스트
     # ------------------------------------------------------------------
 
-    def test_creates_session_and_mails_customer_email(self) -> None:
+    def test_creates_session_with_top_types_and_notification_target(self) -> None:
         transaction_id = self._seed_transaction()
 
         result = self._create(
@@ -127,26 +110,16 @@ class ChatSessionCreatorTest(unittest.TestCase):
 
         chat_session = result.chat_session
         self.assertTrue(result.created)
-        self.assertTrue(result.email_sent)
         self.assertFalse(result.used_fallback_email)
         self.assertEqual(chat_session.chat_session_id, "CHAT-FIRST")
         self.assertEqual(chat_session.status, ChatSessionStatus.URL_SENT.value)
-        self.assertEqual(chat_session.notified_email, "hong@example.com")
-        # SQLite 는 tz 정보를 보존하지 않으므로 시각만 비교한다.
-        self.assertIsNotNone(chat_session.email_sent_at)
-        self.assertEqual(chat_session.email_sent_at.replace(tzinfo=UTC), NOW)
+        self.assertEqual(result.notified_email, "hong@example.com")
+        self.assertIsNone(chat_session.notified_email)
+        self.assertIsNone(chat_session.email_sent_at)
         self.assertEqual(
             chat_session.top_fraud_types,
             [VOICE_PHISHING, MESSENGER_PHISHING],
         )
-
-        self.assertEqual(len(self.notifier.calls), 1)
-        call = self.notifier.calls[0]
-        self.assertEqual(call["chat_session_id"], "CHAT-FIRST")
-        self.assertEqual(call["recipient_email"], "hong@example.com")
-        self.assertEqual(call["customer_name"], "홍길동")
-        self.assertEqual(call["transaction_amount"], -1_000_000)
-        self.assertFalse(call["used_fallback_email"])
 
     def test_falls_back_to_default_email_when_customer_email_is_blank(
         self,
@@ -162,30 +135,6 @@ class ChatSessionCreatorTest(unittest.TestCase):
 
                 self.assertTrue(result.used_fallback_email)
                 self.assertEqual(result.notified_email, CHAT_FALLBACK_EMAIL)
-                self.assertEqual(
-                    result.chat_session.status,
-                    ChatSessionStatus.URL_SENT.value,
-                )
-                call = self.notifier.calls[0]
-                self.assertEqual(call["recipient_email"], CHAT_FALLBACK_EMAIL)
-                self.assertTrue(call["used_fallback_email"])
-
-    def test_marks_session_failed_when_sending_raises(self) -> None:
-        """발송 실패는 예외를 올리지 않고 FAILED 로 남긴다(스키마 3.3)."""
-
-        self.notifier = FakeChatSessionUrlNotifier(error=RuntimeError("smtp"))
-        transaction_id = self._seed_transaction()
-
-        with self.assertLogs("app.services.chatbot.session_creator", "ERROR"):
-            result = self._create(transaction_id)
-
-        chat_session = result.chat_session
-        self.assertTrue(result.created)
-        self.assertFalse(result.email_sent)
-        self.assertEqual(chat_session.status, ChatSessionStatus.FAILED.value)
-        self.assertIsNone(chat_session.email_sent_at)
-        # 어느 주소로 시도했는지는 남긴다.
-        self.assertEqual(chat_session.notified_email, "hong@example.com")
 
     def test_marks_customer_born_60_years_ago_as_older(self) -> None:
         transaction_id = self._seed_transaction(birth_year=NOW.year - 60)
@@ -201,10 +150,10 @@ class ChatSessionCreatorTest(unittest.TestCase):
 
         self.assertFalse(result.chat_session.is_older)
 
-    def test_second_call_returns_existing_session_without_resending(
+    def test_second_call_returns_existing_session_without_duplicate_row(
         self,
     ) -> None:
-        """rule_replay 재처리로 다시 불려도 세션과 안내는 한 번뿐이다."""
+        """rule_replay 재처리로 다시 불려도 세션은 한 행뿐이다."""
 
         transaction_id = self._seed_transaction()
         first = self._create(transaction_id)
@@ -212,12 +161,10 @@ class ChatSessionCreatorTest(unittest.TestCase):
         second = self._create(transaction_id)
 
         self.assertFalse(second.created)
-        self.assertTrue(second.email_sent)
         self.assertEqual(
             second.chat_session.chat_session_id,
             first.chat_session.chat_session_id,
         )
-        self.assertEqual(len(self.notifier.calls), 1)
         session_count = self.session.exec(
             select(func.count()).select_from(ChatSession)
         ).one()

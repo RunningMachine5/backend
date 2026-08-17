@@ -2,11 +2,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import agent_case, chat, dashboard_graph, fraud_rule, health, mlops, transaction, dashboard_insight
+from app.api import agent_case, case_query, chat, dashboard_graph, fraud_rule, health, mlops, transaction, dashboard_insight
 from app.core.config import ML_SERVER_URL
 from app.core.exception_handlers import register_exception_handlers
 from app.services.ml_serving.predict_client import MLServingClient
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -29,9 +28,10 @@ app.include_router(fraud_rule.router)
 app.include_router(dashboard_insight.router)
 app.include_router(agent_case.router)
 app.include_router(dashboard_graph.router)
+app.include_router(case_query.router)
 
 
 @app.get("/")
 async def root():
-    return {"server-message": "Hello 준혁,덕현,강현,정현,주현"}
+    return {"server-message": "Hello 준역,덕현,강현,정연,주현"}
 

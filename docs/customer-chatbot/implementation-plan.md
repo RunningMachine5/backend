@@ -4,12 +4,12 @@
 `docs/customer-chatbot/`의 5개 설계 문서이며, 이 문서는 무엇을 어떤 순서로 만들고
 각 단계에서 어느 문서 절을 참조하는지만 담는다. 설계와 이 계획이 어긋나면 설계 문서가 이긴다.
 
-작성일: 2026-08-14. 구현이 끝난 단계는 체크박스를 채우고, 전 단계 완료 후 이 문서는
-삭제하거나 보관으로 옮긴다.
+작성일: 2026-08-14. 전체 9단계 구현 완료일: 2026-08-16.
+완료된 구현의 의사결정과 작업 순서를 추적할 수 있도록 이 문서는 기록으로 보관한다.
 
 ---
 
-## 0. 현재 상태 (2026-08-15 기준)
+## 0. 계획 시작 당시 상태 (2026-08-15 기준)
 
 ### 이미 완료된 것 — 다시 만들지 않는다
 
@@ -22,10 +22,11 @@
 | pgvector 코사인 검색 + `MAX_DISTANCE = 0.6` | [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py) |
 | 의존성: `langgraph`, `langchain`, `langchain-openai` | `pyproject.toml` |
 
-### 없는 것 — 이 계획이 만드는 것
+### 시작 당시 없었던 것 — 이 계획에서 구현 완료
 
 챗봇 리포지토리, 세션 기반 API, 평가·추출 LLM 호출부, RAG 응답 조립, 채점 집계,
-LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 세션 상태 조회·변경 SSE, FDS 결합.
+LangGraph 파이프라인, 세션 생성·Agent 통합 이메일 발송, 거래별 세션 상태 조회·변경 SSE,
+FDS·Agent 결합.
 
 ### 대체·수정 대상
 
@@ -44,7 +45,7 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 
 - **`transaction_amount` 부호 제약은 이미 해소됐다.** PRD 3.4가 지적한
   `Transaction_Amount: int = Field(gt=0)`는 raw60 계약 정렬 이후 사라졌고, 현재
-  [ml_features.py](../../app/dto/ml_features.py)의 `transaction_amount: int`에는 부호 제약이
+  [ml_features.py](../../app/dto/ml_features.py)의 `transaction_amount: float`에는 부호 제약이
   없다. 음수(출금) 거래가 422로 걸리지 않으므로 [2.3의 입금/출금 판정](README.md#23-최초-알림-메시지와-버튼)은
   바로 구현 가능하다. → README 3.4 해당 항목 갱신 필요 (9단계).
 - **`erd.md`가 없다.** PRD 색인과 schema.md가 링크하지만 파일이 존재하지 않는다.
@@ -81,7 +82,15 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   settings 클래스 없음) + `.env.example` 갱신
   - `CHAT_BASE_URL` (기본 `http://localhost:8000`)
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
-  - `CHAT_LLM_TIMEOUT_SECONDS`, `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용
+  - `CHAT_LLM_TIMEOUT_SECONDS` (기본 `30`), `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용.
+    가장 느린 가이드 검색 질의 분해(A.2)가 최악 4.9초라 그 아래로 잡으면 모든 턴이
+    타임아웃으로 실패한다(PRD 2.4 「모델·reasoning effort와 타임아웃 예산」)
+  - `CHAT_LLM_MODEL` (기본 `gpt-5.6-luna`) — 네 LLM 호출 공용 모델
+  - `CHAT_RESPONSE_LLM_MODEL` (기본 `gpt-5.6-luna`) — 기본값은 위와 같다. 고객에게 나가는
+    대응 가이드 생성(A.4)만 따로 갈아끼울 여지를 두려고 변수를 남겨뒀다
+  - `CHAT_LLM_REASONING_EFFORT` (기본 `low`) — 네 LLM 호출 공용. 추론 토큰이 지연을
+    지배하므로 모델 크기보다 이 값이 응답 시간을 좌우한다. `minimal`은 평가 LLM이
+    오판해 쓰지 않는다
 - [x] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
   - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) — PRD 2.1의 표.
     세션 생성이 HTTP 경로를 갖지 않게 되면서 요청 본문이 아니라 생성 함수의 입력 검증이
@@ -229,19 +238,17 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 **참조**: [PRD 2.1~2.3](README.md#21-채팅-세션-생성-및-이메일-전송), [PRD 2.7](README.md#27-상담사-반환-경로-거래별-상태-조회--sse),
 [스키마 3.9](schema.md#39-customersemail-확보-경로)
 
-- [x] 세션 생성 + 발송 서비스 ([session_creator.py](../../app/services/chatbot/session_creator.py)):
+- [x] 세션 생성 서비스 ([session_creator.py](../../app/services/chatbot/session_creator.py)):
   - 멱등 생성(3단계) → `is_older` 판정(`customers.birth_date` 출생연도 기준 60세 이상)
-  - **콘솔 출력이 아니라 SMTP 실발송으로 확정했다.** Agent가 쓰는
-    `SmtpEmailMessageSender`를 재사용하고 메시지 조립은
-    [session_url_mailer.py](../../app/services/chatbot/session_url_mailer.py)가 맡는다.
-    발송 실패는 예외를 삼키고 `status = FAILED`. → README 2.1 "발송 구현과 기본 주소 폴백"에
-    반영 완료
+  - 8단계 결합에서 단독 B.7 메일을 제거했다. Agent의 기존 이상거래 안내 메일에 세션 URL을
+    넣어 한 통만 보내며 [session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)가
+    생성·발송·상태 기록을 조정한다
   - 폴백: `customers.email`이 `NULL`·빈 문자열·공백뿐이면 `CHAT_FALLBACK_EMAIL`로.
     URL은 `CHAT_BASE_URL + /chat/{chat_session_id}`. `notified_email`·`email_sent_at` 기록,
     `status = URL_SENT`
 - [x] [app/api/chat.py](../../app/api/chat.py) 재작성 — 엔드포인트 형태는 설계 문서에 없었으므로
   초안으로 만들었고, 확정된 형태를 README에 반영했다:
-  - ~~`POST /chat/sessions`~~ — **만들지 않는다.** 세션 생성의 호출자는 FDS 파이프라인뿐이라
+  - ~~`POST /chat/sessions`~~ — **만들지 않는다.** 세션 생성의 운영 호출자는 Agent뿐이라
     함수 호출로 충분하다(PRD 2.1). 초안 단계에서 한 번 만들었다가 제거했다. 로컬에서 접속
     URL이 필요하면 [scripts/create_chat_session.py](../../scripts/create_chat_session.py)를
     쓴다(PRD 2.1 테스트용 세션 생성)
@@ -268,31 +275,26 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   - 평가 LLM 이 필요한 턴은 파이프라인이 지연 생성하는 `AnswerEvaluator` 자리를 대역으로
     바꾼다. 라우터에 서비스 주입 지점이 없어 생성자 주입 대신 패치를 쓴다
 
-## 8단계 — FDS 파이프라인 결합
+## 8단계 — FDS·Agent 파이프라인 결합
 
 **참조**: [PRD 3.3](README.md#33-보안운영) — 결합 방식 미정으로 남아 있던 항목의 확정
 
-- [ ] [fraud_detection_pipeline.py](../../app/pipelines/fraud_detection_pipeline.py)에서
-  `is_fraud`일 때 세션 생성·발송 호출. **"룰 실패가 ML 결과 저장을 막지 않는다"와 같은
-  원칙**으로, 세션 생성 실패는 로그만 남기고 거래 저장을 롤백하지 않는다.
-  룰 채점 결과 점수 내림차순 상위 2개를 `top_fraud_types`로 전달하고, 룰 채점이 실패한
-  거래는 생략한다(일반 질문 폴백, PRD 2.4)
-- [ ] **첫 상태 SSE 발행도 파이프라인이 맡는다.** 커밋한 뒤 새로 만든 세션에 대해
-  `chat_session_event_broker.publish_status_changed`를 부른다(`URL_SENT` 또는 발송 실패 시
-  `FAILED`). 7단계의 세션 생성 엔드포인트가 하던 일이며, 그 엔드포인트를 없앴으므로
-  지금은 발행 주체가 없다(PRD 2.7)
-- [ ] **고객 안내 메일은 한 통으로 합친다.** Agent 워크플로가 이미
+- [x] FDS는 원본 거래와 ML·룰 결과를 먼저 커밋하고 이상거래일 때 Agent 백그라운드 작업을
+  등록한다. 룰 점수 결과가 없으면 Agent 입력을 만들지 않으므로 세션도 생성하지 않는다.
+  세션 생성 실패는 Agent 이메일 노드가 로그로 격리해 저장된 거래를 롤백하지 않는다
+- [x] **첫 상태 SSE는 Agent 작업 실행기가 맡는다.** Agent 사건과 세션 상태 커밋이 끝난 뒤
+  [task_runner.py](../../app/services/agent/task_runner.py)가 세션을 조회해 `URL_SENT` 또는
+  `FAILED`를 발행한다(PRD 2.7)
+- [x] **고객 안내 메일은 한 통으로 합쳤다.** Agent 워크플로가
   [`_send_alert_email`](../../app/services/agent/workflow.py#L313)로 이상거래 안내 메일을
-  보내고 있고, 그 본문의 챗봇 링크는 `CUSTOMER_CHATBOT_URL` env의 **세션 id 없는 고정 주소**다.
-  Agent가 세션을 먼저 만들고(멱등) 그 `/chat/{chat_session_id}` URL을 `chatbot_url`로 넘겨
-  **Agent 메일 한 통에 세션 URL이 담기게 한다.** 이때 함께 정리할 것:
-  - `AgentEmailRepository.get_email_context`가 `customers.email`이 없으면 `None`을 돌려주고
-    조용히 미발송한다. 챗봇 폴백 규칙(PRD 2.1)에 맞춰 `CHAT_FALLBACK_EMAIL`로 보내도록 고친다
-  - 세션 생성 시점의 B.7 단독 발송과 중복되지 않도록 발송 지점을 한 곳으로 정한다
-- [ ] 멱등이므로 `rule_replay` 재처리 경로에서 중복 세션이 생기지 않음을 테스트로 고정
-- [ ] 발송이 콘솔 출력뿐이라 동기 호출 지연은 무시 가능. 실제 메일 연동 시 비동기화 재검토
-  (README 3.3에 남긴다)
-- [ ] 테스트: `tests/test_pipelines.py` 확장 — 세션 생성 실패 주입 시 거래 저장 유지
+  보내기 전에 세션을 만들고 `/chat/{chat_session_id}` URL을 `chatbot_url`로 넘긴다.
+  단독 B.7 메일러와 `CUSTOMER_CHATBOT_URL` 고정 주소는 제거했다.
+  `AgentEmailRepository`는 고객 이메일이 비어 있으면 `CHAT_FALLBACK_EMAIL`을 사용한다
+- [x] 실제 DB 통합 테스트로 같은 거래의 세션이 한 행이고 Agent 통합 메일이 한 번만
+  나가는 것을 고정했다
+- [x] SMTP 발송은 Agent 백그라운드 작업 안에서 동기 실행한다. 실제 작업 큐·자동 재시도를
+  도입할 때 비동기화와 재발송 정책을 재검토한다(README 3.3)
+- [x] 통합 테스트: 메일 실패 시 기존 거래는 유지하고 챗봇 세션만 `FAILED`로 기록
 
 ## 9단계 — 문서 갱신 마감 (스킬 7절 의무)
 
@@ -304,11 +306,14 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
 | ~~README 2.5~~ | ~~검색·생성 실패 폴백~~ — 5단계에서 반영 완료 |
 | ~~messages.md B.1 / B.4~~ | ~~B.1 치환 표기 형식, B.4를 재시도 소진·평가 장애 공통 전이 안내로 확정~~ — 반영 완료 |
 | ~~README 2.1 / 신규 절~~ | ~~API 엔드포인트 형태 확정본~~ — 7단계에서 [2.8 신설](README.md#28-api-엔드포인트)로 반영 완료 |
-| README 3.3 | FDS 결합 방식 확정 (동기 + 실패 무시 + 멱등), 미해결에서 제거 |
-| README 3.4 | `transaction_amount` 부호 제약 해소 반영 (`ml_prediction.py:69` 참조도 갱신) |
-| ~~README 1.3~~ / schema.md 구현 상태 | ~~"비즈니스 로직 없음" 문구~~ — README 1.3 은 7단계에서 갱신 완료. schema.md 구현 상태는 남아 있다 |
-| README 4 색인 | 절 구성이 바뀌면 색인·상호 링크 정리 (`erd.md` 부재 처리 포함) |
-| messages.md / prompts.md | 구현 중 문구·프롬프트가 바뀌었을 때만 |
+| ~~README 3.3~~ | ~~FDS 결합 방식 확정~~ — 거래 커밋 후 Agent 백그라운드 실행 + 실패 격리로 반영 완료 |
+| ~~README 3.4~~ | ~~`transaction_amount` 부호 제약 해소 및 현재 `ml_features.py` 계약 반영~~ — 완료 |
+| ~~README 1.3 / schema.md 구현 상태~~ | ~~스키마뿐 아니라 애플리케이션 흐름까지 완료된 현재 상태 반영~~ — 완료 |
+| ~~README 4 색인~~ | ~~절 구성과 상호 링크 정리, 존재하지 않는 `erd.md` 링크 제거~~ — 완료 |
+| ~~messages.md~~ / prompts.md | ~~단독 B.7 안내 문구 제거~~. 프롬프트는 변경 없음 |
+
+9단계 완료와 함께 이 구현 계획의 모든 단계가 종료됐다. 이후 기능 확장은
+README 3장의 미해결 문제와 이번 범위 제외 항목을 새 작업의 출발점으로 삼는다.
 
 ---
 
@@ -322,10 +327,9 @@ LangGraph 파이프라인, 세션 생성·이메일 발송(콘솔), 거래별 �
   `InMemorySaver`에서는 재시작 시 멈춘 노드 자체가 사라져 재개할 수 없다 (스키마 3.4)
 - `is_adopted`: `SUFFICIENT`와 재시도 초과에만 `true` (README 2.4 `is_adopted`를 세우는 판정)
 - 재시도 초과 턴의 고객 출력: B.4 다음 질문 전환 안내 (messages.md B.4)
-- FDS 결합: 동기 호출 + 실패 시 거래 저장 유지 + 멱등 (PRD 3.3의 원칙 문장 그대로)
+- FDS 결합: 거래·탐지 결과 커밋 후 Agent 백그라운드 실행 + 실패 시 거래 저장 유지
 - 고객 안내 메일: **Agent 이상거래 안내 메일에 세션 URL을 주입해 한 통으로 보낸다**(8단계).
-  두 통(Agent 고정 URL + 챗봇 B.7)을 보내지 않고, 세션 생성이 멱등이라 누가 먼저
-  만들든 같은 세션 URL이 나간다
+  단독 챗봇 B.7 메일과 고정 URL은 사용하지 않는다
 - SSE: 대시보드당 연결 하나 + in-process pub/sub, 재연결 시 거래별 상태 재조회 (PRD 2.7)
 
 ## 이번 범위에서 제외 (설계 문서가 MVP 제외로 명시한 것)

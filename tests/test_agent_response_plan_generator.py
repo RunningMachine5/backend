@@ -1,4 +1,7 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from time import sleep
 
 from app.domain.agent_status import InformationStatus
 from app.domain.response_policy import (
@@ -15,15 +18,23 @@ from app.services.agent.response_plan_generator import (
 
 
 class FakeStructuredLLM:
-    def __init__(self, result=None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        result=None,
+        error: Exception | None = None,
+        delay_seconds: float = 0,
+    ) -> None:
         self.result = result
         self.error = error
+        self.delay_seconds = delay_seconds
         self.calls = 0
         self.messages = None
 
     def invoke(self, messages):
         self.calls += 1
         self.messages = messages
+        if self.delay_seconds:
+            sleep(self.delay_seconds)
         if self.error is not None:
             raise self.error
         return self.result
@@ -33,7 +44,6 @@ class RagResponsePlanGeneratorTest(unittest.TestCase):
     def test_rag_context_enriches_policy_actions(self) -> None:
         llm = FakeStructuredLLM(
             GeneratedResponsePlan(
-                summary="원격제어 정황이 확인된 고위험 계정탈취 의심 사건이다.",
                 actions=[
                     GeneratedActionDetail(
                         action_code="VERIFY_CUSTOMER_TRANSACTION",
@@ -62,7 +72,6 @@ class RagResponsePlanGeneratorTest(unittest.TestCase):
     def test_unknown_action_code_uses_policy_fallback(self) -> None:
         llm = FakeStructuredLLM(
             GeneratedResponsePlan(
-                summary="임의 계획",
                 actions=[
                     GeneratedActionDetail(
                         action_code="UNKNOWN_ACTION",
@@ -110,6 +119,110 @@ class RagResponsePlanGeneratorTest(unittest.TestCase):
         self.assertEqual(llm.calls, 0)
         self.assertEqual(result.information_status, InformationStatus.PARTIAL)
 
+    def test_same_policy_and_guides_use_cached_plan(self) -> None:
+        llm = FakeStructuredLLM(self._generated_plan())
+        generator = RagResponsePlanGenerator(structured_llm=llm)
+        first_metrics = {}
+        second_metrics = {}
+
+        first = generator.generate(
+            fraud_type="ACCOUNT_TAKEOVER",
+            policy=self._policy(),
+            guides=[self._guide()],
+            metrics=first_metrics,
+        )
+        second = generator.generate(
+            fraud_type="ACCOUNT_TAKEOVER",
+            policy=self._policy(),
+            guides=[self._guide()],
+            metrics=second_metrics,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(llm.calls, 1)
+        self.assertFalse(first_metrics["response_plan_cache_hit"])
+        self.assertEqual(first_metrics["response_plan_llm_call_count"], 1)
+        self.assertTrue(second_metrics["response_plan_cache_hit"])
+        self.assertEqual(second_metrics["response_plan_llm_call_count"], 0)
+
+    def test_guide_content_change_invalidates_cache(self) -> None:
+        llm = FakeStructuredLLM(self._generated_plan())
+        generator = RagResponsePlanGenerator(structured_llm=llm)
+
+        generator.generate(
+            fraud_type="ACCOUNT_TAKEOVER",
+            policy=self._policy(),
+            guides=[self._guide()],
+        )
+        generator.generate(
+            fraud_type="ACCOUNT_TAKEOVER",
+            policy=self._policy(),
+            guides=[replace(self._guide(), content="변경된 고객 확인 절차")],
+        )
+
+        self.assertEqual(llm.calls, 2)
+
+    def test_policy_change_invalidates_cache(self) -> None:
+        llm = FakeStructuredLLM(self._generated_plan())
+        generator = RagResponsePlanGenerator(structured_llm=llm)
+        policy = self._policy()
+        changed_policy = replace(
+            policy,
+            actions=(
+                replace(policy.actions[0], reason="변경된 내부 대응 근거"),
+            ),
+        )
+
+        generator.generate(
+            fraud_type="ACCOUNT_TAKEOVER",
+            policy=policy,
+            guides=[self._guide()],
+        )
+        generator.generate(
+            fraud_type="ACCOUNT_TAKEOVER",
+            policy=changed_policy,
+            guides=[self._guide()],
+        )
+
+        self.assertEqual(llm.calls, 2)
+
+    def test_llm_failure_result_is_not_cached(self) -> None:
+        llm = FakeStructuredLLM(error=RuntimeError("LLM 실패"))
+        generator = RagResponsePlanGenerator(structured_llm=llm)
+        metrics = {}
+
+        for _ in range(2):
+            generator.generate(
+                fraud_type="ACCOUNT_TAKEOVER",
+                policy=self._policy(),
+                guides=[self._guide()],
+                metrics=metrics,
+            )
+
+        self.assertEqual(llm.calls, 2)
+        self.assertFalse(metrics["response_plan_cache_hit"])
+        self.assertTrue(metrics["response_plan_fallback_used"])
+
+    def test_concurrent_same_key_calls_llm_once(self) -> None:
+        llm = FakeStructuredLLM(
+            self._generated_plan(),
+            delay_seconds=0.05,
+        )
+        generator = RagResponsePlanGenerator(structured_llm=llm)
+
+        def generate_once():
+            return generator.generate(
+                fraud_type="ACCOUNT_TAKEOVER",
+                policy=self._policy(),
+                guides=[self._guide()],
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(lambda _index: generate_once(), range(4)))
+
+        self.assertEqual(llm.calls, 1)
+        self.assertTrue(all(result == results[0] for result in results))
+
     @staticmethod
     def _policy() -> ResponsePolicy:
         return ResponsePolicy(
@@ -149,6 +262,18 @@ class RagResponsePlanGeneratorTest(unittest.TestCase):
             source_url=None,
             similarity_score=0.91,
             retrieval_rank=1,
+        )
+
+    @staticmethod
+    def _generated_plan() -> GeneratedResponsePlan:
+        return GeneratedResponsePlan(
+            actions=[
+                GeneratedActionDetail(
+                    action_code="VERIFY_CUSTOMER_TRANSACTION",
+                    procedure_steps=["등록 연락처로 본인 거래 여부를 확인한다."],
+                    cautions=["비밀번호와 인증번호를 요청하지 않는다."],
+                )
+            ]
         )
 
 

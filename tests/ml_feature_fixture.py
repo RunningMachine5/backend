@@ -1,15 +1,14 @@
-"""Backend↔ML raw59/raw64 계약 테스트용 거래 한 건."""
+"""Backend↔ML raw51과 학습 raw64 계약 테스트용 거래 한 건."""
 
 from typing import Any
 
 
 def valid_ml_raw_data() -> dict[str, Any]:
-    """ML 담당자의 정식 추론 raw59를 반환한다."""
+    """ML 담당자의 정식 추론 raw51을 반환한다."""
 
     return {
         "customer_birth_date": "1984-08-14T00:00:00",
         "customer_gender": "female",
-        "customer_name": "test-customer",
         "customer_registration_datetime": "2020-03-14T10:30:00",
         "customer_credit_rating": 5,
         "customer_flag_change_of_authentication_1": False,
@@ -27,7 +26,6 @@ def valid_ml_raw_data() -> dict[str, Any]:
         "customer_flag_terminal_malicious_behavior_6": False,
         "customer_inquery_atm_limit": False,
         "customer_increase_atm_limit": False,
-        "account_account_number": "123456789400",
         "account_account_type": "a",
         "account_creation_datetime": "2020-03-15T09:00:00",
         "account_initial_balance": 10_000_000,
@@ -36,7 +34,7 @@ def valid_ml_raw_data() -> dict[str, Any]:
         "account_amount_daily_limit": 3_000_000,
         "account_indicator_openbanking": True,
         "account_remaining_amount_daily_limit_exceeded": 2_000_000,
-        "account_release_suspention": False,
+        "recipient_release_suspension": False,
         "account_one_month_max_amount": 500_000,
         "account_one_month_std_dev": 120_000.0,
         "account_dawn_one_month_max_amount": 150_000,
@@ -45,13 +43,8 @@ def valid_ml_raw_data() -> dict[str, Any]:
         "transaction_amount": 75_000,
         "channel": "ATM",
         "operating_system": "iOS",
-        "error_code": "none",
         "type_general_automatic": "general",
-        "ip_address": "203.0.113.40",
-        "mac_address": "00:1A:2B:3C:4D:40",
         "access_medium": "a",
-        "location": "seoul",
-        "recipient_account_number": "987654321400",
         "transaction_num_connection_failure": 0,
         "another_person_account": False,
         "distance": 1.5,
@@ -64,8 +57,7 @@ def valid_ml_raw_data() -> dict[str, Any]:
         "recipient_account_suspend_status": False,
         "number_of_transaction_with_the_account": 36,
         "transaction_history_with_the_account": 36,
-        "first_time_ios_by_vulnerable_user": False,
-        "transaction_resumed_date": None,
+        "recipient_transaction_resumed_date": None,
     }
 
 
@@ -76,9 +68,31 @@ def valid_transaction_row(
 ) -> dict[str, Any]:
     """train1.csv와 같은 flat raw64-compatible 한 행을 반환한다."""
 
+    raw51 = valid_ml_raw_data()
+    training_features = {
+        name: value
+        for name, value in raw51.items()
+        if name
+        not in {
+            "recipient_release_suspension",
+            "recipient_transaction_resumed_date",
+        }
+    }
     row = {
         "transaction_id": transaction_id,
-        **valid_ml_raw_data(),
+        **training_features,
+        "customer_name": "test-customer",
+        "account_account_number": "123456789400",
+        "account_release_suspention": raw51["recipient_release_suspension"],
+        "error_code": "none",
+        "ip_address": "203.0.113.40",
+        "mac_address": "00:1A:2B:3C:4D:40",
+        "location": "37.5665 126.9780",
+        "recipient_account_number": "987654321400",
+        "first_time_ios_by_vulnerable_user": False,
+        "transaction_resumed_date": raw51[
+            "recipient_transaction_resumed_date"
+        ],
         "customer_identification_number": "upTALE-VwSUVKY",
         "customer_id": "C000494",
         "balance_drain_ratio": 0.15,
