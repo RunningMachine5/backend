@@ -252,10 +252,10 @@ class RuleEngineTest(unittest.TestCase):
         raw_data = valid_rule_raw_data()
         raw_data.update(
             {
-                "account_release_suspention": 1,
+                "recipient_release_suspension": 1,
                 "recipient_account_suspend_status": 1,
                 "unused_account_status": 1,
-                "transaction_resumed_date": "2026-07-20T14:30:00+09:00",
+                "recipient_transaction_resumed_date": "2026-07-20T14:30:00+09:00",
                 "flag_deposit_more_than_ten_million": 1,
                 "number_of_transaction_with_the_account": 3,
             }

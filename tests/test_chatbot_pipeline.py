@@ -135,7 +135,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         self.transaction = Transaction(
             customer_id=None,
             source_account_number="source-0001",
-            recipient_account_number=None,
+            recipient_account_number="recipient-0001",
             transaction_datetime=datetime(2026, 8, 15, 14, 3, tzinfo=UTC),
             transaction_amount=-1_234_000,
             channel="mobile",

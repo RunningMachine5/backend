@@ -143,6 +143,7 @@ class ChatApiTest(unittest.TestCase):
         transaction = Transaction(
             customer_id="CUST-1",
             source_account_number="source-0001",
+            recipient_account_number="recipient-0001",
             transaction_datetime=NOW,
             transaction_amount=-1_234_000,
             channel="mobile",

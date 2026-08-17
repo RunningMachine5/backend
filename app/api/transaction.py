@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 from sqlmodel import select
 
+from app.api.dependencies import DerivedFeatureServiceDep, DFraudDetectionPipelineDep
 from app.core.db import SessionDep
 from app.api.dependencies import DFraudDetectionPipelineDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
@@ -20,17 +21,13 @@ from app.pipelines.fraud_detection_pipeline import (
     FraudDetectionResult,
 )
 from app.repositories.transaction import (
-    AccountIdentifierConflictError,
     PredictionResultRepository,
     TransactionLabelRepository,
 )
 from app.services.agent.task_runner import AgentTaskRunnerDep
 from app.services.analysis.risk_grader import RiskGrader
+from app.services.dashboard.dashboard_event_broker import dashboard_event_broker
 from app.services.ml_serving.client import MLServingClientDep
-
-from app.services.dashboard.dashboard_event_broker import(
-    dashboard_event_broker
-)
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -107,19 +104,18 @@ def create_transaction(
     payload: TransactionRequestDTO,
     background_tasks: BackgroundTasks,
     session: SessionDep,
+    derived_features_service: DerivedFeatureServiceDep,
     ml_client: MLServingClientDep,
     agent_task_runner: AgentTaskRunnerDep,
 ) -> TransactionResponseDTO:
     """HTTP 요청을 실제 사기 탐지 Pipeline에 전달한다."""
 
-    pipeline = FraudDetectionPipeline(session=session, ml_client=ml_client)
-    try:
-        result = pipeline.run(payload)
-    except AccountIdentifierConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="계좌 식별값이 기존 원장과 일치하지 않습니다.",
-        ) from exc
+    pipeline = FraudDetectionPipeline(
+        session=session,
+        derived_features_service=derived_features_service,
+        ml_client=ml_client,
+    )
+    result = pipeline.run(payload)
     agent_input = _build_agent_input(result)
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)

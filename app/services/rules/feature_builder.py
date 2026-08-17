@@ -1,4 +1,4 @@
-"""ML raw60 계약에서 룰 평가용 컨텍스트를 만든다."""
+"""ML raw51 계약에서 룰 평가용 컨텍스트를 만든다."""
 
 from __future__ import annotations
 
@@ -7,13 +7,11 @@ from typing import Any
 
 from app.dto.ml_features import MLTransactionFeatures
 
-
-# ML ``PredictInputDTO`` 60개 중 상관관계용 transaction_id를 제외한 59개다.
+# ML 담당자가 정의한 실시간 Feature 51개다.
 # Backend와 ML을 서로 독립 배포할 수 있도록 여기에 계약을 명시적으로 고정한다.
 RULE_RAW_FEATURES = (
     "customer_birth_date",
     "customer_gender",
-    "customer_name",
     "customer_registration_datetime",
     "customer_credit_rating",
     "customer_flag_change_of_authentication_1",
@@ -31,7 +29,6 @@ RULE_RAW_FEATURES = (
     "customer_flag_terminal_malicious_behavior_6",
     "customer_inquery_atm_limit",
     "customer_increase_atm_limit",
-    "account_account_number",
     "account_account_type",
     "account_creation_datetime",
     "account_initial_balance",
@@ -40,7 +37,7 @@ RULE_RAW_FEATURES = (
     "account_amount_daily_limit",
     "account_indicator_openbanking",
     "account_remaining_amount_daily_limit_exceeded",
-    "account_release_suspention",
+    "recipient_release_suspension",
     "account_one_month_max_amount",
     "account_one_month_std_dev",
     "account_dawn_one_month_max_amount",
@@ -49,13 +46,8 @@ RULE_RAW_FEATURES = (
     "transaction_amount",
     "channel",
     "operating_system",
-    "error_code",
     "type_general_automatic",
-    "ip_address",
-    "mac_address",
     "access_medium",
-    "location",
-    "recipient_account_number",
     "transaction_num_connection_failure",
     "another_person_account",
     "distance",
@@ -68,8 +60,7 @@ RULE_RAW_FEATURES = (
     "recipient_account_suspend_status",
     "number_of_transaction_with_the_account",
     "transaction_history_with_the_account",
-    "first_time_ios_by_vulnerable_user",
-    "transaction_resumed_date",
+    "recipient_transaction_resumed_date",
 )
 RULE_RAW_FEATURE_SET = frozenset(RULE_RAW_FEATURES)
 
@@ -78,12 +69,6 @@ RULE_RAW_FEATURE_SET = frozenset(RULE_RAW_FEATURES)
 RULE_REGISTRY_EXCLUDED_RAW_FEATURES = frozenset(
     {
         "customer_birth_date",
-        "customer_name",
-        "account_account_number",
-        "ip_address",
-        "mac_address",
-        "location",
-        "recipient_account_number",
     }
 )
 
@@ -124,7 +109,7 @@ RULE_REGISTRY_RAW_FEATURES = tuple(
 )
 RULE_CONTEXT_FIELDS = frozenset((*RULE_REGISTRY_RAW_FEATURES, *RULE_DERIVED_FEATURES))
 
-# 운영 DB에 이미 저장된 ACTIVE 룰셋을 raw60 기본 룰셋으로 교체할 때까지만
+# 운영 DB에 이미 저장된 ACTIVE 룰셋을 raw51 기본 룰셋으로 교체할 때까지만
 # 평가 엔진이 수용하는 별칭이다. 신규 registry에는 절대 노출하지 않는다.
 TRANSITION_LEGACY_RAW_ALIASES = {
     "Customer_Birthyear": "customer_birth_date",
@@ -156,11 +141,11 @@ TRANSITION_LEGACY_RAW_ALIASES = {
     "Account_remaining_amount_daily_limit_exceeded": "account_remaining_amount_daily_limit_exceeded",
     "Account_one_month_max_amount": "account_one_month_max_amount",
     "Account_one_month_std_dev": "account_one_month_std_dev",
-    "Account_release_suspension": "account_release_suspention",
-    "Account_release_suspention": "account_release_suspention",
+    "Account_release_suspension": "recipient_release_suspension",
+    "Account_release_suspention": "recipient_release_suspension",
     "Recipient_account_suspend_status": "recipient_account_suspend_status",
     "Unused_account_status": "unused_account_status",
-    "Transaction_resumed_date": "transaction_resumed_date",
+    "Transaction_resumed_date": "recipient_transaction_resumed_date",
     "Another_Person_Account": "another_person_account",
     "Transaction_history_with_the_account": "transaction_history_with_the_account",
     "Number_of_transaction_with_the_account": "number_of_transaction_with_the_account",
@@ -170,7 +155,6 @@ TRANSITION_LEGACY_RAW_ALIASES = {
     "Unused_terminal_status": "unused_terminal_status",
     "Type_General_Automatic": "type_general_automatic",
     "Account_indicator_Openbanking": "account_indicator_openbanking",
-    "First_time_iOS_by_vulnerable_user": "first_time_ios_by_vulnerable_user",
 }
 TRANSITION_LEGACY_DERIVED_FEATURES = frozenset(
     {
@@ -207,13 +191,12 @@ _BINARY_FIELDS = (
     "customer_increase_atm_limit",
     "account_indicator_release_limit_excess",
     "account_indicator_openbanking",
-    "account_release_suspention",
+    "recipient_release_suspension",
     "another_person_account",
     "unused_terminal_status",
     "flag_deposit_more_than_ten_million",
     "unused_account_status",
     "recipient_account_suspend_status",
-    "first_time_ios_by_vulnerable_user",
 )
 
 class RuleFeatureBuilder:
@@ -303,15 +286,13 @@ class RuleFeatureBuilder:
         recently_resumed = self._recently_resumed(
             unused_account=normalized["unused_account_status"] == 1,
             transaction_datetime=transaction_datetime,
-            resumed_datetime=normalized["transaction_resumed_date"],
+            resumed_datetime=normalized["recipient_transaction_resumed_date"],
         )
         mobile_environment = normalized["channel"] == "mobile" or normalized[
             "operating_system"
         ] in {"android", "ios"}
-        vulnerable_mobile = (age >= 60 and mobile_environment) or normalized[
-            "first_time_ios_by_vulnerable_user"
-        ] == 1
-        account_suspension_released = normalized["account_release_suspention"] == 1
+        vulnerable_mobile = age >= 60 and mobile_environment
+        account_suspension_released = normalized["recipient_release_suspension"] == 1
         recipient_account_suspended = (
             normalized["recipient_account_suspend_status"] == 1
         )
@@ -425,8 +406,8 @@ class RuleFeatureBuilder:
         return 0 <= elapsed_days <= 30
 
 
-if len(RULE_RAW_FEATURES) != 59:  # pragma: no cover - import invariant
-    raise RuntimeError("RULE_RAW_FEATURES must contain exactly 59 columns.")
+if len(RULE_RAW_FEATURES) != 51:  # pragma: no cover - import invariant
+    raise RuntimeError("RULE_RAW_FEATURES must contain exactly 51 columns.")
 
 
 __all__ = [

@@ -8,7 +8,6 @@ from sqlalchemy import (
     Float,
     Index,
     SmallInteger,
-    Text,
 )
 from sqlmodel import Field, SQLModel
 
@@ -141,10 +140,7 @@ class Transaction(SQLModel, table=True):
     flag_terminal_malicious_behavior_5: bool
     flag_terminal_malicious_behavior_6: bool
 
-    transaction_failure_status: bool
-    error_code: str | None = Field(
-        default=None
-    )
+    transaction_failure_status: bool = Field(default=False, nullable=False)
 
     created_at: datetime = Field(
         default_factory=datetime.now,

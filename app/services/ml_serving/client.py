@@ -172,7 +172,6 @@ class MLServingClient:
 
         raise AssertionError("ML Serving 재시도 루프가 결과 없이 종료되었습니다.")
 
-
 def get_ml_serving_client() -> MLServingClient:
     """테스트에서 대체할 수 있도록 ML 클라이언트를 의존성으로 제공한다."""
 

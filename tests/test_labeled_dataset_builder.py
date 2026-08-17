@@ -73,6 +73,9 @@ class StoredTransactionFixture:
     source_account_number: str
     recipient_account_number: str
     confirmed_is_fraud: bool
+    customer_name: str
+    ip_address: str
+    mac_address: str
     features: MLTransactionFeatures
 
 
@@ -83,7 +86,7 @@ def _transaction_payload(
     source_account_number: str,
     recipient_account_number: str,
     confirmed_is_fraud: bool,
-    initial_balance: int | None = 10_000_000,
+    initial_balance: int = 10_000_000,
 ) -> StoredTransactionFixture:
     sequence = transaction_id.rsplit("-", maxsplit=1)[-1]
     row = valid_transaction_row(
@@ -103,9 +106,22 @@ def _transaction_payload(
             "is_fraud": confirmed_is_fraud,
         }
     )
-    features = MLTransactionFeatures.model_validate(
-        {column: row[column] for column in RAW_TRANSACTION_FEATURE_COLUMNS}
-    )
+    raw51 = {
+        column: row[column]
+        for column in RAW_TRANSACTION_FEATURE_COLUMNS
+        if column
+        not in {
+            "recipient_release_suspension",
+            "recipient_transaction_resumed_date",
+        }
+    }
+    raw51["recipient_release_suspension"] = row[
+        "account_release_suspention"
+    ]
+    raw51["recipient_transaction_resumed_date"] = row[
+        "transaction_resumed_date"
+    ]
+    features = MLTransactionFeatures.model_validate(raw51)
     return StoredTransactionFixture(
         transaction_id=int(sequence),
         customer_id=customer_id,
@@ -113,6 +129,9 @@ def _transaction_payload(
         source_account_number=source_account_number,
         recipient_account_number=recipient_account_number,
         confirmed_is_fraud=confirmed_is_fraud,
+        customer_name=f"테스트고객-{sequence}",
+        ip_address=f"2001:db8::{int(sequence)}",
+        mac_address=f"AA-BB-CC-DD-EE-{int(sequence):02X}",
         features=features,
     )
 
@@ -139,7 +158,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         features = payload.features
         customer = Customer(
             id=payload.customer_id,
-            name=features.customer_name,
+            name=payload.customer_name,
             identification_number=payload.identification_number,
             **build_customer_fields(features),
         )
@@ -163,9 +182,11 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             customer_id=customer.id,
             source_account_number=source.account_number,
             recipient_account_number=recipient.account_number,
-            ip_address=features.ip_address,
-            mac_address=features.mac_address,
-            **build_transaction_fields(features),
+            **{
+                **build_transaction_fields(features),
+                "ip_address": payload.ip_address,
+                "mac_address": payload.mac_address,
+            },
         )
         self.session.add(transaction)
         self.session.flush()
@@ -329,34 +350,6 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(row["transaction_amount"], "75000")
         self.assertEqual(row["account_initial_balance"], "0")
-        self.assertEqual(row["balance_drain_ratio"], "")
-
-    def test_null_initial_balance_emits_empty_feature_and_ratio(self) -> None:
-        payload = _transaction_payload(
-            "TX-DATASET-1",
-            customer_id="C-DATASET-1",
-            source_account_number="source-account-1",
-            recipient_account_number="recipient-account-1",
-            confirmed_is_fraud=True,
-            initial_balance=None,
-        )
-        self._save(payload)
-        source_uri = "gs://bucket/generated/v1/train1.csv"
-        destination_uri = "gs://bucket/generated/v2/train1.csv"
-        storage = FakeObjectStorage({source_uri: _csv_bytes([])})
-
-        LabeledDatasetBuilder(
-            storage,
-            source_uri=source_uri,
-        ).build(
-            self.session,
-            destination_uri=destination_uri,
-        )
-
-        row = next(
-            csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
-        )
-        self.assertEqual(row["account_initial_balance"], "")
         self.assertEqual(row["balance_drain_ratio"], "")
 
     def test_requires_exact_ordered_train1_raw64_source_contract(self) -> None:

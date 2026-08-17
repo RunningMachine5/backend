@@ -1,11 +1,13 @@
 import os
 import unittest
 from datetime import UTC, datetime
+from statistics import pstdev
 
 os.environ.setdefault("OPENAI_API_KEY", "test-only-key")
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
@@ -13,6 +15,7 @@ from app.api.transaction import router as transaction_router
 from app.core.db import get_session
 from app.data.model.account import Account
 from app.data.model.customer import Customer
+from app.data.model.customer_event import CustomerEvent
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.fraud_rule import (
     FraudRule,
@@ -61,13 +64,27 @@ class StubMLClient:
         )
 
 
+class SQLiteStdDevPop:
+    """SQLite 테스트 DB에서 PostgreSQL의 stddev_pop만 재현한다."""
+
+    def __init__(self) -> None:
+        self.values: list[float] = []
+
+    def step(self, value: float | None) -> None:
+        if value is not None:
+            self.values.append(float(value))
+
+    def finalize(self) -> float:
+        return pstdev(self.values) if self.values else 0.0
+
+
 def valid_transaction_request(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "customer_id": "C-DEV-001",
         "source_account_number": "12345678",
         "recipient_account_number": "87654321",
         "transaction_datetime": "2026-08-14T12:00:00+09:00",
-        "transaction_amount": -75_000,
+        "transaction_amount": 75_000,
         "channel": "mobile",
         "type_general_automatic": "general",
         "access_medium": "a",
@@ -97,8 +114,17 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
+
+        @event.listens_for(self.engine, "connect")
+        def register_stddev(dbapi_connection, _connection_record) -> None:
+            dbapi_connection.create_aggregate(
+                "stddev_pop",
+                1,
+                SQLiteStdDevPop,
+            )
         Customer.__table__.create(self.engine)
         Account.__table__.create(self.engine)
+        CustomerEvent.__table__.create(self.engine)
         Transaction.__table__.create(self.engine)
         DerivedFeatures.__table__.create(self.engine)
         MLPredictionResult.__table__.create(self.engine)
@@ -120,6 +146,28 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                     credit_rating=5,
                     loan_type="b",
                 )
+            )
+            session.add_all(
+                [
+                    Account(
+                        id="12345678",
+                        customer_id="C-DEV-001",
+                        account_number="12345678",
+                        account_type="a",
+                        creation_datetime=datetime(2020, 1, 1, tzinfo=UTC),
+                        amount_daily_limit=3_000_000,
+                        indicator_openbanking=True,
+                        indicator_release_limit_excess=False,
+                        current_balance=10_000_000,
+                        remaining_daily_limit=2_000_000,
+                    ),
+                    Account(
+                        id="87654321",
+                        customer_id=None,
+                        account_number="87654321",
+                        suspend_status=False,
+                    ),
+                ]
             )
             active_rule_set = FraudRuleSet(
                 version=1,
@@ -187,7 +235,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(self.ml_client.calls, 1)
         self.assertEqual(self.agent_inputs, [])
         assert self.ml_client.last_features is not None
-        self.assertEqual(len(self.ml_client.last_features), 59)
+        self.assertEqual(len(self.ml_client.last_features), 51)
         self.assertEqual(self.ml_client.last_features["distance"], 0.0)
         self.assertEqual(
             self.ml_client.last_features["transaction_history_with_the_account"],
@@ -198,7 +246,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             transaction = session.get(Transaction, body["transaction_id"])
             self.assertIsNotNone(transaction)
             assert transaction is not None
-            self.assertEqual(transaction.transaction_amount, -75_000)
+            self.assertEqual(transaction.transaction_amount, 75_000)
             self.assertEqual(transaction.location_lat, 37.5665)
             self.assertEqual(transaction.location_lon, 126.978)
             derived = session.get(DerivedFeatures, transaction.id)
@@ -247,7 +295,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                 score.id,
             )
 
-    def test_atm_transaction_allows_missing_customer_and_recipient(self) -> None:
+    def test_missing_recipient_account_number_is_rejected(self) -> None:
         response = self.client.post(
             "/transactions",
             json=valid_transaction_request(
@@ -257,28 +305,10 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(response.status_code, 201, response.text)
-        transaction_id = response.json()["transaction_id"]
-        self.assertEqual(response.json()["prediction_status"], "COMPLETED")
-        self.assertEqual(self.ml_client.calls, 1)
-        assert self.ml_client.last_features is not None
-        self.assertEqual(
-            self.ml_client.last_features["recipient_account_number"],
-            "unknown-recipient",
-        )
-        self.assertEqual(
-            self.ml_client.last_features["customer_name"],
-            "unknown-customer",
-        )
-        with Session(self.engine) as session:
-            transaction = session.get(Transaction, transaction_id)
-            self.assertIsNotNone(transaction)
-            assert transaction is not None
-            self.assertIsNone(transaction.customer_id)
-            self.assertIsNone(transaction.recipient_account_number)
-            self.assertEqual(transaction.channel, "atm")
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.ml_client.calls, 0)
 
-    def test_missing_customer_uses_temporary_profile_for_ml(self) -> None:
+    def test_missing_customer_id_uses_source_account_customer(self) -> None:
         response = self.client.post(
             "/transactions",
             json=valid_transaction_request(customer_id=None),
@@ -287,13 +317,13 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(response.json()["prediction_status"], "COMPLETED")
         assert self.ml_client.last_features is not None
-        self.assertEqual(
-            self.ml_client.last_features["customer_name"],
-            "unknown-customer",
-        )
         self.assertEqual(self.ml_client.last_features["customer_credit_rating"], 5)
+        with Session(self.engine) as session:
+            transaction = session.get(Transaction, response.json()["transaction_id"])
+            assert transaction is not None
+            self.assertEqual(transaction.customer_id, "C-DEV-001")
 
-    def test_unknown_customer_uses_temporary_profile_for_ml(self) -> None:
+    def test_unknown_customer_id_uses_source_account_customer(self) -> None:
         response = self.client.post(
             "/transactions",
             json=valid_transaction_request(customer_id="C-NOT-FOUND"),
@@ -302,15 +332,11 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(response.json()["prediction_status"], "COMPLETED")
         assert self.ml_client.last_features is not None
-        self.assertEqual(
-            self.ml_client.last_features["customer_name"],
-            "unknown-customer",
-        )
         with Session(self.engine) as session:
             transaction = session.get(Transaction, response.json()["transaction_id"])
             self.assertIsNotNone(transaction)
             assert transaction is not None
-            self.assertIsNone(transaction.customer_id)
+            self.assertEqual(transaction.customer_id, "C-DEV-001")
 
     def test_existing_account_uses_latest_customer_without_blocking_detection(
         self,
@@ -328,13 +354,10 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                     loan_type="a",
                 )
             )
-            session.add(
-                Account(
-                    id="12345678",
-                    customer_id="C-OTHER",
-                    account_number="12345678",
-                )
-            )
+            source = session.get(Account, "12345678")
+            assert source is not None
+            source.customer_id = "C-OTHER"
+            session.add(source)
             session.commit()
 
         response = self.client.post(
@@ -351,8 +374,8 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             self.assertIsNotNone(transaction)
             assert source is not None
             assert transaction is not None
-            self.assertEqual(source.customer_id, "C-DEV-001")
-            self.assertEqual(transaction.customer_id, "C-DEV-001")
+            self.assertEqual(source.customer_id, "C-OTHER")
+            self.assertEqual(transaction.customer_id, "C-OTHER")
 
     def test_label_and_lookup_use_generated_integer_id(self) -> None:
         created = self.client.post(
