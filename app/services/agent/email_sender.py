@@ -73,13 +73,11 @@ class FraudAlertEmailService:
         *,
         from_email: str,
         from_name: str = "FDShield",
-        chatbot_url: str,
     ) -> None:
         self.repository = repository
         self.sender = sender
         self.from_email = from_email
         self.from_name = from_name
-        self.chatbot_url = chatbot_url
 
     @classmethod
     def from_env(cls, repository: AgentEmailRepository) -> "FraudAlertEmailService":
@@ -90,17 +88,17 @@ class FraudAlertEmailService:
             sender,
             from_email=from_email,
             from_name=os.getenv("SMTP_FROM_NAME", "FDShield"),
-            chatbot_url=os.getenv(
-                "CUSTOMER_CHATBOT_URL",
-                # 아래에 주소 바꾸면 됩니다.
-                "http://localhost:3000/customer-chat",
-            ),
         )
 
-    def send(self, command: FraudAlertEmailCommand) -> None:
+    def send(
+        self,
+        command: FraudAlertEmailCommand,
+        *,
+        chatbot_url: str,
+    ) -> bool: # 응답을 불리언으로 바꾼 이유: ChatSessionAlertNotifier 가 메일이 잘 보내졌는지 확인하기 위해
         context = self.repository.get_email_context(command.transaction_id)
         if context is None:
-            return
+            return False
 
         self.sender.send(
             build_fraud_alert_email_message(
@@ -108,9 +106,10 @@ class FraudAlertEmailService:
                 context,
                 from_email=self.from_email,
                 from_name=self.from_name,
-                chatbot_url=self.chatbot_url,
+                chatbot_url=chatbot_url,
             )
         )
+        return True
 
 
 class NoOpFraudAlertEmailService:
