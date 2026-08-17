@@ -279,6 +279,10 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 ([app/core/config.py](../../app/core/config.py)), 재시도 중 고객에게는 아무것도 출력하지
 않는다.
 
+모델은 `CHAT_LLM_MODEL`(기본 `gpt-5-nano`)을 쓴다. 평가·추출은 고객에게 그대로 나가지
+않는 중간 판정이므로 **응답 지연을 줄이려고 작은 모델로 돌린다.** 고객에게 출력되는
+대응 가이드 생성만 예외이며 [2.5](#25-정보-응답--rag-대응-가이드-4-1)를 따른다.
+
 상한을 소진하면 고객 판정과 분리된 기술 실패 경로로 다음 질문에 진행한다.
 
 | 항목 | 값 |
@@ -416,7 +420,9 @@ response = assemble(augmented, guidance)
 #### 검색·생성 실패 시 동작
 
 호출당 타임아웃과 재시도 상한은 평가·추출 LLM과 같은 `CHAT_LLM_TIMEOUT_SECONDS` /
-`CHAT_LLM_MAX_ATTEMPTS`를 쓴다.
+`CHAT_LLM_MAX_ATTEMPTS`를 쓴다. 다만 **모델은 다르다.** Generate(A.4)는 고객에게 그대로
+나가는 유일한 생성이므로 `CHAT_RESPONSE_LLM_MODEL`(기본 `gpt-5.6-luna`)을 쓰고, 그 외
+평가·추출은 `CHAT_LLM_MODEL`(기본 `gpt-5-nano`)로 돌려 전체 응답 시간을 줄인다.
 
 | 실패 지점 | 동작 |
 | --- | --- |

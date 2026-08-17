@@ -1,7 +1,8 @@
 """분해된 가이드 검색 질의에 대한 RAG 대응 가이드 응답을 조립한다.
 
 - Retrieve는 검색 질의마다 독립이며 질의 개수와 무관하게 top_k=3이다.
-- Generate는 근거를 찾은 요구만 담아 LLM을 한 번 호출한다.
+- Generate는 근거를 찾은 요구만 담아 LLM을 한 번 호출한다. 고객에게 그대로 나가는
+  유일한 생성이므로 여기만 CHAT_RESPONSE_LLM_MODEL(상위 모델)을 쓴다.
 - 근거를 찾지 못한 요구도 소제목과 고정 안내로 응답에 나타난다.
 """
 
@@ -14,7 +15,11 @@ from typing import Any
 
 from sqlmodel import Session
 
-from app.core.config import CHAT_LLM_MAX_ATTEMPTS, CHAT_LLM_TIMEOUT_SECONDS
+from app.core.config import (
+    CHAT_LLM_MAX_ATTEMPTS,
+    CHAT_LLM_TIMEOUT_SECONDS,
+    CHAT_RESPONSE_LLM_MODEL,
+)
 from app.dto.chatbot import (
     ExtractedGuideSearchQuery,
     GuideResponseGenerationResult,
@@ -64,7 +69,7 @@ class GuideResponder:
         *,
         structured_llm: Any | None = None,
         retriever: RetrieverCallable = retriever_source,
-        model: str | None = None,
+        model: str = CHAT_RESPONSE_LLM_MODEL,
         timeout_seconds: float = CHAT_LLM_TIMEOUT_SECONDS,
         max_attempts: int = CHAT_LLM_MAX_ATTEMPTS,
         top_k: int = RETRIEVE_TOP_K,

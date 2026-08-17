@@ -83,6 +83,9 @@ FDS·Agent 결합.
   - `CHAT_BASE_URL` (기본 `http://localhost:8000`)
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
   - `CHAT_LLM_TIMEOUT_SECONDS`, `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용
+  - `CHAT_LLM_MODEL` (기본 `gpt-5-nano`) — 평가·추출 등 중간 단계 공용 모델
+  - `CHAT_RESPONSE_LLM_MODEL` (기본 `gpt-5.6-luna`) — 고객에게 나가는 대응 가이드
+    생성(A.4)에만 쓰는 상위 모델
 - [x] [app/dto/chatbot.py](../../app/dto/chatbot.py) 재정의
   - `CreateChatRequest`(거래 id + `top_fraud_types` 상위 2개 사기유형, 선택) — PRD 2.1의 표.
     세션 생성이 HTTP 경로를 갖지 않게 되면서 요청 본문이 아니라 생성 함수의 입력 검증이
