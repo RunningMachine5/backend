@@ -1,8 +1,8 @@
 """로컬 테스트용 고객·계좌·거래를 한 번에 만들고 챗봇 세션까지 여는 스크립트.
 
-[create_chat_session.py](create_chat_session.py)는 **이미 있는 거래**의 세션만 연다.
-`transactions` 가 비어 있는 로컬 DB 에서 매번 psql 로 고객·계좌·거래를 넣는 수고를
-없애려고, 그 앞 단계를 함께 수행한다.
+운영 세션 생성 경로는 FDS 파이프라인뿐이라(PRD 2.1) 로컬에서 화면을 보려면 이상거래
+판정을 기다려야 한다. `transactions` 가 비어 있는 로컬 DB 에서 매번 psql 로 고객·계좌·거래를
+넣는 수고까지 없애려고, 원장 삽입부터 접속 URL 출력까지 한 번에 한다.
 
 값은 매 실행마다 조금씩 달라진다. 같은 화면만 반복해서 보면 이름·금액·지역·단말 플래그가
 화면에 어떻게 흘러가는지 확인할 수 없기 때문이다. 재현이 필요하면 ``--seed`` 를 준다.
@@ -550,11 +550,9 @@ def _print_summary(
     print(f"최초 알림 금액 : {withdrawal:,}원 출금")
     print(f"is_older       : {'true' if is_older else 'false'}")
     print("")
-    print("같은 거래의 대화를 처음부터 다시 하려면:")
-    print(
-        f"  uv run --env-file .env python -m scripts.create_chat_session "
-        f"{transaction_id} --recreate"
-    )
+    print("빈 대화로 다시 시작하려면 그냥 한 번 더 실행한다(새 거래가 만들어진다).")
+    print("쌓인 시드 데이터를 지우려면:")
+    print("  uv run --env-file .env python -m scripts.seed_chat_session --cleanup")
 
 
 if __name__ == "__main__":
