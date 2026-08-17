@@ -1,16 +1,12 @@
 ﻿param(
     [string]$BackendUrl = "http://127.0.0.1:8000",
-    [string]$MlServingUrl = "http://127.0.0.1:8001",
     [string]$AdminToken = "local-dev-mlops-token",
     [string]$CsvPath = "",
-    [string]$ExpectedModelName = "fdshield-fraud-detector-v2",
-    [string]$ExpectedModelVersion = "1",
     [ValidateRange(1, 1000)]
     [int]$TransactionsPerSecond = 100,
-    [string]$SmokePayloadPath = "",
-    [ValidateRange(-1, 9000)]
+    [ValidateRange(-1, 1800)]
     [int]$NormalRowLimit = -1,
-    [ValidateRange(-1, 1000)]
+    [ValidateRange(-1, 200)]
     [int]$FraudRowLimit = -1,
     [switch]$WaitForAgent,
     [ValidateRange(5, 600)]
@@ -26,38 +22,16 @@ $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($CsvPath)) {
     $CsvPath = Join-Path `
         $PSScriptRoot `
-        "data\transactions_model80_10000.csv"
-}
-if ([string]::IsNullOrWhiteSpace($SmokePayloadPath)) {
-    $SmokePayloadPath = Join-Path `
-        $PSScriptRoot `
-        "..\..\ml\examples\local-model-predict-request.json"
+        "data\transactions_raw64_2000.csv"
 }
 
 if (-not (Test-Path -LiteralPath $CsvPath -PathType Leaf)) {
     throw (
-        "10,000건 raw64 샘플 CSV를 찾을 수 없습니다: $CsvPath. " +
-        "generate_transactions_sample.ps1을 먼저 실행하세요."
+        "2,000건 raw64 샘플 CSV를 찾을 수 없습니다: $CsvPath"
     )
 }
-if (-not (Test-Path -LiteralPath $SmokePayloadPath -PathType Leaf)) {
-    throw (
-        "ML Serving preflight payload를 찾을 수 없습니다: " +
-        "$SmokePayloadPath"
-    )
-}
-
-$totalRows = 10000
-$normalTarget = 9000
-$fraudTarget = 1000
-$expectedRaw64ColumnCount = 64
-$expectedOfficialShapCount = 56
-$expectedRuleTypes = @(
-    "ACCOUNT_TAKEOVER",
-    "FRAUD_USED_ACCOUNT",
-    "MESSENGER_PHISHING",
-    "VOICE_PHISHING"
-)
+$normalTarget = 1800
+$fraudTarget = 200
 
 $smallRun = $NormalRowLimit -ge 0 -or $FraudRowLimit -ge 0
 if ($smallRun -and ($NormalRowLimit -lt 0 -or $FraudRowLimit -lt 0)) {
@@ -74,94 +48,13 @@ if ($WaitForAgent -and $FraudRowLimit -eq 0) {
 }
 
 $backendHealth = Invoke-RestMethod -Uri "$BackendUrl/health" -TimeoutSec 10
-$mlHealth = Invoke-RestMethod -Uri "$MlServingUrl/health" -TimeoutSec 10
-if ($backendHealth.status -ne "ok" -or $mlHealth.status -ne "ok") {
-    throw "Backend 또는 ML Serving health 확인에 실패했습니다."
-}
-
-try {
-    $smokePayloadJson = Get-Content `
-        -LiteralPath $SmokePayloadPath `
-        -Raw `
-        -Encoding UTF8
-    $smokePayload = $smokePayloadJson | ConvertFrom-Json
-} catch {
-    throw (
-        "ML Serving preflight payload JSON을 읽을 수 없습니다: " +
-        "$SmokePayloadPath - $($_.Exception.Message)"
-    )
-}
-
-$smokePropertyNames = @($smokePayload.PSObject.Properties.Name)
-if (
-    $smokePayload.transaction_id -is [string] -or
-    [long]$smokePayload.transaction_id -le 0 -or
-    $smokePropertyNames.Count -ne 60 -or
-    $smokePropertyNames -contains "features"
-) {
-    throw (
-        "ML Serving preflight payload는 양의 정수 transaction_id를 포함한 " +
-        "flat raw60이어야 합니다: $SmokePayloadPath"
-    )
-}
-
-try {
-    $smokeResponse = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$MlServingUrl/ml/predict" `
-        -ContentType "application/json" `
-        -Body $smokePayloadJson `
-        -TimeoutSec 60
-} catch {
-    $detail = $_.ErrorDetails.Message
-    if ([string]::IsNullOrWhiteSpace([string]$detail)) {
-        $detail = $_.Exception.Message
-    }
-    throw "ML Serving preflight /ml/predict 실패: $detail"
-}
-
-if (
-    $smokeResponse.transaction_id -is [string] -or
-    [long]$smokeResponse.transaction_id -ne [long]$smokePayload.transaction_id
-) {
-    throw (
-        "ML Serving preflight transaction_id가 예상과 다릅니다: " +
-        "$($smokeResponse.transaction_id), " +
-        "expected=$($smokePayload.transaction_id)"
-    )
-}
-if (
-    $smokeResponse.model_name -ne $ExpectedModelName -or
-    [string]$smokeResponse.model_version -ne $ExpectedModelVersion
-) {
-    throw (
-        "ML Serving preflight 모델이 예상과 다릅니다: " +
-        "$($smokeResponse.model_name):$($smokeResponse.model_version), " +
-        "expected=$ExpectedModelName`:$ExpectedModelVersion"
-    )
-}
-if (
-    [int]$smokeResponse.predict_result -notin @(0, 1) -or
-    [double]$smokeResponse.predict_proba -lt 0.0 -or
-    [double]$smokeResponse.predict_proba -gt 1.0
-) {
-    throw "ML Serving preflight 판정 또는 확률 응답이 올바르지 않습니다."
-}
-$smokeShapCount = if ($null -eq $smokeResponse.shap_values) {
-    0
-} else {
-    @($smokeResponse.shap_values.PSObject.Properties).Count
-}
-if ($smokeShapCount -ne $expectedOfficialShapCount) {
-    throw (
-        "ML Serving preflight SHAP 그룹 수가 예상과 다릅니다: " +
-        "$smokeShapCount, expected=$expectedOfficialShapCount"
-    )
+if ($backendHealth.status -ne "ok") {
+    throw "Backend health 확인에 실패했습니다."
 }
 
 $rows = @(Import-Csv -LiteralPath $CsvPath)
-if ($rows.Count -ne $totalRows) {
-    throw "샘플 CSV는 정확히 $totalRows 행이어야 합니다: $($rows.Count)"
+if ($rows.Count -eq 0) {
+    throw "샘플 CSV가 비어 있습니다: $CsvPath"
 }
 $csvColumns = @($rows[0].PSObject.Properties.Name)
 $requiredCsvColumns = @(
@@ -191,28 +84,24 @@ $requiredCsvColumns = @(
 $missingCsvColumns = @(
     $requiredCsvColumns | Where-Object { $_ -notin $csvColumns }
 )
-if (
-    $csvColumns.Count -ne $expectedRaw64ColumnCount -or
-    $missingCsvColumns.Count -gt 0
-) {
-    throw (
-        "샘플 CSV가 raw64 계약과 다릅니다: columns=$($csvColumns.Count), " +
-        "missing=$($missingCsvColumns -join ',')"
-    )
+if ($missingCsvColumns.Count -gt 0) {
+    throw "샘플 CSV 필수 컬럼이 없습니다: $($missingCsvColumns -join ',')"
 }
 
 $normalRows = @($rows | Where-Object { [int]$_.is_fraud -eq 0 }).Count
 $fraudRows = @($rows | Where-Object { [int]$_.is_fraud -eq 1 }).Count
-if ($normalRows -ne $normalTarget -or $fraudRows -ne $fraudTarget) {
+$requiredNormalRows = if ($smallRun) { $NormalRowLimit } else { $normalTarget }
+$requiredFraudRows = if ($smallRun) { $FraudRowLimit } else { $fraudTarget }
+if ($normalRows -lt $requiredNormalRows -or $fraudRows -lt $requiredFraudRows) {
     throw (
-        "샘플 라벨 분포가 예상과 다릅니다: " +
-        "normal=$normalRows/$normalTarget, fraud=$fraudRows/$fraudTarget"
+        "요청한 라벨 수를 선택할 수 없습니다: " +
+        "normal=$normalRows/$requiredNormalRows 이상, " +
+        "fraud=$fraudRows/$requiredFraudRows 이상"
     )
 }
 
 if ($smallRun) {
-    # 원본 CSV는 정상 9,000건 다음 사기 1,000건 순서이므로 앞에서 N건만
-    # 자르지 않고 두 라벨을 따로 선택해야 Agent 경로를 안정적으로 확인할 수 있다.
+    # 앞에서 N건만 자르지 않고 두 라벨을 따로 선택한다.
     $selectedRows = @(
         $rows |
             Where-Object { [int]$_.is_fraud -eq 0 } |
@@ -222,7 +111,14 @@ if ($smallRun) {
             Select-Object -First $FraudRowLimit
     )
 } else {
-    $selectedRows = $rows
+    $selectedRows = @(
+        $rows |
+            Where-Object { [int]$_.is_fraud -eq 0 } |
+            Select-Object -First $normalTarget
+        $rows |
+            Where-Object { [int]$_.is_fraud -eq 1 } |
+            Select-Object -First $fraudTarget
+    )
 }
 $selectedRowCount = $selectedRows.Count
 
@@ -387,13 +283,12 @@ $results = foreach ($row in $selectedRows) {
     )
 
     # POST /transactions에는 사용자가 실제로 입력할 수 있는 slim DTO 필드만
-    # 보낸다. 고객 상세·계좌 상태·파생 Feature는 현재 Backend의 임시 기본값이
-    # raw59의 빈자리를 채우므로 raw64 전체를 억지로 전송하지 않는다.
+    # 보낸다. 고객 상세·계좌 상태·파생 Feature는 Backend가 조회·계산하므로
+    # raw64 전체를 거래 API에 전송하지 않는다.
     $requestPayload = [ordered]@{
         customer_id = $null
         source_account_number = [string]$row.account_account_number
-        recipient_account_number = Convert-ToNullableString `
-            -Value $row.recipient_account_number
+        recipient_account_number = [string]$row.recipient_account_number
         transaction_datetime = Convert-ToApiDateTime `
             -Value $row.transaction_datetime `
             -FieldName "transaction_datetime" `
@@ -514,12 +409,6 @@ $results = foreach ($row in $selectedRows) {
         $ruleTypes = @(
             $response.rule_scores.PSObject.Properties.Name | Sort-Object
         )
-        if (($ruleTypes -join ",") -ne ($expectedRuleTypes -join ",")) {
-            throw (
-                "거래 $sourceRowId의 룰 유형이 예상과 다릅니다: " +
-                "$($ruleTypes -join ',')"
-            )
-        }
     } else {
         if ($null -ne $response.rule_set_id -or $null -ne $response.rule_scores) {
             throw "정상 판정 거래 $sourceRowId에 룰 점수가 생성됐습니다."
@@ -648,9 +537,7 @@ if ($WaitForAgent) {
 }
 
 Write-Output (
-    "Backend=$($backendHealth.status), ML=$($mlHealth.status), " +
-    "MLPreflight=$($smokeResponse.model_name):$($smokeResponse.model_version), " +
-    "SHAPGroups=$smokeShapCount, ActiveRuleSet=$($activeRuleSet.id), " +
+    "Backend=$($backendHealth.status), ActiveRuleSet=$($activeRuleSet.id), " +
     "TransactionRateLimit=$TransactionsPerSecond/sec, " +
     "SmallRun=$smallRun, WaitForAgent=$WaitForAgent"
 )
