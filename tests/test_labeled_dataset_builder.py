@@ -3,7 +3,9 @@ import unittest
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
+from pydantic import ValidationError
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
@@ -351,6 +353,39 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertEqual(row["transaction_amount"], "75000")
         self.assertEqual(row["account_initial_balance"], "0")
         self.assertEqual(row["balance_drain_ratio"], "")
+
+    def test_reports_feature_contract_validation_as_dataset_build_error(self) -> None:
+        payload = _transaction_payload(
+            "TX-DATASET-1",
+            customer_id="C-DATASET-1",
+            source_account_number="source-account-1",
+            recipient_account_number="recipient-account-1",
+            confirmed_is_fraud=True,
+        )
+        self._save(payload)
+        source_uri = "gs://bucket/generated/v1/train1.csv"
+        destination_uri = "gs://bucket/generated/v2/train1.csv"
+        storage = FakeObjectStorage({source_uri: _csv_bytes([])})
+
+        with self.assertRaises(ValidationError) as caught:
+            MLTransactionFeatures.model_validate({})
+
+        with (
+            patch(
+                "app.services.mlops.dataset_builder.assemble_ml_features",
+                side_effect=caught.exception,
+            ),
+            self.assertRaisesRegex(DatasetBuildError, "학습 계약과 맞지"),
+        ):
+            LabeledDatasetBuilder(
+                storage,
+                source_uri=source_uri,
+            ).build(
+                self.session,
+                destination_uri=destination_uri,
+            )
+
+        self.assertNotIn(destination_uri, storage.objects)
 
     def test_requires_exact_ordered_train1_raw64_source_contract(self) -> None:
         payload = _transaction_payload(
