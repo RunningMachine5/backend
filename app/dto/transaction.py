@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+KST = ZoneInfo("Asia/Seoul")
 
 
 class TransactionRequestDTO(BaseModel):
@@ -10,6 +13,7 @@ class TransactionRequestDTO(BaseModel):
     외부 클라이언트가 보내는 거래 원시 데이터.
     계좌 정보와 단말기에서 감지할 수 있는 정보들이 들어온다.
     """
+
     model_config = ConfigDict(extra="forbid")
 
     # ATM·지점 거래는 고객 식별자가 전달되지 않을 수 있다.
@@ -42,6 +46,16 @@ class TransactionRequestDTO(BaseModel):
     customer_flag_terminal_malicious_behavior_3: bool = Field(default=0)
     customer_flag_terminal_malicious_behavior_5: bool = Field(default=0)
     customer_flag_terminal_malicious_behavior_6: bool = Field(default=0)
+
+    @field_validator("transaction_datetime")
+    @classmethod
+    def add_default_timezone(cls, value: datetime) -> datetime:
+        """Timezone이 없는 국내 거래 시각은 한국 시각으로 해석한다."""
+
+        if value.tzinfo is None:
+            return value.replace(tzinfo=KST)
+        return value
+
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
