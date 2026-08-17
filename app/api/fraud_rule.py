@@ -197,7 +197,7 @@ RULE_FEATURES = (
         allowed_values=["android", "ios", "windows", "macos", "linux", "others"],
     ),
     _feature(
-        "account_release_suspention",
+        "recipient_release_suspension",
         "30일 이내 본인계좌 정지해제 여부",
         "integer",
         _ENUM_OPERATORS,
@@ -242,10 +242,6 @@ RULE_FEATURES = (
                 "최근 7일 1천만원 이상 입금 여부",
             ),
             ("unused_terminal_status", "미사용 단말 여부"),
-            (
-                "first_time_ios_by_vulnerable_user",
-                "취약고객의 60세 이후 iOS 첫 사용 여부",
-            ),
         )
     ),
     *(
@@ -302,13 +298,6 @@ RULE_FEATURES = (
         [],
     ),
     _feature(
-        "error_code",
-        "거래 오류코드",
-        "enum",
-        _ENUM_OPERATORS,
-        allowed_values=list("abcdef"),
-    ),
-    _feature(
         "account_dawn_one_month_max_amount",
         "최근 한 달 새벽 최대 거래금액",
         "number",
@@ -320,7 +309,12 @@ RULE_FEATURES = (
         "number",
         _NUMERIC_OPERATORS,
     ),
-    _feature("transaction_resumed_date", "거래 재개일", "datetime", []),
+    _feature(
+        "recipient_transaction_resumed_date",
+        "수취 계좌 거래 재개일",
+        "datetime",
+        [],
+    ),
     _feature("time_difference", "직전 거래 후 경과시간", "duration", []),
     _feature(
         "transaction_age",
@@ -490,7 +484,7 @@ RULE_FEATURES = (
                 [
                     "unused_account_status",
                     "transaction_datetime",
-                    "transaction_resumed_date",
+                    "recipient_transaction_resumed_date",
                 ],
             ),
             (
@@ -511,13 +505,12 @@ RULE_FEATURES = (
                     "transaction_datetime",
                     "channel",
                     "operating_system",
-                    "first_time_ios_by_vulnerable_user",
                 ],
             ),
             (
                 "account_suspension_released",
                 "본인계좌 최근 정지해제",
-                ["account_release_suspention"],
+                ["recipient_release_suspension"],
             ),
             (
                 "recipient_account_suspended",
@@ -528,7 +521,7 @@ RULE_FEATURES = (
                 "suspension_pair",
                 "정지해제·수취정지 동시 충족",
                 [
-                    "account_release_suspention",
+                    "recipient_release_suspension",
                     "recipient_account_suspend_status",
                 ],
             ),
@@ -536,7 +529,7 @@ RULE_FEATURES = (
                 "suspension_release_only",
                 "정지해제만 충족",
                 [
-                    "account_release_suspention",
+                    "recipient_release_suspension",
                     "recipient_account_suspend_status",
                 ],
             ),
@@ -544,7 +537,7 @@ RULE_FEATURES = (
                 "recipient_suspended_only",
                 "수취정지만 충족",
                 [
-                    "account_release_suspention",
+                    "recipient_release_suspension",
                     "recipient_account_suspend_status",
                 ],
             ),
@@ -706,7 +699,7 @@ def _expression_type_issues(
                 path=f"{path}.field",
                 message=(
                     f"{field}은 기존 ACTIVE 룰 평가 전용 이름입니다. "
-                    "새 룰에는 raw60 snake_case 필드를 사용해야 합니다."
+                    "새 룰에는 raw51 snake_case 필드를 사용해야 합니다."
                 ),
             )
         return
