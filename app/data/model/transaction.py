@@ -140,8 +140,6 @@ class Transaction(SQLModel, table=True):
     flag_terminal_malicious_behavior_5: bool
     flag_terminal_malicious_behavior_6: bool
 
-    transaction_failure_status: bool = Field(default=False, nullable=False)
-
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False),
