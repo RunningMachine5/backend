@@ -3,10 +3,9 @@ import httpx
 from pydantic import BaseModel
 
 class MLPredictionResponse(BaseModel):
-    transaction_id: int
-    predict_result: int
+    transaction_id: int | None = None
     predict_proba: float
-
+    shap_values: dict
 
 class MLServingClient:
     def __init__(self, base_url: str, timeout: float = 5.0):
@@ -20,3 +19,4 @@ class MLServingClient:
 
     async def aclose(self) -> None:
         await self.client.aclose()
+
