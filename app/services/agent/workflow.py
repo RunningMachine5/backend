@@ -75,6 +75,7 @@ class ResponsePlanGenerator(Protocol):
         fraud_type: str,
         policy: ResponsePolicy,
         guides: list[RetrievedGuideChunkDTO],
+        metrics: dict[str, object] | None = None,
     ) -> ResponsePlanDTO: ...
 
 
@@ -363,16 +364,20 @@ class AgentWorkflow:
 
     def _generate_plan(self, state: AgentGraphState) -> dict[str, object]:
         started_at = time.perf_counter()
+        generation_metrics: dict[str, object] = {}
         plan = self.response_plan_generator.generate(
             fraud_type=state["applied_fraud_type"],
             policy=state["response_policy"],
             guides=state["retrieved_guides"],
+            metrics=generation_metrics,
         )
+        step_metrics = self._updated_step_metrics(
+            state, "response_plan_generation_latency_ms", started_at
+        )
+        step_metrics.update(generation_metrics)
         return {
             "response_plan": plan,
-            "step_metrics": self._updated_step_metrics(
-                state, "response_plan_generation_latency_ms", started_at
-            ),
+            "step_metrics": step_metrics,
         }
 
     def _find_similar_cases(self, state: AgentGraphState) -> dict[str, object]:
