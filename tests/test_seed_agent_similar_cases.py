@@ -104,20 +104,40 @@ class AgentSimilarCaseSeedTest(unittest.TestCase):
             )
         self.session.commit()
 
-    def test_creates_four_resolved_cases_for_each_fraud_type(self) -> None:
+    def test_creates_six_reviewed_cases_for_each_fraud_type(self) -> None:
         result = seed_agent_similar_cases(self.session)
 
-        self.assertEqual(result.created_count, 16)
+        self.assertEqual(result.created_count, 24)
         self.assertEqual(result.skipped_count, 0)
         reviews = list(self.session.exec(select(AgentReview)).all())
-        self.assertEqual(len(reviews), 16)
+        self.assertEqual(len(reviews), 24)
         for fraud_type in FRAUD_TYPES:
+            score_results = list(
+                self.session.exec(
+                    select(FraudTypeScoreResult).where(
+                        FraudTypeScoreResult.primary_fraud_type == fraud_type
+                    )
+                ).all()
+            )
+            case_ids = {
+                case.case_id
+                for case in self.session.exec(select(AgentCase)).all()
+                if case.fraud_type_score_result_id
+                in {score.id for score in score_results}
+            }
+            type_reviews = [
+                review for review in reviews if review.case_id in case_ids
+            ]
+            self.assertEqual(len(type_reviews), 6)
             self.assertEqual(
                 sum(
                     review.confirmed_fraud_type == fraud_type
-                    for review in reviews
+                    for review in type_reviews
                 ),
-                4,
+                6,
+            )
+            self.assertTrue(
+                all(review.decision == "CONFIRMED_FRAUD" for review in type_reviews)
             )
         self.assertTrue(
             all(
@@ -128,15 +148,28 @@ class AgentSimilarCaseSeedTest(unittest.TestCase):
 
     def test_second_execution_skips_existing_cases(self) -> None:
         seed_agent_similar_cases(self.session)
+        existing_case = self.session.get(AgentCase, "DEMO-CASE-01-01")
+        existing_review = self.session.get(AgentReview, "DEMO-CASE-01-01")
+        existing_case.risk_score = 99
+        existing_case.risk_grade = "VERY_HIGH"
+        existing_review.decision = "FALSE_POSITIVE"
+        existing_review.confirmed_fraud_type = None
+        self.session.commit()
 
         result = seed_agent_similar_cases(self.session)
 
         self.assertEqual(result.created_count, 0)
-        self.assertEqual(result.skipped_count, 16)
-        self.assertEqual(len(self.session.exec(select(AgentCase)).all()), 16)
+        self.assertEqual(result.skipped_count, 24)
+        self.assertEqual(len(self.session.exec(select(AgentCase)).all()), 24)
+        self.assertEqual(existing_case.risk_score, 58)
+        self.assertEqual(existing_case.risk_grade, "MEDIUM")
+        self.assertEqual(existing_review.decision, "CONFIRMED_FRAUD")
+        self.assertEqual(existing_review.confirmed_fraud_type, VOICE_PHISHING)
 
     def test_seeded_cases_are_used_by_dashboard_top_three_search(self) -> None:
         seed_agent_similar_cases(self.session)
+        # MEDIUM 위험 사건도 동일 등급과 유사한 Rule 근거를 가진 완료 사건을
+        # 찾는지 확인한다. 기존 Seed는 모두 VERY_HIGH라 이 경로가 비어 있었다.
         current_case = self.session.get(AgentCase, "DEMO-CASE-03-01")
         self.assertIsNotNone(current_case)
         score_result = self.session.get(
@@ -182,6 +215,13 @@ class AgentSimilarCaseSeedTest(unittest.TestCase):
         self.assertEqual(
             [result.similarity_rank for result in results],
             [1, 2, 3],
+        )
+        candidate_reviews = [
+            self.session.get(AgentReview, result.similar_case_id)
+            for result in results
+        ]
+        self.assertTrue(
+            all(review.decision == "CONFIRMED_FRAUD" for review in candidate_reviews)
         )
 
 

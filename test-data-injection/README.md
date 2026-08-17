@@ -197,6 +197,60 @@ FRAUD_USED_ACCOUNT
 라벨·예측 연결 확인용이며 독립 검증셋 성능으로 해석하지 않는다. 모델 비교 지표의
 원본은 MLflow다.
 
+### 소량 Agent 비동기 E2E 검증
+
+실제 이메일·임베딩·LLM을 사용하는 Agent 흐름은 10,000건 전체가 아니라 소량으로
+검증한다. 원본 CSV는 정상 거래 다음 사기 라벨 거래 순서이므로 단순히 앞의 N건을
+자르지 않고 정상·사기 라벨 건수를 각각 지정한다.
+
+```powershell
+.\backend\test-data-injection\inject_transactions.ps1 `
+  -NormalRowLimit 2 `
+  -FraudRowLimit 8 `
+  -TransactionsPerSecond 1 `
+  -WaitForAgent
+```
+
+확인하는 전체 흐름은 다음과 같다.
+
+```text
+거래 저장 → ML 판정 → 사기 거래 Rule 점수 → 위험등급 산정
+→ FastAPI BackgroundTasks에 Agent 등록 → 거래 API 즉시 응답
+→ 고객 이메일 → 유형 확실성 분기 → 필요 시 유사 사건 조사
+→ 내부 정책 조회 → 대응 가이드 RAG·LLM → AGENT_CASES 저장
+→ 거래 ID 기반 Agent 조회 API를 폴링하여 완료 확인
+```
+
+`-WaitForAgent`는 소량 실행 옵션과 함께만 사용한다. Agent 완료 기본 대기시간은
+180초이며 필요하면 다음처럼 바꿀 수 있다.
+
+```powershell
+.\backend\test-data-injection\inject_transactions.ps1 `
+  -NormalRowLimit 1 `
+  -FraudRowLimit 3 `
+  -TransactionsPerSecond 1 `
+  -WaitForAgent `
+  -AgentWaitTimeoutSeconds 240 `
+  -AgentPollIntervalSeconds 2
+```
+
+출력되는 Agent 요약 항목은 다음과 같다.
+
+- Agent 대상·완료·실패·시간초과 건수
+- 대응 계획 생성 건수
+- RAG·LLM 보강 없이 내부 정책만 사용한 대응 계획 건수
+- 거래 API 평균 응답시간
+- 거래 API 응답 이후 Agent 완료가 관찰될 때까지의 P50·P95 지연시간
+
+`ObservedAgentLatency`는 폴링 간격을 포함한 E2E 관찰값이다. Agent 내부 단계별
+정확한 시간은 `agent_cases.generation_metadata`를 별도로 조회해 분석한다.
+`COMPLETED` 사건에 대응 계획이 없거나 `FAILED`, `TIMEOUT` 사건이 있으면 스크립트는
+실패로 종료한다.
+
+실행 전 `SMTP_TO_EMAIL`이 실제 고객 주소가 아닌 테스트 수신 주소인지 확인한다.
+이 모드는 실제 이메일과 OpenAI 호출을 발생시킬 수 있으므로 전체 10,000건 실행에는
+`-WaitForAgent`를 사용하지 않는다.
+
 ## 6. raw64에서 slim 요청으로 바뀌는 값
 
 `POST /transactions`는 raw64 전체가 아니라 다음 원천값만 받는다.
