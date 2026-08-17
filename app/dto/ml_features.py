@@ -1,7 +1,7 @@
 """Backend가 ML Serving에 전달하는 전처리 전 거래 Feature 계약."""
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -21,8 +21,7 @@ class MLTransactionFeatures(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    # transaction_id: int
-    customer_birth_date: datetime
+    customer_birth_date: date
     customer_gender: str
     customer_registration_datetime: datetime
     customer_credit_rating: int
@@ -45,10 +44,10 @@ class MLTransactionFeatures(BaseModel):
     account_creation_datetime: datetime
     account_initial_balance: int
     account_balance: int
-    account_indicator_release_limit_excess: bool
     account_amount_daily_limit: int
-    account_indicator_openbanking: bool
+    account_indicator_release_limit_excess: bool
     account_remaining_amount_daily_limit_exceeded: int
+    account_indicator_openbanking: bool
     recipient_release_suspension: bool
     account_one_month_max_amount: int
     account_one_month_std_dev: float
@@ -73,20 +72,11 @@ class MLTransactionFeatures(BaseModel):
     number_of_transaction_with_the_account: int
     transaction_history_with_the_account: int
     recipient_transaction_resumed_date: datetime | None
-    # 지워도 되는 것들
-    # first_time_ios_by_vulnerable_user: bool
-    # customer_identification_number: str
-    # customer_name: str
-    # account_account_number: str
-    # ip_address: str | None
-    # mac_address: str | None
-    # recipient_account_number: str
 
 RAW_TRANSACTION_FEATURE_COLUMNS = tuple(
     field.serialization_alias or field.alias or name
     for name, field in MLTransactionFeatures.model_fields.items()
 )
-
 
 __all__ = [
     "RAW_TRANSACTION_FEATURE_COLUMNS",

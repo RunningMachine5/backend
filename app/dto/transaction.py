@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.data.model.transaction import TransactionStatus
+
 
 class TransactionRequestDTO(BaseModel):
     """
@@ -13,7 +15,7 @@ class TransactionRequestDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # ATM·지점 거래는 고객 식별자가 전달되지 않을 수 있다.
-    customer_id: str | None = Field(default=None, min_length=1, max_length=64)
+    customer_id: int | None = Field(default=None, min_length=1, max_length=64)
     source_account_number: str = Field(min_length=8, max_length=32)
     recipient_account_number: str = Field(
         min_length=8,
@@ -63,6 +65,42 @@ class TransactionResponseDTO(BaseModel):
 
     created_at: datetime
 
+#doo
+class TransactionCreateDTO(BaseModel):
+    customer_id: int | None = None
+
+    source_account_number: str
+    recipient_account_number: str
+    transaction_datetime: datetime
+    transaction_amount: int
+
+    channel: str
+    type_general_automatic: str
+    access_medium: str | None = None
+    num_connection_failure: int = 0
+
+    # 거래 시점 계좌 상태 스냅샷
+    initial_balance: int | None = None
+    balance: int | None = None
+
+    # 단말·접속 환경
+    operating_system: str | None = None
+    ip_address: str | None = None
+    mac_address: str | None = None
+    location_lat: float | None = None
+    location_lon: float | None = None
+
+    rooting_jailbreak_indicator: bool
+    mobile_roaming_indicator: bool
+    vpn_indicator: bool
+    flag_terminal_malicious_behavior_1: bool
+    flag_terminal_malicious_behavior_2: bool
+    flag_terminal_malicious_behavior_3: bool
+    flag_terminal_malicious_behavior_5: bool
+    flag_terminal_malicious_behavior_6: bool
+
+    transaction_status: TransactionStatus | None = TransactionStatus.APPROVED
+    error_code: str | None = None
 
 class TransactionLabelUpdateDTO(BaseModel):
     """담당자가 확정한 거래의 이진 정답 라벨."""
@@ -98,7 +136,6 @@ class TransactionFeaturesDTO:
     is_fraud: bool
     high_relevance_feature: dict
     fraud_probability: float
-
 
 __all__ = [
     "TransactionLabelResponseDTO",
