@@ -48,6 +48,7 @@ class AgentGraphState(TypedDict, total=False):
     failure_reason: str
     workflow_started_at: float
     investigation_metrics: dict[str, object]
+    step_metrics: dict[str, object]
 
 
 class AmbiguousTypeInvestigator(Protocol):
@@ -74,6 +75,7 @@ class ResponsePlanGenerator(Protocol):
         fraud_type: str,
         policy: ResponsePolicy,
         guides: list[RetrievedGuideChunkDTO],
+        metrics: dict[str, object] | None = None,
     ) -> ResponsePlanDTO: ...
 
 
@@ -176,6 +178,7 @@ class AgentWorkflow:
                 "agent_input": agent_input,
                 "workflow_started_at": time.perf_counter(),
                 "investigation_metrics": {},
+                "step_metrics": {},
             }
         )
 
@@ -323,11 +326,17 @@ class AgentWorkflow:
         return {}
 
     def _load_policy(self, state: AgentGraphState) -> dict[str, object]:
+        started_at = time.perf_counter()
         policy = self.policy_repository.get_response_policy(
             fraud_type=state["applied_fraud_type"],
             risk_grade=state["agent_input"].risk_grade.value,
         )
-        return {"response_policy": policy}
+        return {
+            "response_policy": policy,
+            "step_metrics": self._updated_step_metrics(
+                state, "policy_lookup_latency_ms", started_at
+            ),
+        }
 
     def _search_guides(self, state: AgentGraphState) -> dict[str, object]:
         policy = state["response_policy"]
@@ -335,6 +344,7 @@ class AgentWorkflow:
             [state["applied_fraud_type"], policy.risk_grade]
             + [action.action for action in policy.actions]
         )
+        started_at = time.perf_counter()
         guides = self.guide_search_service.search(
             GuideSearchRequestDTO(
                 query=query,
@@ -345,35 +355,56 @@ class AgentWorkflow:
                 top_k=3,
             )
         )
-        return {"retrieved_guides": guides}
+        return {
+            "retrieved_guides": guides,
+            "step_metrics": self._updated_step_metrics(
+                state, "guide_search_latency_ms", started_at
+            ),
+        }
 
     def _generate_plan(self, state: AgentGraphState) -> dict[str, object]:
+        started_at = time.perf_counter()
+        generation_metrics: dict[str, object] = {}
+        plan = self.response_plan_generator.generate(
+            fraud_type=state["applied_fraud_type"],
+            policy=state["response_policy"],
+            guides=state["retrieved_guides"],
+            metrics=generation_metrics,
+        )
+        step_metrics = self._updated_step_metrics(
+            state, "response_plan_generation_latency_ms", started_at
+        )
+        step_metrics.update(generation_metrics)
         return {
-            "response_plan": self.response_plan_generator.generate(
-                fraud_type=state["applied_fraud_type"],
-                policy=state["response_policy"],
-                guides=state["retrieved_guides"],
-            )
+            "response_plan": plan,
+            "step_metrics": step_metrics,
         }
 
     def _find_similar_cases(self, state: AgentGraphState) -> dict[str, object]:
+        started_at = time.perf_counter()
         if self.dashboard_similar_case_finder is None:
-            return {"similar_case_results": []}
-        agent_input = state["agent_input"]
-        try:
-            results = self.dashboard_similar_case_finder.find_top_three(
-                current_case_id=state["case_id"],
-                rule_result=state["rule_result"],
-                risk_score=agent_input.risk_score,
-                risk_grade=agent_input.risk_grade.value,
-            )
-        except Exception as error:
-            logging.getLogger(__name__).warning(
-                "대시보드용 유사 사건 검색 실패: %s",
-                error,
-            )
             results = []
-        return {"similar_case_results": results}
+        else:
+            agent_input = state["agent_input"]
+            try:
+                results = self.dashboard_similar_case_finder.find_top_three(
+                    current_case_id=state["case_id"],
+                    rule_result=state["rule_result"],
+                    risk_score=agent_input.risk_score,
+                    risk_grade=agent_input.risk_grade.value,
+                )
+            except Exception as error:
+                logging.getLogger(__name__).warning(
+                    "대시보드용 유사 사건 검색 실패: %s",
+                    error,
+                )
+                results = []
+        return {
+            "similar_case_results": results,
+            "step_metrics": self._updated_step_metrics(
+                state, "dashboard_similar_case_latency_ms", started_at
+            ),
+        }
 
     def _complete_case(self, state: AgentGraphState) -> dict[str, object]:
         metrics = {
@@ -388,6 +419,7 @@ class AgentWorkflow:
             "fallback_used": False,
             "fallback_reason": None,
             **state.get("investigation_metrics", {}),
+            **state.get("step_metrics", {}),
         }
         response = self.case_service.complete_case(
             state["case_id"],
@@ -425,9 +457,22 @@ class AgentWorkflow:
                 "fallback_used": True,
                 "fallback_reason": state.get("failure_reason"),
                 **state.get("investigation_metrics", {}),
+                **state.get("step_metrics", {}),
             },
         )
         return {"final_response": response}
+
+    @staticmethod
+    def _updated_step_metrics(
+        state: AgentGraphState,
+        metric_name: str,
+        started_at: float,
+    ) -> dict[str, object]:
+        """기존 지표에 현재 단계 실행시간을 추가한다."""
+
+        metrics = dict(state.get("step_metrics", {}))
+        metrics[metric_name] = round((time.perf_counter() - started_at) * 1000)
+        return metrics
 
     @staticmethod
     def _route_after_start(state: AgentGraphState) -> str:

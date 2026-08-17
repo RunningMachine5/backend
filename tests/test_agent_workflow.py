@@ -293,6 +293,27 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(response.generation_metadata["tool_call_count"], 0)
         self.assertFalse(response.generation_metadata["fallback_used"])
         self.assertIsNone(response.generation_metadata["fallback_reason"])
+        self.assertGreaterEqual(
+            response.generation_metadata["policy_lookup_latency_ms"], 0
+        )
+        self.assertGreaterEqual(
+            response.generation_metadata["guide_search_latency_ms"], 0
+        )
+        self.assertGreaterEqual(
+            response.generation_metadata["response_plan_generation_latency_ms"],
+            0,
+        )
+        self.assertGreaterEqual(
+            response.generation_metadata["dashboard_similar_case_latency_ms"],
+            0,
+        )
+        self.assertFalse(response.generation_metadata["response_plan_cache_hit"])
+        self.assertEqual(
+            response.generation_metadata["response_plan_llm_call_count"], 0
+        )
+        self.assertFalse(
+            response.generation_metadata["response_plan_fallback_used"]
+        )
 
     def test_ambiguous_case_emails_rule_types_before_investigation(self) -> None:
         events: list[str] = []
