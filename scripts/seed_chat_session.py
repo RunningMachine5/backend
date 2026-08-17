@@ -58,6 +58,7 @@ GIVEN_NAMES = (
 )
 
 # 거래 위치. 한국 좌표 범위(위도 33~39, 경도 124~132) 안이어야 ML 계약과 어긋나지 않는다.
+# 지역 이름은 컬럼이 없어 저장하지 않고 출력에만 쓴다(transactions 는 좌표만 남긴다).
 LOCATIONS = (
     ("Seoul", 37.5665, 126.9780),
     ("Busan", 35.1796, 129.0756),
@@ -86,6 +87,8 @@ class SeedResult:
     recipient_account: Account
     transaction: Transaction
     top_fraud_types: list[str] | None
+    # transactions 에는 좌표만 남으므로 지역 이름은 출력용으로만 들고 있는다.
+    location_name: str
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -231,7 +234,7 @@ def build_seed(
     signed_amount = -abs(amount)
     # 잔액 스냅샷이 음수가 되지 않도록 출금액 위에서 시작 잔액을 잡는다.
     initial_balance = abs(signed_amount) + rng.randrange(100_000, 30_000_000, 10_000)
-    location, lat, lon = rng.choice(LOCATIONS)
+    location_name, lat, lon = rng.choice(LOCATIONS)
 
     transaction = Transaction(
         customer_id=customer.id,
@@ -250,7 +253,6 @@ def build_seed(
         initial_balance=initial_balance,
         balance=initial_balance + signed_amount,
         remaining_amount_daily_limit_exceeded=rng.randrange(0, 50_000_000, 100_000),
-        location=location,
         location_lat=lat,
         location_lon=lon,
         rooting_jailbreak_indicator=_rare(rng),
@@ -269,6 +271,7 @@ def build_seed(
         recipient_account=recipient_account,
         transaction=transaction,
         top_fraud_types=_pick_top_fraud_types(args, rng=rng),
+        location_name=location_name,
     )
 
 
@@ -533,7 +536,10 @@ def _print_summary(
     print(f"수취 계좌   : {seeded.recipient_account.account_number}")
     print(f"거래 id     : {transaction_id}")
     print(f"거래 일시   : {transaction.transaction_datetime.astimezone(KST)}")
-    print(f"거래 위치   : {transaction.location}")
+    print(
+        f"거래 위치   : {seeded.location_name} "
+        f"({transaction.location_lat}, {transaction.location_lon})"
+    )
     print("")
     print("── 챗봇 세션 ──")
     print(f"세션 id     : {chat_session_id}")

@@ -157,7 +157,6 @@ class ChatApiTest(unittest.TestCase):
             type_general_automatic="general",
             access_medium="a",
             num_connection_failure=0,
-            location="서울특별시 중구",
             rooting_jailbreak_indicator=False,
             mobile_roaming_indicator=False,
             vpn_indicator=False,

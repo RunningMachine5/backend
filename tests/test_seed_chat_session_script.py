@@ -181,7 +181,11 @@ class BuildSeedTest(unittest.TestCase):
             first.transaction.transaction_amount,
             second.transaction.transaction_amount,
         )
-        self.assertEqual(first.transaction.location, second.transaction.location)
+        self.assertEqual(first.location_name, second.location_name)
+        self.assertEqual(
+            first.transaction.location_lat,
+            second.transaction.location_lat,
+        )
         # 식별자는 시드와 무관하게 매번 새로 만든다. 같은 --seed 로 두 번 실행해도
         # PK 와 UNIQUE 컬럼이 겹치지 않아야 두 번째 실행이 살아남는다.
         self.assertNotEqual(first.customer.id, second.customer.id)
