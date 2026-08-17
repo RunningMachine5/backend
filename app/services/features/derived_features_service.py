@@ -1,11 +1,11 @@
 """ML로 보낼 피쳐들 다 조립하는 코드"""
-from datetime import timedelta, datetime, UTC
-from math import radians, sin, cos, asin, sqrt
+from datetime import UTC, datetime
+from math import asin, cos, radians, sin, sqrt
 
 from app.data.model import CustomerEventType
 from app.dto.ml_features import MLTransactionFeatures
 from app.dto.transaction import TransactionRequestDTO
-from app.repositories.feature_context import FeatureContextRepository, FeatureContext
+from app.repositories.feature_context import FeatureContext, FeatureContextRepository
 
 
 def _calc_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -171,7 +171,20 @@ class DerivedFeatureService:
         )
 
         # time_difference 계산
-        time_difference = 0 if last_transaction is None else transaction.transaction_datetime - last_transaction.transaction_datetime
+        if last_transaction is None:
+            time_difference = 0
+        else:
+            current_datetime = transaction.transaction_datetime
+            previous_datetime = last_transaction.transaction_datetime
+            # SQLite 테스트 DB는 timezone을 제거하므로 두 값의 기준만 맞춰 계산한다.
+            if (
+                previous_datetime.tzinfo is None
+                and current_datetime.tzinfo is not None
+            ):
+                previous_datetime = previous_datetime.replace(
+                    tzinfo=current_datetime.tzinfo
+                )
+            time_difference = current_datetime - previous_datetime
 
         # 거래 후 잔고 account_balance 계산
         account_balance = context.source_account.current_balance - transaction.transaction_amount
@@ -181,7 +194,9 @@ class DerivedFeatureService:
     def create_derived_features(self, transaction: TransactionRequestDTO) -> MLTransactionFeatures:
         # DB 조회
         context = self.feature_context_repository.get_feature_context(
-            transaction.source_account_number, transaction.recipient_account_number
+            transaction.source_account_number,
+            transaction.recipient_account_number,
+            transaction.customer_id,
         )
 
         # DB 조회만으로 채우기
