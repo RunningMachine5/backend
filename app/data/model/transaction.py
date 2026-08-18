@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 
 from sqlalchemy import (
     BigInteger,
@@ -12,6 +13,10 @@ from sqlalchemy import (
 from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, INET_COLUMN, MACADDR_COLUMN
+
+class TransactionStatus(str, Enum):
+    APPROVED = "APPROVED"
+    DECLINED = "DECLINED"
 
 
 class Transaction(SQLModel, table=True):
@@ -56,29 +61,23 @@ class Transaction(SQLModel, table=True):
             name="ck_transactions_num_connection_failure",
         ),
         CheckConstraint(
-            "initial_balance >= 0",
+            "initial_balance IS NULL OR initial_balance >= 0",
             name="ck_transactions_initial_balance_nonnegative",
-        ),
-        CheckConstraint(
-            "remaining_amount_daily_limit_exceeded >= 0",
-            name="ck_transactions_remaining_daily_limit_nonnegative",
         ),
     )
 
     # 외부 응답과 모든 자식 FK가 같은 DB 생성 정수 ID를 사용한다.
-    id: int | None = Field(
-        default=None,
+    id: int = Field(
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
             primary_key=True,
             autoincrement=True,
         ),
     )
-    customer_id: str | None = Field(
+    customer_id: int | None = Field(
         default=None,
         foreign_key="customers.id",
         ondelete="RESTRICT",
-        max_length=64,
         nullable=True,
     )
     source_account_number: str = Field(
@@ -101,17 +100,11 @@ class Transaction(SQLModel, table=True):
     channel: str = Field(max_length=32)
     type_general_automatic: str = Field(max_length=16)
     access_medium: str | None = Field(max_length=8, nullable=True)
-    error_code: str | None = Field(max_length=8, nullable=True)
     num_connection_failure: int = Field(sa_column=Column(SmallInteger, nullable=False))
-    another_person_account: bool = Field(default=False, nullable=False)
 
     # 거래 시점 계좌 상태 스냅샷
     initial_balance: int | None = Field(default=None, sa_type=BigInteger)
     balance: int | None = Field(default=None, sa_type=BigInteger)
-    remaining_amount_daily_limit_exceeded: int | None = Field(
-        default=None,
-        sa_type=BigInteger,
-    )
 
     # 단말·접속 환경
     operating_system: str | None = Field(default=None, max_length=32)
@@ -139,6 +132,11 @@ class Transaction(SQLModel, table=True):
     flag_terminal_malicious_behavior_3: bool
     flag_terminal_malicious_behavior_5: bool
     flag_terminal_malicious_behavior_6: bool
+
+    transaction_status: TransactionStatus | None = Field()
+    error_code: str | None = Field(
+        default=None
+    )
 
     created_at: datetime = Field(
         default_factory=datetime.now,

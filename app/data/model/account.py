@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, UTC
 
 from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime
 from sqlmodel import Field, SQLModel
@@ -22,14 +22,10 @@ class Account(SQLModel, table=True):
             "amount_daily_limit IS NULL OR amount_daily_limit >= 0",
             name="ck_accounts_amount_daily_limit_nonnegative",
         ),
-        CheckConstraint(
-            "remaining_daily_limit IS NULL OR remaining_daily_limit >= 0",
-            name="ck_accounts_remaining_daily_limit_nonnegative",
-        ),
     )
 
-    id: str = Field(primary_key=True, max_length=64)
-    customer_id: str | None = Field(
+    id: int = Field(default=None, primary_key=True)
+    customer_id: int | None = Field(
         default=None,
         foreign_key="customers.id",
         ondelete="SET NULL",
@@ -42,29 +38,23 @@ class Account(SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
+    current_balance: int | None = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True),
+    )
     amount_daily_limit: int | None = Field(
         default=None,
         sa_column=Column(BigInteger, nullable=True),
     )
     indicator_openbanking: bool | None = Field(default=None)
-    indicator_release_limit_excess: bool | None = Field(default=None)
-    # 아래 세 컬럼은 거래마다 갱신되는 가변 상태다. 과거 거래를 재평가할 때는
-    # 이 값이 아니라 transactions·derived_features의 스냅샷을 사용해야 한다.
-    current_balance: int | None = Field(
-        default=None,
-        sa_column=Column(BigInteger, nullable=True),
-    )
-    remaining_daily_limit: int | None = Field(
-        default=None,
-        sa_column=Column(BigInteger, nullable=True),
-    )
     suspend_status: bool = Field(default=False, nullable=False)
+
     created_at: datetime = Field(
-        default_factory=datetime.now,
+        default_factory=datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
     updated_at: datetime = Field(
-        default_factory=datetime.now,
+        default_factory=datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
