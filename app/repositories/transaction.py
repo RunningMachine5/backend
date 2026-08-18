@@ -203,7 +203,7 @@ class TransactionRepository:
     # doo
     def save_transaction(self, transaction: Transaction) -> Transaction:
         self.session.add(transaction)
-        self.session.commit()
+        self.session.flush()
         self.session.refresh(transaction)
         return transaction
 

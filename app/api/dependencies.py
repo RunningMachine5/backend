@@ -4,13 +4,21 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from app.core.db import SessionDep
+from app.data.model import DerivedFeatures
 from app.pipelines.d_fraud_detection_pipline import DFraudDetectionPipeline
+from app.repositories.derived_features import DerivedFeaturesRepository
 from app.repositories.feature_context import FeatureContextRepository
 from app.repositories.transaction import TransactionRepository
 from app.services.features.derived_features_service import DerivedFeatureService
 from app.services.ml_serving.predict_client import MLServingClient
 from app.services.transaction.transaction_service import TransactionService
 
+def get_derived_features_repository(session: SessionDep) -> DerivedFeaturesRepository:
+    return DerivedFeaturesRepository(session)
+
+DerivedFeaturesRepositoryDep = Annotated[
+    DerivedFeaturesRepository, Depends(get_derived_features_repository)
+]
 
 def get_feature_context_repository(session: SessionDep) -> FeatureContextRepository:
     return FeatureContextRepository(session)
@@ -19,8 +27,8 @@ FeatureContextRepositoryDep = Annotated[
     FeatureContextRepository, Depends(get_feature_context_repository),
 ]
 
-def get_derived_feature_service(repository: FeatureContextRepositoryDep) -> DerivedFeatureService:
-    return DerivedFeatureService(repository)
+def get_derived_feature_service(fc_repository: FeatureContextRepositoryDep, df_repository: DerivedFeaturesRepositoryDep) -> DerivedFeatureService:
+    return DerivedFeatureService(fc_repository, df_repository)
 
 DerivedFeatureServiceDep = Annotated[
     DerivedFeatureService, Depends(get_derived_feature_service)
