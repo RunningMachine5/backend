@@ -49,8 +49,8 @@ class StubMLClient:
     def predict(
         self,
         *,
-        transaction_id: int,
         features: dict[str, object],
+        transaction_id: int | None = None,
     ) -> MLPredictionResponse:
         self.calls += 1
         self.last_features = features

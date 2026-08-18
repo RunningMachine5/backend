@@ -47,9 +47,16 @@ class TransactionRequestDTO(BaseModel):
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
+
     transaction_id: int = Field(strict=True, gt=0)
-    prediction_status: Literal["COMPLETED", "DECLINED"]
+    prediction_status: Literal["COMPLETED", "FAILED", "DECLINED"]
+    predict_result: bool | None = None
     predict_proba: float | None = None
+    rule_set_id: int | None = None
+    rule_scores: dict[str, float] | None = None
+    confirmed_is_fraud: bool | None = None
+    labeled_at: datetime | None = None
+    created_at: datetime
     message: str | None = None
 
 #doo
