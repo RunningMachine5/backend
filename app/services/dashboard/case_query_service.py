@@ -21,9 +21,10 @@ class CaseQueryService:
     def list_cases(
         self,
         *,
+        transaction_id: int | None = None,
         period_start: datetime | None = None,
         period_end: datetime | None = None,
-        customer_id: str | None = None,
+        customer_id: int | None = None,
         ip_address: str | None = None,
         recipient_account_number: str | None = None,
         min_amount: int | None = None, # amount가 금액인가?
@@ -38,6 +39,7 @@ class CaseQueryService:
             raise ValueError("page_size는 1~100 사이어야 함")
 
         rows, total_count = self.repository.list_suspicious_cases(
+            transaction_id=transaction_id,
             period_start=period_start,
             period_end=period_end,
             customer_id=customer_id,
