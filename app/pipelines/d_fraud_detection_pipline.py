@@ -50,7 +50,7 @@ class DFraudDetectionPipeline:
         )
         latency_ms = round((perf_counter() - started_at) * 1000)
 
-        # 3. Backend 기준(0.5)으로 거래 상태를 정하고 거래를 저장한다.
+        # 3. ML 서버의 최종 판정으로 거래 상태를 정하고 거래를 저장한다.
         stored_transaction, is_fraud = self.transaction_service.save_transaction(
             transaction_data,
             prediction,
@@ -63,7 +63,7 @@ class DFraudDetectionPipeline:
         # 4. 어떤 모델이 판단했는지 MLOps 조회용 결과를 저장한다.
         prediction_result = MLPredictionResult(
             transaction_id=stored_transaction.id,
-            predict_result=is_fraud,
+            predict_result=bool(prediction.predict_result),
             predict_proba=prediction.predict_proba,
             model_name=prediction.model_name,
             model_version=prediction.model_version,
