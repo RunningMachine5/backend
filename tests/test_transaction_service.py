@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import Mock
 
 from app.data.model.transaction import TransactionStatus
@@ -13,7 +13,7 @@ def _transaction() -> TransactionCreateDTO:
         customer_id=1,
         source_account_number="10000001",
         recipient_account_number="20000001",
-        transaction_datetime=datetime(2026, 8, 18, 12, 0),
+        transaction_datetime=datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
         transaction_amount=10_000,
         channel="mobile",
         type_general_automatic="general",
@@ -41,38 +41,55 @@ def _prediction(*, result: int, probability: float) -> MLPredictionResponse:
 
 
 class TransactionServiceTest(unittest.TestCase):
-    def test_probability_at_threshold_declines_transaction(self) -> None:
+    @staticmethod
+    def _repository() -> Mock:
         repository = Mock()
-        repository.save_transaction.side_effect = lambda transaction: transaction
+
+        def save(transaction):
+            transaction.id = 7
+            return transaction
+
+        repository.save_transaction.side_effect = save
+        return repository
+
+    def test_probability_at_threshold_declines_transaction(self) -> None:
+        repository = self._repository()
         service = TransactionService(repository)
 
-        transaction, is_fraud = service.save_transaction(
+        prediction = _prediction(result=0, probability=0.5)
+        saved_prediction, response = service.save_transaction(
             _transaction(),
-            _prediction(result=0, probability=0.5),
+            prediction,
         )
+        transaction = repository.save_transaction.call_args.args[0]
 
-        self.assertTrue(is_fraud)
+        self.assertIs(saved_prediction, prediction)
         self.assertEqual(transaction.transaction_status, TransactionStatus.DECLINED)
-        self.assertEqual(transaction.error_code, "FRAUD")
+        self.assertEqual(transaction.error_code, "f")
         self.assertEqual(transaction.balance, transaction.initial_balance)
-        repository.update_source_balance.assert_not_called()
+        self.assertEqual(prediction.transaction_id, 7)
+        self.assertEqual(response.prediction_status, "DECLINED")
+        self.assertEqual(
+            response.message,
+            "이상거래 의심으로 거래가 거절되었습니다.",
+        )
 
     def test_probability_below_threshold_approves_transaction(self) -> None:
-        repository = Mock()
-        repository.save_transaction.side_effect = lambda transaction: transaction
+        repository = self._repository()
         service = TransactionService(repository)
 
-        transaction, is_fraud = service.save_transaction(
+        prediction = _prediction(result=1, probability=0.49)
+        saved_prediction, response = service.save_transaction(
             _transaction(),
-            _prediction(result=1, probability=0.49),
+            prediction,
         )
+        transaction = repository.save_transaction.call_args.args[0]
 
-        self.assertFalse(is_fraud)
+        self.assertIs(saved_prediction, prediction)
         self.assertEqual(transaction.transaction_status, TransactionStatus.APPROVED)
-        repository.update_source_balance.assert_called_once_with(
-            "10000001",
-            90_000,
-        )
+        self.assertEqual(prediction.transaction_id, 7)
+        self.assertEqual(response.prediction_status, "COMPLETED")
+        self.assertEqual(response.message, "거래가 승인 되었습니다.")
 
 
 if __name__ == "__main__":
