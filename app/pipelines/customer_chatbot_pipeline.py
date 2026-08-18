@@ -53,7 +53,7 @@ from app.services.chatbot.messages import (
     HANDOFF_WAITING_MESSAGE,
     NEXT_QUESTION_MESSAGE,
     TOO_VAGUE_MESSAGE,
-    WANT_END_HANDOFF_MESSAGE,
+    WANT_END_MESSAGE,
     render_initial_notification,
 )
 from app.services.chatbot.questions import render_question
@@ -443,7 +443,7 @@ class CustomerChatbotPipeline:
         return {"outbound": outbound}
 
     def _finish(self, state: ChatGraphState) -> dict[str, Any]:
-        """WANT_END — 채점을 집계한 뒤 상담사 연결로 넘긴다(PRD 2.6)."""
+        """WANT_END — 채점을 집계한 뒤 상담을 종료한다(PRD 2.6)."""
 
         circumstance_codes = [
             circumstance.circumstance_code
@@ -456,13 +456,13 @@ class CustomerChatbotPipeline:
             self.chat_session,
             type_scores=score_chat_fraud_circumstances(circumstance_codes),
         )
-        self.repository.request_handoff(
+        self.repository.set_session_complete(
             self.chat_session,
             completed_at=datetime.now(UTC),
         )
         # 상태 변경 SSE 는 턴 커밋이 끝난 뒤 _run_turn 이 발행한다(PRD 2.7).
         return {
-            "outbound": self._emit(state.get("outbound", []), WANT_END_HANDOFF_MESSAGE),
+            "outbound": self._emit(state.get("outbound", []), WANT_END_MESSAGE),
         }
 
     # ------------------------------------------------------------------

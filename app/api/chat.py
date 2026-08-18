@@ -271,7 +271,7 @@ def send_chat_message(
     | --- | --- | --- |
     | `SUFFICIENT` | 대응 가이드(RAG) 안내 + 다음 질문 | `IN_PROGRESS` |
     | `TOO_VAGUE` | 재질문 안내(`question_step` 유지) | `IN_PROGRESS` |
-    | `WANT_END` | 사기 정황 채점을 집계한 뒤 상담사 연결 안내 | `HANDOFF_REQUESTED` |
+    | `WANT_END` | 사기 정황 채점을 집계한 뒤 상담 종료 안내 | `DONE` |
 
     한 질문에서 허용하는 응답은 최초 1회 + 재질문 2회다. `TOO_VAGUE` 가 3회째까지
     이어지면 마지막 답변을 채택하고 전환 안내와 함께 다음 질문으로 넘어간다.

@@ -41,11 +41,8 @@ UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE = (
     "정확한 안내가 필요하시면 상담사를 연결해드릴게요."
 )
 
-# B.6 상담 종료 요청(WANT_END) 시 상담사 연결 안내
-WANT_END_HANDOFF_MESSAGE = (
-    "상담을 종료하겠습니다."
-    " 정확한 안내를 위해 상담사를 연결해드릴게요. 잠시만 기다려주세요."
-)
+# B.6 상담 종료 요청(WANT_END) 시 종료 안내
+WANT_END_MESSAGE = "상담을 종료하겠습니다."
 
 def render_initial_notification(
     *,
@@ -86,6 +83,6 @@ __all__ = [
     "NEXT_QUESTION_MESSAGE",
     "TOO_VAGUE_MESSAGE",
     "UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE",
-    "WANT_END_HANDOFF_MESSAGE",
+    "WANT_END_MESSAGE",
     "render_initial_notification",
 ]
