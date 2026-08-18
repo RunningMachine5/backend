@@ -36,6 +36,12 @@ class TransactionResponseContractTest(unittest.TestCase):
                 prediction_status="NOT_AVAILABLE",
                 created_at=datetime.now(UTC),
             )
+        with self.assertRaises(ValidationError):
+            TransactionResponseDTO(
+                transaction_id=3,
+                prediction_status="DECLINED",
+                created_at=datetime.now(UTC),
+            )
 
     def test_transaction_id_rejects_the_old_string_contract(self) -> None:
         with self.assertRaises(ValidationError):

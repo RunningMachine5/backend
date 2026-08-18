@@ -49,7 +49,8 @@ class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
 
     transaction_id: int = Field(strict=True, gt=0)
-    prediction_status: Literal["COMPLETED", "FAILED", "DECLINED"]
+    # 추론 실행 상태이며 거래 승인 여부는 predict_result로 구분한다.
+    prediction_status: Literal["COMPLETED", "FAILED"]
     predict_result: bool | None = None
     predict_proba: float | None = Field(default=None, ge=0, le=1)
     rule_set_id: int | None = None

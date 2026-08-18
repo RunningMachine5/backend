@@ -22,10 +22,9 @@ class TransactionStatus(str, Enum):
 class Transaction(SQLModel, table=True):
     """거래 원본과 거래 시점 계좌 상태 스냅샷.
 
-    잔액 계열 세 컬럼(initial_balance, balance,
-    remaining_amount_daily_limit_exceeded)은 accounts의 가변 상태를 거래 시점
-    그대로 고정한 값이다. 과거 거래를 재채점할 때는 반드시 이 스냅샷을 읽어야
-    하며 accounts의 현재 값을 읽으면 결과가 달라진다.
+    initial_balance와 balance는 accounts의 가변 상태를 거래 시점 그대로
+    고정한 값이다. 과거 거래를 재채점할 때는 반드시 이 스냅샷을 읽어야 하며
+    accounts의 현재 값을 읽으면 결과가 달라진다.
     """
 
     __tablename__ = "transactions"
