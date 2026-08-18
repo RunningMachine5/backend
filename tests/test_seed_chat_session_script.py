@@ -16,8 +16,7 @@ from app.domain.fraud_type_codes import (
 )
 from app.services.chatbot.session_creator import OLDER_CUSTOMER_AGE
 from scripts.seed_chat_session import (
-    ACCOUNT_ID_PREFIX,
-    CUSTOMER_ID_PREFIX,
+    ACCOUNT_NUMBER_PREFIX,
     IDENTIFICATION_NUMBER_PREFIX,
     build_seed,
     conflicting_seeding_options,
@@ -98,23 +97,26 @@ class SeededIdentifierPrefixTest(unittest.TestCase):
     def test_identifiers_use_cleanup_prefixes(self) -> None:
         result = seed([])
 
-        self.assertTrue(result.customer.id.startswith(CUSTOMER_ID_PREFIX))
         self.assertTrue(
             result.customer.identification_number.startswith(
                 IDENTIFICATION_NUMBER_PREFIX
             )
         )
-        self.assertTrue(result.source_account.id.startswith(ACCOUNT_ID_PREFIX))
-        self.assertTrue(result.recipient_account.id.startswith(ACCOUNT_ID_PREFIX))
-        # 거래는 customer_id 로 찾으므로 시드 고객에 붙어 있어야 한다.
-        self.assertTrue(result.transaction.customer_id.startswith(CUSTOMER_ID_PREFIX))
+        self.assertTrue(
+            result.source_account.account_number.startswith(ACCOUNT_NUMBER_PREFIX)
+        )
+        self.assertTrue(
+            result.recipient_account.account_number.startswith(ACCOUNT_NUMBER_PREFIX)
+        )
 
 
 class BuildSeedTest(unittest.TestCase):
     def test_transaction_links_seeded_customer_and_accounts(self) -> None:
         result = seed([])
 
-        self.assertEqual(result.transaction.customer_id, result.customer.id)
+        # 정수 PK는 DB가 생성하므로 build_seed 단계에서는 아직 비어 있다.
+        self.assertIsNone(result.customer.id)
+        self.assertIsNone(result.transaction.customer_id)
         self.assertEqual(
             result.transaction.source_account_number,
             result.source_account.account_number,
@@ -123,7 +125,7 @@ class BuildSeedTest(unittest.TestCase):
             result.transaction.recipient_account_number,
             result.recipient_account.account_number,
         )
-        self.assertEqual(result.source_account.customer_id, result.customer.id)
+        self.assertIsNone(result.source_account.customer_id)
         # 수취 계좌는 외부에서 처음 관측되는 계좌라 고객을 붙이지 않는다.
         self.assertIsNone(result.recipient_account.customer_id)
 
@@ -188,7 +190,6 @@ class BuildSeedTest(unittest.TestCase):
         )
         # 식별자는 시드와 무관하게 매번 새로 만든다. 같은 --seed 로 두 번 실행해도
         # PK 와 UNIQUE 컬럼이 겹치지 않아야 두 번째 실행이 살아남는다.
-        self.assertNotEqual(first.customer.id, second.customer.id)
         self.assertNotEqual(
             first.customer.identification_number,
             second.customer.identification_number,
@@ -234,9 +235,6 @@ class BuildSeedTest(unittest.TestCase):
                 )
                 self.assertIn(transaction.access_medium, tuple("abcdefgh"))
                 self.assertGreaterEqual(transaction.num_connection_failure, 0)
-                self.assertGreaterEqual(
-                    transaction.remaining_amount_daily_limit_exceeded, 0
-                )
                 # 한국 좌표 범위(ML 계약)를 벗어나지 않는다.
                 self.assertTrue(33 <= transaction.location_lat <= 39)
                 self.assertTrue(124 <= transaction.location_lon <= 132)

@@ -44,11 +44,10 @@ from app.services.chatbot.session_creator import OLDER_CUSTOMER_AGE
 
 KST = ZoneInfo("Asia/Seoul")
 
-# 이 스크립트가 만든 행만 --cleanup 이 지울 수 있도록 식별자에 접두어를 붙인다.
+# 이 스크립트가 만든 행만 --cleanup 이 지울 수 있도록 고유값에 접두어를 붙인다.
 # 접두어를 바꾸면 그 전에 만든 데이터는 --cleanup 대상에서 빠진다.
-CUSTOMER_ID_PREFIX = "CUST-SEED-"
-ACCOUNT_ID_PREFIX = "ACCT-SEED-"
 IDENTIFICATION_NUMBER_PREFIX = "ID-SEED-"
+ACCOUNT_NUMBER_PREFIX = "9900"
 
 # 흔한 성 + 이름 조합. 동명이인은 스키마가 허용하므로 중복돼도 문제없다.
 FAMILY_NAMES = ("김", "이", "박", "최", "정", "강", "조", "윤", "장", "임")
@@ -158,7 +157,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help=(
             "새로 만들지 않고, 이 스크립트가 만든 고객·계좌·거래를 모두 지운다"
-            f"(식별자가 {CUSTOMER_ID_PREFIX}/{ACCOUNT_ID_PREFIX} 로 시작하는 행만)."
+            "(시드 전용 식별번호와 계좌번호를 가진 행만)."
         ),
     )
     parser.add_argument(
@@ -199,7 +198,6 @@ def build_seed(
     birth_year = _pick_birth_year(args, rng=rng, now=now)
 
     customer = Customer(
-        id=f"{CUSTOMER_ID_PREFIX}{suffix}",
         name=rng.choice(FAMILY_NAMES) + rng.choice(GIVEN_NAMES),
         birth_date=date(birth_year, rng.randint(1, 12), rng.randint(1, 28)),
         gender=rng.choice(("male", "female")),
@@ -212,8 +210,8 @@ def build_seed(
     )
 
     source_account = Account(
-        id=f"{ACCOUNT_ID_PREFIX}{suffix}-SRC",
-        customer_id=customer.id,
+        # 고객 ID는 DB가 만든 뒤 main()에서 연결한다.
+        customer_id=None,
         account_number=_unique_account_number(),
         account_type=rng.choice(LOAN_TYPES),
         creation_datetime=customer.registration_datetime,
@@ -221,7 +219,6 @@ def build_seed(
     )
     # 수취 계좌는 외부에서 처음 관측되는 계좌라 고객을 붙이지 않는다(accounts 주석).
     recipient_account = Account(
-        id=f"{ACCOUNT_ID_PREFIX}{suffix}-DST",
         customer_id=None,
         account_number=_unique_account_number(),
         account_type=None,
@@ -237,7 +234,8 @@ def build_seed(
     location_name, lat, lon = rng.choice(LOCATIONS)
 
     transaction = Transaction(
-        customer_id=customer.id,
+        # 고객 ID는 DB가 만든 뒤 main()에서 연결한다.
+        customer_id=None,
         source_account_number=source_account.account_number,
         recipient_account_number=recipient_account.account_number,
         # 알림이 "방금 일어난 거래"로 읽히도록 최근 3일 안에서 고른다.
@@ -249,10 +247,8 @@ def build_seed(
         type_general_automatic="general",
         access_medium=rng.choice(ACCESS_MEDIUMS),
         num_connection_failure=_weighted_connection_failure(rng),
-        another_person_account=True,
         initial_balance=initial_balance,
         balance=initial_balance + signed_amount,
-        remaining_amount_daily_limit_exceeded=rng.randrange(0, 50_000_000, 100_000),
         location_lat=lat,
         location_lon=lon,
         rooting_jailbreak_indicator=_rare(rng),
@@ -318,7 +314,11 @@ def _unique_account_number() -> str:
     두 번째 실행이 중복 키로 죽는다. 계좌번호만은 시드와 무관하게 만든다.
     """
 
-    return f"{uuid4().int % 10**12:012d}"
+    random_digits = 12 - len(ACCOUNT_NUMBER_PREFIX)
+    return (
+        ACCOUNT_NUMBER_PREFIX
+        + f"{uuid4().int % 10**random_digits:0{random_digits}d}"
+    )
 
 
 def _random_amount(rng: random.Random) -> int:
@@ -348,30 +348,30 @@ def _run_cleanup(*, assume_yes: bool) -> int:
     from app.core.db import engine
     from app.data.model.chatbot import ChatSession
 
-    customer_pattern = f"{CUSTOMER_ID_PREFIX}%"
-    account_pattern = f"{ACCOUNT_ID_PREFIX}%"
+    customer_pattern = f"{IDENTIFICATION_NUMBER_PREFIX}%"
+    account_pattern = f"{ACCOUNT_NUMBER_PREFIX}%"
 
     with Session(engine) as session:
         customers = session.exec(
             select(func.count()).select_from(Customer).where(
-                col(Customer.id).like(customer_pattern)
+                col(Customer.identification_number).like(customer_pattern)
             )
         ).one()
         accounts = session.exec(
             select(func.count()).select_from(Account).where(
-                col(Account.id).like(account_pattern)
+                col(Account.account_number).like(account_pattern)
             )
         ).one()
         transactions = session.exec(
             select(func.count()).select_from(Transaction).where(
-                col(Transaction.customer_id).like(customer_pattern)
+                col(Transaction.source_account_number).like(account_pattern)
             )
         ).one()
         chat_sessions = session.exec(
             select(func.count())
             .select_from(ChatSession)
             .join(Transaction, col(ChatSession.transaction_id) == col(Transaction.id))
-            .where(col(Transaction.customer_id).like(customer_pattern))
+            .where(col(Transaction.source_account_number).like(account_pattern))
         ).one()
 
         if customers == 0 and accounts == 0 and transactions == 0:
@@ -401,14 +401,18 @@ def _run_cleanup(*, assume_yes: bool) -> int:
             # 부모부터 지우면 거부당한다. 챗봇 세션은 거래에서 CASCADE 로 따라 지워진다.
             session.exec(
                 delete(Transaction).where(
-                    col(Transaction.customer_id).like(customer_pattern)
+                    col(Transaction.source_account_number).like(account_pattern)
                 )
             )
             session.exec(
-                delete(Account).where(col(Account.id).like(account_pattern))
+                delete(Account).where(
+                    col(Account.account_number).like(account_pattern)
+                )
             )
             session.exec(
-                delete(Customer).where(col(Customer.id).like(customer_pattern))
+                delete(Customer).where(
+                    col(Customer.identification_number).like(customer_pattern)
+                )
             )
             session.commit()
         except Exception:
@@ -465,6 +469,8 @@ def main(argv: list[str] | None = None) -> int:
             # 정렬해주지 못한다. FK 방향대로 직접 끊어서 내보낸다.
             session.add(seeded.customer)
             session.flush()
+            seeded.source_account.customer_id = seeded.customer.id
+            seeded.transaction.customer_id = seeded.customer.id
             session.add(seeded.source_account)
             session.add(seeded.recipient_account)
             session.flush()
