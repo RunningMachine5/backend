@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, time
 
 from pydantic.dataclasses import dataclass
 from sqlalchemy import func
@@ -202,7 +202,7 @@ class FeatureContextRepository:
         )
         if is_dawn:
             hour = func.extract("hour", Transaction.transaction_datetime)
-            statement = statement.where(hour.between(0, 6))
+            statement = statement.where(hour.between(0, 5))
 
         return self.session.exec(statement).one()
     
@@ -235,6 +235,17 @@ class FeatureContextRepository:
             )
         )
         return self.session.exec(statement).one()
+
+    def get_todays_transaction_amount(self, account_number: str, transaction_date: date) -> int | None:
+        transaction_date = datetime.combine(transaction_date, time.min)
+        statement = (
+            select(func.coalesce(func.sum(Transaction.transaction_amount), 0))
+            .where(Transaction.source_account_number == account_number)
+            .where(Transaction.transaction_datetime >= transaction_date)
+            .where(Transaction.transaction_datetime < transaction_date + timedelta(days=1))
+        )
+        return self.session.exec(statement).one()
+
 
 __all__ = [
     "TEMP_ACCOUNT_ID_PREFIX",

@@ -18,7 +18,7 @@ class ApiResponse(BaseModel, Generic[T]):
     error: ApiError | None = None
 
 
-def success_response(data: T | None = None) -> ApiResponse[T]:
+def success_response(data: T | None = None, *args) -> ApiResponse[T]:
     return ApiResponse(
         success=True,
         data=data,
