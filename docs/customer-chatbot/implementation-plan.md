@@ -250,7 +250,7 @@ FDS·Agent 결합.
   초안으로 만들었고, 확정된 형태를 README에 반영했다:
   - ~~`POST /chat/sessions`~~ — **만들지 않는다.** 세션 생성의 운영 호출자는 Agent뿐이라
     함수 호출로 충분하다(PRD 2.1). 초안 단계에서 한 번 만들었다가 제거했다. 로컬에서 접속
-    URL이 필요하면 [scripts/create_chat_session.py](../../scripts/create_chat_session.py)를
+    URL이 필요하면 [scripts/seed_chat_session.py](../../scripts/seed_chat_session.py)를
     쓴다(PRD 2.1 테스트용 세션 생성)
   - `POST /chat/{chat_session_id}/verify` — 출생연도 4자리 간이 본인인증
     (실패 횟수 제한·토큰·TTL 없음 — PRD 3.3의 MVP 제외 그대로)
@@ -269,7 +269,7 @@ FDS·Agent 결합.
 - [x] 테스트 [tests/test_chat_api.py](../../tests/test_chat_api.py): TestClient로 본인인증·버튼
   상태 전이, 상태에 맞지 않는 입력의 `409`, 거래별 세션 상태 조회, 상태 변경 SSE 프레임.
   세션 생성 멱등·폴백 이메일은 `tests/test_chat_session_creator.py`가, 스크립트 인자 계약은
-  `tests/test_create_chat_session_script.py`가 맡는다
+  `tests/test_seed_chat_session_script.py`가 맡는다
   - **SSE 만 TestClient 로 열지 않는다.** 끝나지 않는 스트림이라 `client.stream(...)` 이
     연결을 닫을 때 매달린다. 라우터가 만든 응답 본문 이터레이터를 직접 읽어 프레임을 본다
   - 평가 LLM 이 필요한 턴은 파이프라인이 지연 생성하는 `AnswerEvaluator` 자리를 대역으로

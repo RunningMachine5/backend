@@ -34,9 +34,16 @@ from app.data.model.chatbot import (
 )
 from app.data.model.customer import Customer
 from app.data.model.transaction import Transaction
-from app.domain.fraud_type_codes import MESSENGER_PHISHING, VOICE_PHISHING
+from app.domain.fraud_circumstance_codes import INCOMING_FUNDS_FORWARDED
+from app.domain.fraud_type_codes import (
+    FINAL_FRAUD_TYPE_CODES,
+    FRAUD_USED_ACCOUNT,
+    MESSENGER_PHISHING,
+    VOICE_PHISHING,
+)
 from app.dto.chatbot import AnswerQualityVerdict
 from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
+from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
     HANDOFF_WAITING_MESSAGE,
@@ -150,7 +157,6 @@ class ChatApiTest(unittest.TestCase):
             type_general_automatic="general",
             access_medium="a",
             num_connection_failure=0,
-            location="서울특별시 중구",
             rooting_jailbreak_indicator=False,
             mobile_roaming_indicator=False,
             vpn_indicator=False,
@@ -429,6 +435,145 @@ class ChatApiTest(unittest.TestCase):
                 "transaction_id": 999,
                 "chat_session_id": None,
                 "status": None,
+            },
+        )
+
+    # -- 2.7 담당자 상세 조회 -------------------------------------------
+
+    def _seed_transcript(self, chat_session: ChatSession) -> None:
+        """대화 두 건을 넣는다(채점은 하지 않는다)."""
+
+        self.session.add(
+            ChatMessage(
+                chat_session_id=chat_session.chat_session_id,
+                sender_type="AI",
+                message_text="어떤 일이 있으셨나요?",
+                sent_at=NOW,
+            )
+        )
+        self.session.add(
+            ChatMessage(
+                chat_session_id=chat_session.chat_session_id,
+                sender_type="HUMAN",
+                message_text="입금받은 돈을 다른 계좌로 다시 보냈어요",
+                sent_at=NOW,
+            )
+        )
+        self.session.commit()
+
+    def _detail(self, transaction_id: int):
+        return self.client.get(
+            f"/agent/transactions/{transaction_id}/chat-session/detail"
+        )
+
+    def test_detail_returns_transcript_and_scores(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.HANDOFF_REQUESTED,
+            question_step=2,
+            is_older=True,
+        )
+        self._seed_transcript(chat_session)
+        self.session.add(
+            FraudTypeScoreAfterChat(
+                transaction_id=chat_session.transaction_id,
+                chat_session_id=chat_session.chat_session_id,
+                type_scores=score_chat_fraud_circumstances(
+                    [INCOMING_FUNDS_FORWARDED]
+                ),
+                scored_at=NOW,
+            )
+        )
+        self.session.commit()
+
+        response = self._detail(chat_session.transaction_id)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()["data"]
+        self.assertEqual(data["chat_session_id"], chat_session.chat_session_id)
+        self.assertEqual(
+            data["status"],
+            ChatSessionStatus.HANDOFF_REQUESTED.value,
+        )
+        self.assertEqual(len(data["messages"]), 2)
+        self.assertTrue(data["type_scores"])
+        # 화면이 쓰지 않는 값은 응답에 담지 않는다.
+        self.assertEqual(
+            set(data),
+            {
+                "transaction_id",
+                "chat_session_id",
+                "status",
+                "completed_at",
+                "messages",
+                "type_scores",
+            },
+        )
+
+    def test_detail_returns_messages_oldest_first(self) -> None:
+        chat_session = self._seed_session()
+        self._seed_transcript(chat_session)
+
+        data = self._detail(chat_session.transaction_id).json()["data"]
+
+        message_ids = [item["message_id"] for item in data["messages"]]
+        self.assertEqual(message_ids, sorted(message_ids))
+        self.assertEqual(
+            [item["sender_type"] for item in data["messages"]],
+            ["AI", "HUMAN"],
+        )
+
+    def test_detail_returns_every_fraud_type_score_highest_first(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.HANDOFF_REQUESTED
+        )
+        self.session.add(
+            FraudTypeScoreAfterChat(
+                transaction_id=chat_session.transaction_id,
+                chat_session_id=chat_session.chat_session_id,
+                type_scores=score_chat_fraud_circumstances(
+                    [INCOMING_FUNDS_FORWARDED]
+                ),
+                scored_at=NOW,
+            )
+        )
+        self.session.commit()
+
+        data = self._detail(chat_session.transaction_id).json()["data"]
+
+        scores = data["type_scores"]
+        # 대표 유형을 고르지 않고 4개 유형을 전부 돌려준다.
+        self.assertEqual(len(scores), len(FINAL_FRAUD_TYPE_CODES))
+        self.assertEqual(
+            [item["score"] for item in scores],
+            sorted((item["score"] for item in scores), reverse=True),
+        )
+        self.assertEqual(scores[0]["type_code"], FRAUD_USED_ACCOUNT)
+        self.assertEqual(scores[0]["display_name"], "사기이용계좌")
+
+    def test_detail_before_scoring_returns_empty_scores(self) -> None:
+        chat_session = self._seed_session(status=ChatSessionStatus.IN_PROGRESS)
+        self._seed_transcript(chat_session)
+
+        data = self._detail(chat_session.transaction_id).json()["data"]
+
+        self.assertEqual(data["type_scores"], [])
+        self.assertIsNone(data["completed_at"])
+        # 채점 전이라도 대화 이력은 그대로 보인다.
+        self.assertEqual(len(data["messages"]), 2)
+
+    def test_detail_without_session_returns_empty_values(self) -> None:
+        response = self._detail(999)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json()["data"],
+            {
+                "transaction_id": 999,
+                "chat_session_id": None,
+                "status": None,
+                "completed_at": None,
+                "messages": [],
+                "type_scores": [],
             },
         )
 

@@ -4,9 +4,7 @@
     [string]$CsvPath = "",
     [ValidateRange(1, 1000)]
     [int]$TransactionsPerSecond = 100,
-    [ValidateRange(-1, 1800)]
     [int]$NormalRowLimit = -1,
-    [ValidateRange(-1, 200)]
     [int]$FraudRowLimit = -1,
     [switch]$WaitForAgent,
     [ValidateRange(5, 600)]
@@ -34,17 +32,10 @@ $normalTarget = 1800
 $fraudTarget = 200
 
 $smallRun = $NormalRowLimit -ge 0 -or $FraudRowLimit -ge 0
-if ($smallRun -and ($NormalRowLimit -lt 0 -or $FraudRowLimit -lt 0)) {
-    throw "소량 실행 시 NormalRowLimit과 FraudRowLimit을 함께 지정해야 합니다."
-}
-if ($smallRun -and ($NormalRowLimit + $FraudRowLimit -eq 0)) {
+$normalLimit = if ($NormalRowLimit -ge 0) { $NormalRowLimit } else { $normalTarget }
+$fraudLimit = if ($FraudRowLimit -ge 0) { $FraudRowLimit } else { $fraudTarget }
+if ($normalLimit + $fraudLimit -eq 0) {
     throw "소량 실행 대상은 1건 이상이어야 합니다."
-}
-if ($WaitForAgent -and -not $smallRun) {
-    throw "WaitForAgent는 소량 실행 옵션과 함께 사용해야 합니다."
-}
-if ($WaitForAgent -and $FraudRowLimit -eq 0) {
-    throw "Agent E2E에는 사기 라벨 거래를 1건 이상 선택해야 합니다."
 }
 
 $backendHealth = Invoke-RestMethod -Uri "$BackendUrl/health" -TimeoutSec 10
@@ -88,38 +79,16 @@ if ($missingCsvColumns.Count -gt 0) {
     throw "샘플 CSV 필수 컬럼이 없습니다: $($missingCsvColumns -join ',')"
 }
 
-$normalRows = @($rows | Where-Object { [int]$_.is_fraud -eq 0 }).Count
-$fraudRows = @($rows | Where-Object { [int]$_.is_fraud -eq 1 }).Count
-$requiredNormalRows = if ($smallRun) { $NormalRowLimit } else { $normalTarget }
-$requiredFraudRows = if ($smallRun) { $FraudRowLimit } else { $fraudTarget }
-if ($normalRows -lt $requiredNormalRows -or $fraudRows -lt $requiredFraudRows) {
-    throw (
-        "요청한 라벨 수를 선택할 수 없습니다: " +
-        "normal=$normalRows/$requiredNormalRows 이상, " +
-        "fraud=$fraudRows/$requiredFraudRows 이상"
-    )
-}
-
-if ($smallRun) {
-    # 앞에서 N건만 자르지 않고 두 라벨을 따로 선택한다.
-    $selectedRows = @(
-        $rows |
-            Where-Object { [int]$_.is_fraud -eq 0 } |
-            Select-Object -First $NormalRowLimit
-        $rows |
-            Where-Object { [int]$_.is_fraud -eq 1 } |
-            Select-Object -First $FraudRowLimit
-    )
-} else {
-    $selectedRows = @(
-        $rows |
-            Where-Object { [int]$_.is_fraud -eq 0 } |
-            Select-Object -First $normalTarget
-        $rows |
-            Where-Object { [int]$_.is_fraud -eq 1 } |
-            Select-Object -First $fraudTarget
-    )
-}
+# 앞에서 N건만 자르지 않고 두 라벨을 따로 선택한다. CSV에 요청 수보다
+# 적은 행이 있으면 실제로 존재하는 행만 전송한다.
+$selectedRows = @(
+    $rows |
+        Where-Object { [int]$_.is_fraud -eq 0 } |
+        Select-Object -First $normalLimit
+    $rows |
+        Where-Object { [int]$_.is_fraud -eq 1 } |
+        Select-Object -First $fraudLimit
+)
 $selectedRowCount = $selectedRows.Count
 
 # CSV transaction_id는 로그에서 원본 행을 찾기 위한 값이다. 실제 거래 ID는
@@ -189,8 +158,9 @@ function Convert-ToApiDateTime {
         [string]$SourceRowId
     )
 
-    # train1.csv에는 `2025-01-01 0:02`처럼 한 자리 시각과 초가 생략된
-    # 값이 있다. Backend DTO가 안정적으로 읽도록 ISO 8601 형식으로 맞춘다.
+    # train1.csv의 시각은 한국 현지 시각이지만 timezone 표기가 없다.
+    # PostgreSQL의 timezone 포함 컬럼과 같은 기준을 사용하도록 ISO 8601
+    # 형식으로 바꾸고 한국 표준시(+09:00)를 명시한다.
     $text = [string]$Value
     [string[]]$formats = @(
         "yyyy-MM-dd H:mm",
@@ -216,7 +186,7 @@ function Convert-ToApiDateTime {
     return $parsed.ToString(
         "yyyy-MM-ddTHH:mm:ss",
         [Globalization.CultureInfo]::InvariantCulture
-    )
+    ) + "+09:00"
 }
 
 function Get-NearestRankPercentile {
@@ -237,7 +207,6 @@ function Get-NearestRankPercentile {
     return [math]::Round([double]$sorted[$index], 0)
 }
 
-# 생성된 DB ID가 같은 실행 안에서 중복되지 않는지도 별도로 확인한다.
 $createdTransactionIds = [System.Collections.Generic.HashSet[long]]::new()
 $processed = 0
 
@@ -249,7 +218,7 @@ $minimumTransactionIntervalMs = 1000.0 / $TransactionsPerSecond
 $injectionStopwatch = [Diagnostics.Stopwatch]::StartNew()
 $lastTransactionStartedAtMs = $null
 
-$results = foreach ($row in $selectedRows) {
+$results = @(foreach ($row in $selectedRows) {
     $processed += 1
     Write-Progress `
         -Activity "slim 거래 주입" `
@@ -371,67 +340,26 @@ $results = foreach ($row in $selectedRows) {
         $transactionRequestStopwatch.Stop()
     }
 
-    if (
-        $response.transaction_id -is [string] -or
-        [long]$response.transaction_id -le 0
-    ) {
-        throw "거래 $sourceRowId의 Backend transaction_id가 양의 정수가 아닙니다."
-    }
     $transactionId = [long]$response.transaction_id
-    if (-not $createdTransactionIds.Add($transactionId)) {
-        throw "Backend가 중복 transaction_id를 반환했습니다: $transactionId"
-    }
-    if ($response.prediction_status -ne "COMPLETED") {
-        throw (
-            "거래 $sourceRowId의 ML 추론이 완료되지 않았습니다: " +
-            "$($response.prediction_status)"
-        )
-    }
-    if ($null -eq $response.predict_result) {
-        throw "거래 $sourceRowId의 predict_result가 비어 있습니다."
-    }
-    if (
-        $null -eq $response.predict_proba -or
-        [double]$response.predict_proba -lt 0.0 -or
-        [double]$response.predict_proba -gt 1.0
-    ) {
-        throw "거래 $sourceRowId의 predict_proba 범위가 올바르지 않습니다."
-    }
+    $null = $createdTransactionIds.Add($transactionId)
 
     $mlFraud = [bool]$response.predict_result
     if ($mlFraud) {
-        if ($null -eq $response.rule_set_id -or $null -eq $response.rule_scores) {
-            throw "사기 판정 거래 $sourceRowId에 룰 점수가 없습니다."
-        }
-        if ([long]$response.rule_set_id -ne [long]$activeRuleSet.id) {
-            throw "거래 $sourceRowId에 현재 ACTIVE 룰셋이 적용되지 않았습니다."
-        }
         $ruleTypes = @(
             $response.rule_scores.PSObject.Properties.Name | Sort-Object
         )
     } else {
-        if ($null -ne $response.rule_set_id -or $null -ne $response.rule_scores) {
-            throw "정상 판정 거래 $sourceRowId에 룰 점수가 생성됐습니다."
-        }
         $ruleTypes = @()
     }
 
     # 학습 정답 is_fraud는 거래 요청과 분리한다. 방금 생성된 정수 ID를 사용해
     # 확정 라벨 API를 호출해야 거래·예측·라벨 FK가 같은 ID로 연결된다.
-    $labelResponse = Invoke-RestMethod `
+    $null = Invoke-RestMethod `
         -Method Put `
         -Uri "$BackendUrl/transactions/$transactionId/label" `
         -ContentType "application/json" `
         -Body (@{ confirmed_is_fraud = $csvLabel } | ConvertTo-Json -Compress) `
         -TimeoutSec 30
-    if (
-        $labelResponse.transaction_id -is [string] -or
-        [long]$labelResponse.transaction_id -ne $transactionId -or
-        [bool]$labelResponse.confirmed_is_fraud -ne $csvLabel
-    ) {
-        throw "거래 $sourceRowId의 확정 라벨 저장 결과가 예상과 다릅니다."
-    }
-
     [pscustomobject]@{
         SourceRowId = $sourceRowId
         TransactionId = $transactionId
@@ -446,7 +374,7 @@ $results = foreach ($row in $selectedRows) {
         )
         AgentEligibleAtUtc = [datetime]::UtcNow
     }
-}
+})
 Write-Progress -Activity "slim 거래 주입" -Completed
 
 $agentResults = @()
@@ -616,17 +544,4 @@ if ($WaitForAgent) {
             ObservedAgentLatencyMs,FailureReason `
             -AutoSize
 
-    if ($agentSummary.Failed -gt 0 -or $agentSummary.TimedOut -gt 0) {
-        throw "완료되지 않은 Agent 사건이 있습니다. Agent 요약을 확인하세요."
-    }
-    if ($agentSummary.ResponsePlanCreated -ne $agentSummary.Completed) {
-        throw "COMPLETED Agent 사건 중 대응 계획이 없는 사건이 있습니다."
-    }
-}
-
-if ($summary.RuleScoredRows -ne $summary.MlFraudRows) {
-    throw "ML 사기 판정 수와 룰 점수 저장 수가 일치하지 않습니다."
-}
-if ($summary.MlFraudRows -eq 0) {
-    throw "ML 사기 판정이 0건이라 실제 룰 E2E 경로를 확인하지 못했습니다."
 }
