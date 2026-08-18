@@ -145,6 +145,19 @@ class RagResponsePlanGeneratorTest(unittest.TestCase):
         self.assertTrue(second_metrics["response_plan_cache_hit"])
         self.assertEqual(second_metrics["response_plan_llm_call_count"], 0)
 
+    def test_cache_size_zero_calls_llm_for_each_evaluation_run(self) -> None:
+        llm = FakeStructuredLLM(self._generated_plan())
+        generator = RagResponsePlanGenerator(structured_llm=llm, cache_size=0)
+
+        for _ in range(2):
+            generator.generate(
+                fraud_type="ACCOUNT_TAKEOVER",
+                policy=self._policy(),
+                guides=[self._guide()],
+            )
+
+        self.assertEqual(llm.calls, 2)
+
     def test_guide_content_change_invalidates_cache(self) -> None:
         llm = FakeStructuredLLM(self._generated_plan())
         generator = RagResponsePlanGenerator(structured_llm=llm)

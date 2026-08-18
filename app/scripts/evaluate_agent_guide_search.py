@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
+import csv
 import json
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -21,13 +24,37 @@ from app.services.agent.guide_search import GuideSearchService  # noqa: E402
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="검색 평가 보고서를 저장할 JSON 파일 경로이다.",
+    )
+    parser.add_argument(
+        "--csv-output",
+        type=Path,
+        help="검색 평가 요약을 저장할 CSV 파일 경로이다.",
+    )
+    args = parser.parse_args()
+
     with Session(engine) as session:
         service = GuideSearchService(
             AgentGuideRepository(session),
             OpenAIGuideEmbedder(),
         )
         report = evaluate_guide_search(load_guide_evaluation_cases(), service)
-    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    output = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+    print(output)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(output, encoding="utf-8")
+    if args.csv_output is not None:
+        rows = report.to_csv_rows()
+        args.csv_output.parent.mkdir(parents=True, exist_ok=True)
+        with args.csv_output.open("w", encoding="utf-8-sig", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
 
 
 if __name__ == "__main__":

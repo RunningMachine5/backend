@@ -1,5 +1,15 @@
 # Agent 대응 계획 생성 품질을 비교하기 위한 고정 평가 시나리오이다.
 cases:
+  - case_id: PLAN-VOICE-LOW
+    fraud_type: VOICE_PHISHING
+    risk_grade: LOW
+    query: 낮은 위험 보이스피싱 의심 거래의 사칭 근거 확인 절차
+
+  - case_id: PLAN-VOICE-MEDIUM
+    fraud_type: VOICE_PHISHING
+    risk_grade: MEDIUM
+    query: 보이스피싱 의심 거래의 사칭 정황과 수취계좌 검토 절차
+
   - case_id: PLAN-VOICE-HIGH
     fraud_type: VOICE_PHISHING
     risk_grade: HIGH
@@ -15,6 +25,16 @@ cases:
     risk_grade: HIGH
     query: 가족 지인 사칭 메신저피싱 거래의 본인 확인과 별도 연락 절차
 
+  - case_id: PLAN-MESSENGER-LOW
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: LOW
+    query: 낮은 위험 메신저피싱 의심 거래의 사칭 근거 확인 절차
+
+  - case_id: PLAN-MESSENGER-MEDIUM
+    fraud_type: MESSENGER_PHISHING
+    risk_grade: MEDIUM
+    query: 메신저피싱 의심 거래의 신규 수취계좌와 사칭 정황 검토 절차
+
   - case_id: PLAN-MESSENGER-VERY-HIGH
     fraud_type: MESSENGER_PHISHING
     risk_grade: VERY_HIGH
@@ -25,6 +45,16 @@ cases:
     risk_grade: HIGH
     query: 원격제어와 인증정보 변경이 탐지된 계정탈취 사건의 고객 확인과 보안 점검 절차
 
+  - case_id: PLAN-TAKEOVER-LOW
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: LOW
+    query: 낮은 위험 계정탈취 의심 거래의 단말과 인증 근거 확인 절차
+
+  - case_id: PLAN-TAKEOVER-MEDIUM
+    fraud_type: ACCOUNT_TAKEOVER
+    risk_grade: MEDIUM
+    query: 계정탈취 의심 거래의 단말 인증 변경과 수취계좌 정황 검토 절차
+
   - case_id: PLAN-TAKEOVER-VERY-HIGH
     fraud_type: ACCOUNT_TAKEOVER
     risk_grade: VERY_HIGH
@@ -34,6 +64,16 @@ cases:
     fraud_type: FRAUD_USED_ACCOUNT
     risk_grade: HIGH
     query: 고위험 사기이용계좌 의심 사건의 자금 흐름과 연결계좌 검토 절차
+
+  - case_id: PLAN-FRAUD-ACCOUNT-LOW
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: LOW
+    query: 낮은 위험 사기이용계좌 의심 거래의 자금 흐름 근거 확인 절차
+
+  - case_id: PLAN-FRAUD-ACCOUNT-MEDIUM
+    fraud_type: FRAUD_USED_ACCOUNT
+    risk_grade: MEDIUM
+    query: 사기이용계좌 의심 거래의 입출금 흐름과 연결계좌 검토 절차
 
   - case_id: PLAN-FRAUD-ACCOUNT-VERY-HIGH
     fraud_type: FRAUD_USED_ACCOUNT
