@@ -61,6 +61,7 @@ TransactionServiceDep = Annotated[TransactionService, Depends(get_transaction_se
 
 
 def get_detection_result_service(session: SessionDep) -> DetectionResultService:
+    # doo 거래 서비스와 우리 운영 결과 저장이 같은 DB 작업 단위를 사용한다.
     return DetectionResultService(session)
 
 

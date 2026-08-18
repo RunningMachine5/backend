@@ -300,6 +300,7 @@ class DerivedFeatureService:
                     "account_remaining_amount_daily_limit_exceeded"
                 ],
             ),
+            # 외부·ML의 customer_* 값을 Transaction DB 필드명으로 옮긴다.
             TransactionCreateDTO(
                 customer_id=context.customer.id
                 if context.customer

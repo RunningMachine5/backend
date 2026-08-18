@@ -66,6 +66,9 @@ def _transaction_response(
     score_result: FraudTypeScoreResult | None,
     label: TransactionLabel | None,
 ) -> FraudDetectionResponseDTO:
+    """DB에 나뉘어 저장된 거래·ML·룰·라벨을 조회 응답 하나로 합친다."""
+
+    # doo가 저장한 거래 상태가 API의 승인·거절 표시 기준이다.
     if transaction.transaction_status == TransactionStatus.DECLINED:
         prediction_status = "DECLINED"
         message = "이상거래 의심으로 거래가 거절되었습니다."
@@ -120,6 +123,7 @@ def create_transaction(
 
     if result.prediction_result is not None and result.prediction_result.predict_result:
         dashboard_event_broker.publish(event="dashboard_updated", data={"source": "ml"})
+    # Pipeline이 doo 응답에 ML·룰 결과까지 합쳤으므로 그대로 반환한다.
     return result.response
 
 

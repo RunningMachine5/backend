@@ -37,6 +37,7 @@ class TransactionRequestDTO(BaseModel):
     location_lat: float | None = Field(default=None, ge=-90, le=90)
     location_lon: float | None = Field(default=None, ge=-180, le=180)
 
+    # 외부 요청과 ML에서는 customer_* 이름을 사용하고, 저장할 때 DB 필드로 옮긴다.
     customer_rooting_jailbreak_indicator: bool = Field(default=False)
     customer_mobile_roaming_indicator: bool = Field(default=False)
     customer_vpn_indicator: bool = Field(default=False)

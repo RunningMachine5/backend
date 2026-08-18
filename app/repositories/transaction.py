@@ -21,6 +21,7 @@ class TransactionRepository:
 
     def save_transaction(self, transaction: Transaction) -> Transaction:
         self.session.add(transaction)
+        # 파생값·ML·룰 결과까지 모두 준비된 뒤 commit하도록 여기서는 ID만 발급한다.
         self.session.flush()
         self.session.refresh(transaction)
         return transaction

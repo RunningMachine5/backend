@@ -38,13 +38,17 @@ class DetectionResultService:
     ) -> FraudDetectionResult:
         """ML 결과와 사기 거래의 룰 점수를 저장한다."""
 
+        # doo의 TransactionService 반환값을 바꾸지 않기 위해 저장된 거래를 ID로 읽는다.
         transaction = self.session.exec(
             select(Transaction).where(
                 Transaction.id == transaction_response.transaction_id
             )
         ).one()
+
+        # doo가 정한 DECLINED 상태를 이후 ML·룰 저장에서도 동일하게 사용한다.
         is_fraud = transaction_response.prediction_status == "DECLINED"
 
+        # 모델 관리 화면에서 어떤 모델이 어떤 확률을 냈는지 조회할 수 있게 한다.
         prediction_result = MLPredictionResult(
             transaction_id=transaction_response.transaction_id,
             predict_result=is_fraud,
@@ -55,6 +59,7 @@ class DetectionResultService:
         )
         self.session.add(prediction_result)
 
+        # 정상 거래는 유형 분류가 필요 없으므로 사기 거래만 룰을 실행한다.
         score_result = None
         if is_fraud:
             score_result = score_transaction_fraud_types(
@@ -65,12 +70,14 @@ class DetectionResultService:
             if score_result is not None:
                 self.session.add(score_result)
 
+        # 앞 단계에서 flush한 거래·파생값까지 ML·룰 결과와 한 번에 확정한다.
         self.session.commit()
         self.session.refresh(transaction)
         self.session.refresh(prediction_result)
         if score_result is not None:
             self.session.refresh(score_result)
 
+        # doo 응답에 운영 화면과 Agent가 사용하는 결과만 덧붙인다.
         response = FraudDetectionResponseDTO(
             **transaction_response.model_dump(),
             predict_result=is_fraud,

@@ -136,7 +136,7 @@ class MLServingClient:
         )
 
     def to_ml(self, features: dict[str, Any]) -> MLPredictionResponse:
-        """doo Pipeline에서 사용하는 ML 요청 진입점."""
+        """doo의 메서드 이름만 연결하고 실제 HTTP 처리는 ``predict``를 재사용한다."""
 
         return self.predict(features=features)
 
