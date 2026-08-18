@@ -47,12 +47,11 @@ SQLAlchemy, SQLModel, langchain-openai.
 조립(`app/services/chatbot/`), LangGraph 턴 파이프라인
 ([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)),
 Agent 통합 세션·메일 조정([session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)),
-[2.8의 API 6종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
+[2.8의 API 5종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
 Fake 체인 `app/services/chatbot/customer_chatbot.py`는 제거했다.
 
 이상거래 거래는 `POST /transactions`가 Agent 백그라운드 작업을 등록하고, Agent의 고객 안내
-노드가 챗봇 세션을 만든 뒤 세션별 URL을 포함한 이메일 한 통을 보낸다. Agent 작업이 상태를
-커밋한 뒤 [task_runner.py](../../app/services/agent/task_runner.py)가 최초 상태 SSE를 발행한다.
+노드가 챗봇 세션을 만든 뒤 세션별 URL을 포함한 이메일 한 통을 보낸다.
 
 RAG 쪽은 [app/services/rag/chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py)에
 `cs_guide_document_chunks` 코사인 검색이 구현되어 있고 `MAX_DISTANCE = 0.6` 임계값을 쓴다.
@@ -156,9 +155,8 @@ uv run --env-file .env python -m scripts.seed_chat_session
 만들므로 그냥 다시 돌리면 빈 대화로 다시 시작한다.
 
 스크립트는 세션과 URL만 만들며 이메일을 보내지 않는다. **운영에서 쓰지 않는다.** 지어낸
-고객 원장을 그대로 밀어 넣고, 서버와 다른 프로세스라 in-process 브로커에 상태 변경을 발행하지
-못하므로([2.7](#27-상담사-반환-경로-거래별-상태-조회--sse)) 담당자 화면에는 SSE 이벤트가
-뜨지 않는다. 거래별 상태 조회로 새로고침하면 보인다.
+고객 원장을 그대로 밀어 넣는다. 담당자 화면은 거래별 상태 조회를 폴링하므로
+([2.7](#27-상담사-반환-경로-거래별-상태-조회)) 다음 폴링에서 시드 세션이 보인다.
 
 쌓인 시드 데이터는 `--cleanup`으로 지운다.
 
@@ -567,7 +565,7 @@ response = assemble(augmented, guidance)
 집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
 상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)).
 
-### 2.7 상담사 반환 경로 (거래별 상태 조회 + SSE)
+### 2.7 상담사 반환 경로 (거래별 상태 조회)
 
 챗봇이 처리할 수 없어 사람에게 넘겨야 하는 순간 — `status`가 `HANDOFF_REQUESTED`로
 바뀌었는지를 담당자가 확인해야 한다. 진입 경로는 하나이며, **고객이 상담사를
@@ -581,25 +579,23 @@ response = assemble(augmented, guidance)
 `IN_PROGRESS` → `DONE`으로 전이한다(채점 집계 후). 검색 0건이나 LLM 실패 같은 챗봇 내부
 사정도 이 경로에 포함되지 않는다([2.5](#검색-결과-0건-처리)).
 
-프론트에는 거래 목록이 있고 각 항목이 `transaction_id`를 알고 있으므로 최초 접속과 SSE
-재연결 시 각 거래에 연결된 채팅 세션의 현재 상태를 개별 조회한다.
+**상태 변경은 프론트가 폴링해서 확인한다.** 서버가 밀어주지 않는다. 프론트에는 거래
+목록이 있고 각 항목이 `transaction_id`를 알고 있으므로, 각 거래에 연결된 채팅 세션의 현재
+상태를 거래별 상태 조회로 주기적으로 다시 읽는다. 폴링 주기는 프론트가 정한다.
 
-세션 생성 직후의 첫 상태(`URL_SENT`, 발송 실패면 `FAILED`)는 **세션을 만든 쪽이 커밋한 뒤**
-발행한다. Agent 작업의 마지막 커밋이 세션 상태까지 확정한 뒤
-[task_runner.py](../../app/services/agent/task_runner.py)가 상태를 다시 조회해 발행한다.
-턴 실행 중의 전이는
-[customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 발행한다.
+세션 생성 직후의 첫 상태(`URL_SENT`, 발송 실패면 `FAILED`)도 같은 경로로 관측된다. Agent
+작업의 마지막 커밋이 세션 상태까지 확정하고 나면 다음 폴링에서 그 상태가 보인다. 턴 실행
+중의 전이도 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가
+턴 커밋을 끝낸 뒤의 폴링에서 보인다. 커밋 전 상태가 담당자 화면에 먼저 보이는 일은 없다.
 
-이후 상태 변경은 대시보드가 SSE 연결 하나로 수신한다. 이벤트는 `transaction_id`,
-`chat_session_id`, 변경된 `status`를 포함하며 프론트는 `transaction_id`가 같은 목록 항목만
-갱신한다. 전체 `HANDOFF_REQUESTED` 세션 스냅샷은 조회하거나 선전송하지 않는다. MVP에서는
-in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 공유는 고려하지 않는다.
+전체 `HANDOFF_REQUESTED` 세션 스냅샷을 돌려주는 경로는 두지 않는다. 서버는 상태를 보관만
+하고 갱신 시점은 화면이 정한다.
 
 #### 상담 내역 조회
 
 담당자가 목록에서 건 하나를 **열었을 때**는 상태만으로 부족하다. 대화 전문과 함께 유형별
 채점 결과([2.6](#26-사기-정황-추출과-채점-4-2))를 한 번에 받는
-`GET /agent/transactions/{transaction_id}/chat-session/detail`을 둔다. 담당자가 대화를 처음부터
+`GET /transactions/{transaction_id}/chat-session/detail`을 둔다. 담당자가 대화를 처음부터
 읽지 않고도 상황을 파악하게 하는 것이 목적이다.
 
 **목록용 상태 조회와 상세 조회를 나눈 이유**는 호출 빈도가 다르기 때문이다. 상태 조회는 거래
@@ -620,7 +616,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 
 2.2~2.7의 흐름을 HTTP로 옮긴 확정 형태다. 구현은
 [app/api/chat.py](../../app/api/chat.py)이고 Swagger(`/docs`)에 한국어 설명이 들어 있다.
-라우터는 쓰는 쪽이 달라 둘로 나눈다 — `/chat`은 고객 화면, `/agent`는 담당자 화면이다.
+라우터는 쓰는 쪽이 달라 둘로 나눈다 — `/chat`은 고객 화면, `/transactions`는 담당자 화면이다.
 
 **세션 생성 엔드포인트는 없다**([2.1](#21-채팅-세션-생성-및-이메일-전송)).
 
@@ -630,9 +626,8 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 | `GET /chat/{chat_session_id}` | 세션 상태와 대화 이력 조회. 인증을 마친 화면의 **새로고침·재접속 전용**이라 최초 알림을 만들지 않는다 | [2.2](#22-채팅-접속-및-본인인증) |
 | `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
 | `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
-| `GET /agent/transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
-| `GET /agent/transactions/{transaction_id}/chat-session/detail` | 거래별 상담 내역 조회. 대화 전문 + 유형별 점수. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
-| `GET /agent/chat-sessions/events` | 상태 변경 SSE. 대시보드당 연결 하나 | [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
+| `GET /transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 담당자 화면이 폴링하는 경로. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
+| `GET /transactions/{transaction_id}/chat-session/detail` | 거래별 상담 내역 조회. 대화 전문 + 유형별 점수. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 
 - 응답은 레포 공통 봉투 `ApiResponse`(`success`/`data`/`error`)를 쓴다.
 - **현재 세션 상태에서 받을 수 없는 입력은 `409`다.** 버튼·답변 경로의 상태 조건이 그것이고,
@@ -641,8 +636,10 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
   세션 조회로 받는다.
 - 본인인증은 토큰을 발급하지 않으므로 `GET /chat/{chat_session_id}`를 포함한 나머지 경로에
   인증 게이트가 없다. 세션 id를 아는 사람은 이력을 볼 수 있다([3.3](#33-보안운영)의 MVP 제외).
-- 트랜잭션은 라우터가 소유한다(`get_session`은 commit하지 않는다). 턴 실행의 커밋과 상태 변경
-  발행은 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 함께 처리한다.
+- 담당자 화면의 두 조회 경로는 `/transactions` 하위에 둔다. Agent(`app/services/agent/`)와는
+  무관한 채팅 세션 조회이므로 `/agent` 접두사를 쓰지 않는다.
+- 트랜잭션은 라우터가 소유한다(`get_session`은 commit하지 않는다). 턴 실행의 커밋은
+  [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 처리한다.
 
 ---
 
@@ -705,7 +702,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 - **FDS·Agent 결합은 백그라운드 Agent 경로로 확정했다.** `POST /transactions`는 원본 거래와
   ML·룰 결과를 먼저 커밋하고 Agent 작업을 등록한다. Agent가 세션 생성과 SMTP 발송을
   동기적으로 수행하지만 HTTP 거래 응답 이후의 백그라운드 작업이므로 응답을 지연시키지 않는다.
-  세션 생성·메일·최초 SSE 실패는 로그로 격리하며 이미 저장된 거래를 롤백하지 않는다.
+  세션 생성·메일 발송 실패는 로그로 격리하며 이미 저장된 거래를 롤백하지 않는다.
   실제 작업 큐와 자동 재시도를 도입하면 SMTP 호출의 비동기화와 재발송 정책을 다시 검토한다.
 - **담당자 접수·처리 중 상태는 MVP 범위에서 제외한다.**
   `HANDOFF_REQUESTED` 이후의 담당자 접수 상태를 추가하지 않는다. 접수 여부·담당자
@@ -779,7 +776,7 @@ in-process pub/sub을 사용하므로 다중 서버 인스턴스의 이벤트 �
 
 | 절 | 내용 | 이 PRD의 사용처 |
 | --- | --- | --- |
-| [3.3](schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-거래별-상태-조회--sse) |
+| [3.3](schema.md#33-챗봇-상태-정의) | `ChatSessionStatus` 5종 | [2.3](#23-최초-알림-메시지와-버튼), [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 | [3.4](schema.md#34-chat_sessions--테이블명-변경-및-컬럼-추가) | `chat_sessions` 테이블명 변경 + 대화 진행 상태 | [2.1](#21-채팅-세션-생성-및-이메일-전송), [2.4](#24-정보-수집--챗봇-질문) |
 | [3.5](schema.md#35-chat_answers--신규) | `chat_answers` | [2.4 조건 1](#조건-1-현재-질문에-대한-재시도-횟수) |
 | [3.6](schema.md#36-추출-결과-테이블--신규) | 가이드 검색 질의·사기 정황 추출 테이블 | [2.5 가이드 검색 질의 분해](#가이드-검색-질의-분해), [2.6 채점 시점과 중복 방지](#채점-시점과-중복-방지) |
