@@ -57,10 +57,6 @@ from app.services.chatbot.messages import (
     render_initial_notification,
 )
 from app.services.chatbot.questions import render_question
-from app.services.chatbot.session_event_broker import (
-    ChatSessionEventBroker,
-    chat_session_event_broker,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -121,12 +117,10 @@ class CustomerChatbotPipeline:
         fraud_circumstance_extractor: FraudCircumstanceExtractor | None = None,
         guide_responder: GuideResponder | None = None,
         checkpointer: Any | None = None,
-        event_broker: ChatSessionEventBroker | None = None,
     ) -> None:
         self.session = session
         self.chat_session = chat_session
         self.repository = ChatSessionRepository(session)
-        self.event_broker = event_broker or chat_session_event_broker
         # LLM 클라이언트는 첫 호출까지 만들지 않는다. 최초 알림과 버튼 처리만 하는
         # 턴에서 OPENAI_API_KEY 가 없다는 이유로 실패하지 않게 한다.
         self._evaluator = evaluator
@@ -188,7 +182,6 @@ class CustomerChatbotPipeline:
             **turn_input,
         }
         state_input.update(self._seed_progress_state(config))
-        status_before = self.chat_session.status
 
         try:
             final_state = self.graph.invoke(state_input, config=config)
@@ -202,9 +195,6 @@ class CustomerChatbotPipeline:
             raise
 
         self.session.refresh(self.chat_session)
-        # 롤백될 수 있는 상태를 담당자 화면에 먼저 보여주지 않도록 커밋 뒤에 발행한다.
-        if self.chat_session.status != status_before:
-            self.event_broker.publish_status_changed(self.chat_session)
         return ChatTurnResult(
             messages=tuple(final_state.get("outbound", [])),
             status=ChatSessionStatus(self.chat_session.status),
@@ -460,7 +450,6 @@ class CustomerChatbotPipeline:
             self.chat_session,
             completed_at=datetime.now(UTC),
         )
-        # 상태 변경 SSE 는 턴 커밋이 끝난 뒤 _run_turn 이 발행한다(PRD 2.7).
         return {
             "outbound": self._emit(state.get("outbound", []), WANT_END_MESSAGE),
         }

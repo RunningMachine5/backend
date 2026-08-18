@@ -15,7 +15,7 @@ from app.domain.fraud_type_codes import FINAL_FRAUD_TYPE_CODES
 
 FraudCircumstanceCode = Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]
 FraudTypeCode = Literal[*FINAL_FRAUD_TYPE_CODES]
-# ChatSessionStatus 5종(스키마 3.3). API 응답과 SSE 페이로드가 같은 집합을 쓴다.
+# ChatSessionStatus 5종(스키마 3.3). API 응답이 모두 같은 집합을 쓴다.
 ChatSessionStatusValue = Literal[
     "URL_SENT",
     "IN_PROGRESS",
@@ -244,7 +244,7 @@ class ChatFraudTypeScoreResponse(BaseModel):
     score: int = Field(ge=0, description="이 유형에 누적된 점수.")
 
 
-class AgentChatSessionDetailResponse(BaseModel):
+class TransactionChatSessionDetailResponse(BaseModel):
     """담당자가 거래 한 건의 상담 내용을 열었을 때 받는 내역"""
 
     transaction_id: int = Field(gt=0, description="조회한 거래 id.")
@@ -274,21 +274,6 @@ class AgentChatSessionDetailResponse(BaseModel):
     )
 
 
-class ChatSessionStatusChangedEventPayload(BaseModel):
-    """담당자 화면에 전달하는 채팅 세션 상태 변경 SSE 이벤트."""
-
-    transaction_id: int = Field(
-        gt=0,
-        description="갱신할 거래 목록 항목의 거래 id.",
-    )
-    chat_session_id: str = Field(
-        min_length=1,
-        max_length=64,
-        description="상태가 바뀐 채팅 세션 id.",
-    )
-    status: ChatSessionStatusValue = Field(description="변경된 뒤의 세션 상태.")
-
-
 @dataclass(frozen=True, slots=True)
 class RetrievedChatbotGuideChunkDTO:
     """챗봇 고객 대응 가이드 검색 결과 청크."""
@@ -306,7 +291,6 @@ __all__ = [
     "ChatButtonActionRequest",
     "ChatMessageResponse",
     "ChatSessionDetailResponse",
-    "ChatSessionStatusChangedEventPayload",
     "ChatSessionStatusValue",
     "ChatTurnResponse",
     "ChatVerifyRequest",
@@ -321,5 +305,6 @@ __all__ = [
     "GuideSearchQueryExtractionResult",
     "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",
+    "TransactionChatSessionDetailResponse",
     "TransactionChatSessionStatusResponse",
 ]

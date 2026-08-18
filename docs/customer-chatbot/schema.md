@@ -22,8 +22,9 @@
   `chat_guide_search_queries`로 교체했다. 기존 고객행동 행은 백필하지 않는다.
 - Alembic revision `a6b8c9d0e1f2`가 고객 답변 판정을 `SUFFICIENT`, `TOO_VAGUE`,
   `WANT_END` 3종으로 단순화했다.
-- 리포지토리·DTO·LLM 추출과 RAG·LangGraph 파이프라인·세션 API·Agent 통합 이메일 및
-  최초 상태 SSE까지 위 스키마를 사용하는 애플리케이션 흐름을 구현했다.
+- 리포지토리·DTO·LLM 추출과 RAG·LangGraph 파이프라인·세션 API·Agent 통합 이메일까지
+  위 스키마를 사용하는 애플리케이션 흐름을 구현했다. 담당자 화면의 상태 확인은 서버 push가
+  아니라 거래별 상태 조회 폴링이다(PRD 2.7).
 
 실제 고객 이메일을 거래 수집 시점에 확보하는 경로는 아직 없다. 현재는
 [3.9의 기본 주소 폴백](#39-customersemail-확보-경로)으로 데모 동작만 보장하며,

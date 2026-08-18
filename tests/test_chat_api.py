@@ -7,8 +7,6 @@ LLM 은 부르지 않는다 — CI 가 ``OPENAI_API_KEY=test-only-key`` 로 돌�
 있으면 깨진다. 평가 LLM 이 필요한 경로는 파이프라인이 지연 생성하는 자리를 대역으로 바꾼다.
 """
 
-import asyncio
-import json
 import os
 import unittest
 from datetime import UTC, date, datetime
@@ -21,7 +19,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
-from app.api.chat import stream_chat_session_events
 from app.core.db import get_session
 from app.data.model.chatbot import (
     ChatAnswer,
@@ -51,10 +48,6 @@ from app.services.chatbot.messages import (
     WANT_END_MESSAGE,
 )
 from app.services.chatbot.questions import GREETING
-from app.services.chatbot.session_event_broker import (
-    CHAT_SESSION_STATUS_CHANGED_EVENT,
-    chat_session_event_broker,
-)
 from main import app
 
 
@@ -109,11 +102,8 @@ class ChatApiTest(unittest.TestCase):
 
         app.dependency_overrides[get_session] = override_session
         self.client = TestClient(app)
-        # 라우터는 프로세스 전역 브로커를 쓴다. 발행 여부는 여기에 구독해 확인한다.
-        self.events = chat_session_event_broker.subscribe()
 
     def tearDown(self) -> None:
-        chat_session_event_broker.unsubscribe(self.events)
         app.dependency_overrides.clear()
         self.session.close()
         self.engine.dispose()
@@ -209,12 +199,6 @@ class ChatApiTest(unittest.TestCase):
             ).all()
         )
 
-    def _published_statuses(self) -> list[str]:
-        statuses = []
-        while not self.events.empty():
-            statuses.append(self.events.get_nowait().payload.status)
-        return statuses
-
     # -- 2.2 본인인증과 첫 진입 ---------------------------------------
 
     def test_verify_returns_initial_notification_on_first_entry(self) -> None:
@@ -230,8 +214,6 @@ class ChatApiTest(unittest.TestCase):
         self.assertEqual(len(data["messages"]), 1)
         self.assertEqual(data["messages"][0]["sender_type"], "AI")
         self.assertIn("2026-08-16 14:03 1,234,000원 출금", data["messages"][0]["message_text"])
-        # 최초 알림은 상태를 바꾸지 않으므로 발행할 이벤트도 없다(PRD 2.3).
-        self.assertEqual(self._published_statuses(), [])
 
     def test_verify_does_not_repeat_notification_on_reentry(self) -> None:
         chat_session = self._seed_session()
@@ -292,12 +274,8 @@ class ChatApiTest(unittest.TestCase):
         self.assertEqual(data["question_step"], 1)
         self.assertEqual(len(data["messages"]), 1)
         self.assertIn(GREETING, data["messages"][0])
-        self.assertEqual(
-            self._published_statuses(),
-            [ChatSessionStatus.IN_PROGRESS.value],
-        )
 
-    def test_handoff_button_transitions_and_publishes_status(self) -> None:
+    def test_handoff_button_transitions_to_handoff_requested(self) -> None:
         chat_session = self._seed_session()
 
         response = self._action(chat_session.chat_session_id, "REQUEST_HANDOFF")
@@ -305,10 +283,6 @@ class ChatApiTest(unittest.TestCase):
         data = response.json()["data"]
         self.assertEqual(data["status"], ChatSessionStatus.HANDOFF_REQUESTED.value)
         self.assertEqual(data["messages"], [HANDOFF_WAITING_MESSAGE])
-        self.assertEqual(
-            self._published_statuses(),
-            [ChatSessionStatus.HANDOFF_REQUESTED.value],
-        )
 
     def test_end_button_completes_session(self) -> None:
         chat_session = self._seed_session()
@@ -384,7 +358,6 @@ class ChatApiTest(unittest.TestCase):
         # 고객 답변과 재질문 안내가 모두 이력에 남는다.
         senders = [message.sender_type for message in self._messages(chat_session.chat_session_id)]
         self.assertEqual(senders, ["HUMAN", "AI"])
-        self.assertEqual(self._published_statuses(), [])
 
     def test_want_end_answer_scores_and_completes_session(self) -> None:
         chat_session = self._seed_session(
@@ -399,10 +372,6 @@ class ChatApiTest(unittest.TestCase):
         data = response.json()["data"]
         self.assertEqual(data["status"], ChatSessionStatus.DONE.value)
         self.assertEqual(data["messages"], [WANT_END_MESSAGE])
-        self.assertEqual(
-            self._published_statuses(),
-            [ChatSessionStatus.DONE.value],
-        )
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
         self.assertEqual(len(scores), 1)
 
@@ -412,7 +381,7 @@ class ChatApiTest(unittest.TestCase):
         chat_session = self._seed_session(status=ChatSessionStatus.IN_PROGRESS)
 
         response = self.client.get(
-            f"/agent/transactions/{chat_session.transaction_id}/chat-session"
+            f"/transactions/{chat_session.transaction_id}/chat-session"
         )
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -426,7 +395,7 @@ class ChatApiTest(unittest.TestCase):
         )
 
     def test_transaction_without_session_returns_empty_values(self) -> None:
-        response = self.client.get("/agent/transactions/999/chat-session")
+        response = self.client.get("/transactions/999/chat-session")
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(
@@ -463,7 +432,7 @@ class ChatApiTest(unittest.TestCase):
 
     def _detail(self, transaction_id: int):
         return self.client.get(
-            f"/agent/transactions/{transaction_id}/chat-session/detail"
+            f"/transactions/{transaction_id}/chat-session/detail"
         )
 
     def test_detail_returns_transcript_and_scores(self) -> None:
@@ -574,46 +543,6 @@ class ChatApiTest(unittest.TestCase):
                 "completed_at": None,
                 "messages": [],
                 "type_scores": [],
-            },
-        )
-
-    def test_event_stream_opens_with_retry_and_streams_status_change(self) -> None:
-        """SSE 는 TestClient 로 열지 않는다.
-
-        끝나지 않는 스트림이라 ``client.stream(...)`` 은 연결을 닫을 때 매달린다.
-        라우터가 만든 응답 본문 이터레이터를 직접 읽어 프레임만 확인한다.
-        """
-
-        chat_session = self._seed_session()
-        response = stream_chat_session_events()
-
-        self.assertEqual(response.media_type, "text/event-stream")
-        self.assertEqual(response.headers["cache-control"], "no-cache")
-        self.assertEqual(response.headers["x-accel-buffering"], "no")
-
-        async def read_frames() -> tuple[str, str]:
-            iterator = response.body_iterator
-            # 첫 조각을 받았다는 것은 구독이 끝났다는 뜻이다.
-            # 그 뒤에 발행해야 이 연결로 흐른다.
-            opening = await anext(iterator)
-            chat_session_event_broker.publish_status_changed(chat_session)
-            frame = await anext(iterator)
-            await iterator.aclose()
-            return opening, frame
-
-        opening, frame = asyncio.run(read_frames())
-
-        self.assertEqual(opening, "retry: 3000\n\n")
-        # 프레임은 빈 줄로 끝나야 브라우저가 이벤트 하나로 끊어 읽는다.
-        self.assertTrue(frame.endswith("\n\n"))
-        event_line, data_line = frame.rstrip("\n").splitlines()
-        self.assertEqual(event_line, f"event: {CHAT_SESSION_STATUS_CHANGED_EVENT}")
-        self.assertEqual(
-            json.loads(data_line.removeprefix("data: ")),
-            {
-                "transaction_id": chat_session.transaction_id,
-                "chat_session_id": chat_session.chat_session_id,
-                "status": ChatSessionStatus.URL_SENT.value,
             },
         )
 
