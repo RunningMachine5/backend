@@ -1,21 +1,21 @@
-"""initial_schema
+"""init schema
 
-Revision ID: 9aad4c166342
+Revision ID: 6040d304df8d
 Revises: 
-Create Date: 2026-08-17 20:25:11.733073
+Create Date: 2026-08-18 17:09:47.776633
 
 """
 from typing import Sequence, Union
 
 from alembic import op
-import app.data.model.types
-import pgvector.sqlalchemy.vector
 import sqlalchemy as sa
 import sqlmodel
+import pgvector.sqlalchemy    # 임베딩 컬럼 렌더링에 필요
+import app.data.model.types   # 프로젝트 커스텀 타입 렌더링에 필요
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '9aad4c166342'
+revision: str = '6040d304df8d'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -23,6 +23,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # 임베딩 컬럼(pgvector)과 BM25 검색(pg_search)이 확장에 의존한다.
     op.execute("CREATE SCHEMA IF NOT EXISTS public")
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_search")
@@ -170,6 +171,7 @@ def upgrade() -> None:
     sa.Column('cloud_run_execution_name', sqlmodel.sql.sqltypes.AutoString(length=512), nullable=True),
     sa.Column('mlflow_run_id', sqlmodel.sql.sqltypes.AutoString(length=255), nullable=True),
     sa.Column('status', sqlmodel.sql.sqltypes.AutoString(length=32), nullable=False),
+    sa.Column('error_message', sqlmodel.sql.sqltypes.AutoString(length=2000), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['dataset_version_id'], ['dataset_versions.id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id')
@@ -272,12 +274,14 @@ def upgrade() -> None:
     op.create_index('ix_chat_sessions_status', 'chat_sessions', ['status'], unique=False)
     op.create_table('derived_features',
     sa.Column('id', sa.BigInteger().with_variant(sa.Integer(), 'sqlite'), nullable=False),
+    sa.Column('remaining_amount_daily_limit', sa.BigInteger(), nullable=False),
     sa.Column('distance', sa.Float(), nullable=False),
     sa.Column('time_difference', sa.Interval().with_variant(app.data.model.types.SQLiteIntervalSeconds(), 'sqlite'), nullable=False),
     sa.Column('one_month_max_amount', sa.BigInteger(), nullable=False),
     sa.Column('one_month_std_dev', sa.Float(), nullable=False),
     sa.Column('dawn_one_month_max_amount', sa.BigInteger(), nullable=False),
     sa.Column('dawn_one_month_std_dev', sa.Float(), nullable=False),
+    sa.Column('another_person_account', sa.Boolean(), nullable=False),
     sa.Column('unused_terminal_status', sa.Boolean(), nullable=False),
     sa.Column('unused_account_status', sa.Boolean(), nullable=False),
     sa.Column('transaction_history_with_the_account', sa.Integer(), nullable=False),
@@ -289,9 +293,10 @@ def upgrade() -> None:
     sa.Column('flag_change_of_authentication_2', sa.Boolean(), nullable=False),
     sa.Column('flag_change_of_authentication_3', sa.Boolean(), nullable=False),
     sa.Column('flag_change_of_authentication_4', sa.Boolean(), nullable=False),
-    sa.Column('inquiry_atm_limit', sa.Boolean(), nullable=False),
+    sa.Column('inquery_atm_limit', sa.Boolean(), nullable=False),
     sa.Column('increase_atm_limit', sa.Boolean(), nullable=False),
-    sa.Column('release_suspension', sa.Boolean(), nullable=False),
+    sa.Column('indicator_release_limit_excess', sa.Boolean(), nullable=True),
+    sa.Column('recipient_release_suspension', sa.Boolean(), nullable=False),
     sa.Column('recipient_transaction_resumed_date', sa.DateTime(timezone=True), nullable=True),
     sa.Column('recipient_account_suspend_status', sa.Boolean(), nullable=False),
     sa.Column('computed_at', sa.DateTime(timezone=True), nullable=False),
@@ -452,6 +457,8 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('guide_search_query_id'),
     sa.UniqueConstraint('source_answer_id', 'position', name='uq_chat_guide_search_queries_answer_position')
     )
+    # chat_sessions <-> chat_messages 는 서로 참조하므로(use_alter) 두 테이블을
+    # 모두 만든 뒤 ALTER TABLE 로 FK 를 추가한다.
     op.create_foreign_key(
         'fk_chat_sessions_last_message_id',
         'chat_sessions',

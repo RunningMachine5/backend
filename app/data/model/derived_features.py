@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Float
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, Float
 from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, INTERVAL_COLUMN
@@ -106,7 +106,7 @@ class DerivedFeatures(SQLModel, table=True):
     inquery_atm_limit: bool
     increase_atm_limit: bool
     indicator_release_limit_excess: bool = Field(
-        sa_column=Column(nullable=True, default=False),
+        sa_column=Column(Boolean(), nullable=True, default=False),
     )
 
     # EVENT 30일
