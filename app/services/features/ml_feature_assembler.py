@@ -11,7 +11,7 @@ def build_customer_fields(features: MLTransactionFeatures) -> dict[str, object]:
     """raw51의 고객 값을 customers 컬럼으로 옮긴다."""
 
     return {
-        "birth_date": features.customer_birth_date.date(),
+        "birth_date": features.customer_birth_date,
         "gender": features.customer_gender,
         "registration_datetime": features.customer_registration_datetime,
         "credit_rating": features.customer_credit_rating,
@@ -27,13 +27,7 @@ def build_account_fields(features: MLTransactionFeatures) -> dict[str, object]:
         "creation_datetime": features.account_creation_datetime,
         "amount_daily_limit": features.account_amount_daily_limit,
         "indicator_openbanking": features.account_indicator_openbanking,
-        "indicator_release_limit_excess": (
-            features.account_indicator_release_limit_excess
-        ),
         "current_balance": features.account_balance,
-        "remaining_daily_limit": (
-            features.account_remaining_amount_daily_limit_exceeded
-        ),
     }
 
 
@@ -52,12 +46,8 @@ def build_transaction_fields(
         ),
         "error_code": None,
         "num_connection_failure": features.transaction_num_connection_failure,
-        "another_person_account": features.another_person_account,
         "initial_balance": features.account_initial_balance,
         "balance": features.account_balance,
-        "remaining_amount_daily_limit_exceeded": (
-            features.account_remaining_amount_daily_limit_exceeded
-        ),
         "operating_system": features.operating_system,
         "ip_address": None,
         "mac_address": None,
@@ -92,12 +82,16 @@ def build_derived_features_fields(
     """담당자 Feature 서비스가 계산한 값을 derived_features에 저장한다."""
 
     return {
+        "remaining_amount_daily_limit": (
+            features.account_remaining_amount_daily_limit_exceeded
+        ),
         "distance": features.distance,
         "time_difference": features.time_difference,
         "one_month_max_amount": features.account_one_month_max_amount,
         "one_month_std_dev": features.account_one_month_std_dev,
         "dawn_one_month_max_amount": features.account_dawn_one_month_max_amount,
         "dawn_one_month_std_dev": features.account_dawn_one_month_std_dev,
+        "another_person_account": features.another_person_account,
         "unused_terminal_status": features.unused_terminal_status,
         "unused_account_status": features.unused_account_status,
         "transaction_history_with_the_account": (
@@ -125,9 +119,12 @@ def build_derived_features_fields(
         "flag_change_of_authentication_4": (
             features.customer_flag_change_of_authentication_4
         ),
-        "inquiry_atm_limit": features.customer_inquery_atm_limit,
+        "inquery_atm_limit": features.customer_inquery_atm_limit,
         "increase_atm_limit": features.customer_increase_atm_limit,
-        "release_suspension": features.recipient_release_suspension,
+        "indicator_release_limit_excess": (
+            features.account_indicator_release_limit_excess
+        ),
+        "recipient_release_suspension": features.recipient_release_suspension,
         "recipient_transaction_resumed_date": (
             features.recipient_transaction_resumed_date
         ),
@@ -183,21 +180,21 @@ def assemble_ml_features(
         customer_flag_terminal_malicious_behavior_6=(
             transaction.flag_terminal_malicious_behavior_6
         ),
-        customer_inquery_atm_limit=derived.inquiry_atm_limit,
+        customer_inquery_atm_limit=derived.inquery_atm_limit,
         customer_increase_atm_limit=derived.increase_atm_limit,
         account_account_type=source_account.account_type,
         account_creation_datetime=source_account.creation_datetime,
         account_initial_balance=transaction.initial_balance,
         account_balance=transaction.balance,
         account_indicator_release_limit_excess=(
-            source_account.indicator_release_limit_excess
+            derived.indicator_release_limit_excess
         ),
         account_amount_daily_limit=source_account.amount_daily_limit,
         account_indicator_openbanking=source_account.indicator_openbanking,
         account_remaining_amount_daily_limit_exceeded=(
-            transaction.remaining_amount_daily_limit_exceeded
+            derived.remaining_amount_daily_limit
         ),
-        recipient_release_suspension=derived.release_suspension,
+        recipient_release_suspension=derived.recipient_release_suspension,
         account_one_month_max_amount=derived.one_month_max_amount,
         account_one_month_std_dev=derived.one_month_std_dev,
         account_dawn_one_month_max_amount=derived.dawn_one_month_max_amount,
@@ -209,7 +206,7 @@ def assemble_ml_features(
         type_general_automatic=transaction.type_general_automatic,
         access_medium=transaction.access_medium,
         transaction_num_connection_failure=transaction.num_connection_failure,
-        another_person_account=transaction.another_person_account,
+        another_person_account=derived.another_person_account,
         distance=derived.distance,
         time_difference=derived.time_difference,
         unused_terminal_status=derived.unused_terminal_status,

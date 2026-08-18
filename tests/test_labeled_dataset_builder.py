@@ -70,7 +70,7 @@ def _training_row(
 @dataclass(frozen=True)
 class StoredTransactionFixture:
     transaction_id: int
-    customer_id: str
+    customer_id: int
     identification_number: str
     source_account_number: str
     recipient_account_number: str
@@ -84,7 +84,7 @@ class StoredTransactionFixture:
 def _transaction_payload(
     transaction_id: str,
     *,
-    customer_id: str,
+    customer_id: int,
     source_account_number: str,
     recipient_account_number: str,
     confirmed_is_fraud: bool,
@@ -165,13 +165,13 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             **build_customer_fields(features),
         )
         source = Account(
-            id=f"SOURCE-{payload.transaction_id}",
+            id=payload.transaction_id * 2 - 1,
             customer_id=customer.id,
             account_number=payload.source_account_number,
             **build_account_fields(features),
         )
         recipient = Account(
-            id=f"RECIPIENT-{payload.transaction_id}",
+            id=payload.transaction_id * 2,
             account_number=payload.recipient_account_number,
         )
         self.session.add(customer)
@@ -211,14 +211,14 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         long_recipient = "RECIPIENT-" + "1" * 80
         first = _transaction_payload(
             "TX-DATASET-1",
-            customer_id="C-DATASET-1",
+            customer_id=1,
             source_account_number=long_source,
             recipient_account_number=long_recipient,
             confirmed_is_fraud=True,
         )
         second = _transaction_payload(
             "TX-DATASET-2",
-            customer_id="C-DATASET-2",
+            customer_id=2,
             source_account_number="source-account-2",
             recipient_account_number="recipient-account-2",
             confirmed_is_fraud=False,
@@ -263,7 +263,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
         self.assertEqual(len(first_row), 64)
         self.assertEqual(first_row["transaction_id"], "1")
-        self.assertEqual(first_row["customer_id"], "C-DATASET-1")
+        self.assertEqual(first_row["customer_id"], "1")
         self.assertEqual(first_row["customer_name"], "테스트고객-1")
         self.assertEqual(
             first_row["customer_identification_number"],
@@ -286,7 +286,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
     def test_preserves_source_row_and_appends_db_row_when_ids_match(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
-            customer_id="C-DATASET-1",
+            customer_id=1,
             source_account_number="stored-source-account",
             recipient_account_number="stored-recipient-account",
             confirmed_is_fraud=True,
@@ -328,7 +328,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
     def test_zero_initial_balance_emits_empty_metadata_ratio(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
-            customer_id="C-DATASET-1",
+            customer_id=1,
             source_account_number="source-account-1",
             recipient_account_number="recipient-account-1",
             confirmed_is_fraud=True,
@@ -357,7 +357,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
     def test_reports_feature_contract_validation_as_dataset_build_error(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
-            customer_id="C-DATASET-1",
+            customer_id=1,
             source_account_number="source-account-1",
             recipient_account_number="recipient-account-1",
             confirmed_is_fraud=True,
@@ -390,7 +390,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
     def test_requires_exact_ordered_train1_raw64_source_contract(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
-            customer_id="C-DATASET-1",
+            customer_id=1,
             source_account_number="source-account-1",
             recipient_account_number="recipient-account-1",
             confirmed_is_fraud=True,
