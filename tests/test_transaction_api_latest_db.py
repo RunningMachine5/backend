@@ -94,14 +94,14 @@ def valid_transaction_request(**overrides: object) -> dict[str, object]:
         "mac_address": "00:1A:2B:3C:4D:5E",
         "location_lat": 37.5665,
         "location_lon": 126.978,
-        "customer_rooting_jailbreak_indicator": False,
-        "customer_mobile_roaming_indicator": False,
-        "customer_vpn_indicator": False,
-        "customer_flag_terminal_malicious_behavior_1": False,
-        "customer_flag_terminal_malicious_behavior_2": False,
-        "customer_flag_terminal_malicious_behavior_3": False,
-        "customer_flag_terminal_malicious_behavior_5": False,
-        "customer_flag_terminal_malicious_behavior_6": False,
+        "rooting_jailbreak_indicator": False,
+        "mobile_roaming_indicator": False,
+        "vpn_indicator": False,
+        "flag_terminal_malicious_behavior_1": False,
+        "flag_terminal_malicious_behavior_2": False,
+        "flag_terminal_malicious_behavior_3": False,
+        "flag_terminal_malicious_behavior_5": False,
+        "flag_terminal_malicious_behavior_6": False,
     }
     payload.update(overrides)
     return payload

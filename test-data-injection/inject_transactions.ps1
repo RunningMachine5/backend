@@ -243,35 +243,35 @@ $results = @(foreach ($row in $selectedRows) {
         mac_address = Convert-ToNullableString -Value $row.mac_address
         location_lat = $latitude
         location_lon = $longitude
-        customer_rooting_jailbreak_indicator = Convert-ToCsvBoolean `
+        rooting_jailbreak_indicator = Convert-ToCsvBoolean `
             -Value $row.customer_rooting_jailbreak_indicator `
             -FieldName "customer_rooting_jailbreak_indicator" `
             -SourceRowId $sourceRowId
-        customer_mobile_roaming_indicator = Convert-ToCsvBoolean `
+        mobile_roaming_indicator = Convert-ToCsvBoolean `
             -Value $row.customer_mobile_roaming_indicator `
             -FieldName "customer_mobile_roaming_indicator" `
             -SourceRowId $sourceRowId
-        customer_vpn_indicator = Convert-ToCsvBoolean `
+        vpn_indicator = Convert-ToCsvBoolean `
             -Value $row.customer_vpn_indicator `
             -FieldName "customer_vpn_indicator" `
             -SourceRowId $sourceRowId
-        customer_flag_terminal_malicious_behavior_1 = Convert-ToCsvBoolean `
+        flag_terminal_malicious_behavior_1 = Convert-ToCsvBoolean `
             -Value $row.customer_flag_terminal_malicious_behavior_1 `
             -FieldName "customer_flag_terminal_malicious_behavior_1" `
             -SourceRowId $sourceRowId
-        customer_flag_terminal_malicious_behavior_2 = Convert-ToCsvBoolean `
+        flag_terminal_malicious_behavior_2 = Convert-ToCsvBoolean `
             -Value $row.customer_flag_terminal_malicious_behavior_2 `
             -FieldName "customer_flag_terminal_malicious_behavior_2" `
             -SourceRowId $sourceRowId
-        customer_flag_terminal_malicious_behavior_3 = Convert-ToCsvBoolean `
+        flag_terminal_malicious_behavior_3 = Convert-ToCsvBoolean `
             -Value $row.customer_flag_terminal_malicious_behavior_3 `
             -FieldName "customer_flag_terminal_malicious_behavior_3" `
             -SourceRowId $sourceRowId
-        customer_flag_terminal_malicious_behavior_5 = Convert-ToCsvBoolean `
+        flag_terminal_malicious_behavior_5 = Convert-ToCsvBoolean `
             -Value $row.customer_flag_terminal_malicious_behavior_5 `
             -FieldName "customer_flag_terminal_malicious_behavior_5" `
             -SourceRowId $sourceRowId
-        customer_flag_terminal_malicious_behavior_6 = Convert-ToCsvBoolean `
+        flag_terminal_malicious_behavior_6 = Convert-ToCsvBoolean `
             -Value $row.customer_flag_terminal_malicious_behavior_6 `
             -FieldName "customer_flag_terminal_malicious_behavior_6" `
             -SourceRowId $sourceRowId

@@ -96,23 +96,23 @@ class TransactionRepository:
             mac_address=payload.mac_address,
             location_lat=payload.location_lat,
             location_lon=payload.location_lon,
-            rooting_jailbreak_indicator=(payload.customer_rooting_jailbreak_indicator),
-            mobile_roaming_indicator=payload.customer_mobile_roaming_indicator,
-            vpn_indicator=payload.customer_vpn_indicator,
+            rooting_jailbreak_indicator=payload.rooting_jailbreak_indicator,
+            mobile_roaming_indicator=payload.mobile_roaming_indicator,
+            vpn_indicator=payload.vpn_indicator,
             flag_terminal_malicious_behavior_1=(
-                payload.customer_flag_terminal_malicious_behavior_1
+                payload.flag_terminal_malicious_behavior_1
             ),
             flag_terminal_malicious_behavior_2=(
-                payload.customer_flag_terminal_malicious_behavior_2
+                payload.flag_terminal_malicious_behavior_2
             ),
             flag_terminal_malicious_behavior_3=(
-                payload.customer_flag_terminal_malicious_behavior_3
+                payload.flag_terminal_malicious_behavior_3
             ),
             flag_terminal_malicious_behavior_5=(
-                payload.customer_flag_terminal_malicious_behavior_5
+                payload.flag_terminal_malicious_behavior_5
             ),
             flag_terminal_malicious_behavior_6=(
-                payload.customer_flag_terminal_malicious_behavior_6
+                payload.flag_terminal_malicious_behavior_6
             ),
         )
         self.session.add(transaction)
