@@ -116,6 +116,22 @@ class MLServingClientAuthTest(unittest.TestCase):
 
         post.assert_called_once()
 
+    def test_injected_http_client_reuses_connection_and_closes(self) -> None:
+        http_client = Mock()
+        http_client.post.side_effect = [self._response(6), self._response(7)]
+        client = MLServingClient(
+            base_url="https://ml-serving.example.run.app",
+            auth_mode="none",
+            http_client=http_client,
+        )
+
+        client.predict(transaction_id=6, features={"amount": 1000})
+        client.predict(transaction_id=7, features={"amount": 2000})
+        client.close()
+
+        self.assertEqual(http_client.post.call_count, 2)
+        http_client.close.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
