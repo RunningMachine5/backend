@@ -499,7 +499,7 @@ RULE_FEATURES = (
             ),
             (
                 "vulnerable_mobile",
-                "고령자 모바일·취약 iOS 환경",
+                "60세 이상 모바일 환경",
                 [
                     "customer_birth_date",
                     "transaction_datetime",
