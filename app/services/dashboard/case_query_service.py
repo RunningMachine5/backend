@@ -104,7 +104,7 @@ class CaseQueryService:
         row: CaseListRow
     ) -> CaseListItemResponse:
         if row.review is not None:
-            review_status = "COMPLITED"
+            review_status = "COMPLETED"
         elif row.agent_case is None:
             review_status = "NOT_AVAILABLE"
         elif row.agent_case.execution_status == "PROCESSING":
