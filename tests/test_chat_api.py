@@ -48,7 +48,7 @@ from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
     HANDOFF_WAITING_MESSAGE,
     TOO_VAGUE_MESSAGE,
-    WANT_END_HANDOFF_MESSAGE,
+    WANT_END_MESSAGE,
 )
 from app.services.chatbot.questions import GREETING
 from app.services.chatbot.session_event_broker import (
@@ -386,7 +386,7 @@ class ChatApiTest(unittest.TestCase):
         self.assertEqual(senders, ["HUMAN", "AI"])
         self.assertEqual(self._published_statuses(), [])
 
-    def test_want_end_answer_scores_and_hands_off(self) -> None:
+    def test_want_end_answer_scores_and_completes_session(self) -> None:
         chat_session = self._seed_session(
             status=ChatSessionStatus.IN_PROGRESS,
             question_step=1,
@@ -397,11 +397,11 @@ class ChatApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()["data"]
-        self.assertEqual(data["status"], ChatSessionStatus.HANDOFF_REQUESTED.value)
-        self.assertEqual(data["messages"], [WANT_END_HANDOFF_MESSAGE])
+        self.assertEqual(data["status"], ChatSessionStatus.DONE.value)
+        self.assertEqual(data["messages"], [WANT_END_MESSAGE])
         self.assertEqual(
             self._published_statuses(),
-            [ChatSessionStatus.HANDOFF_REQUESTED.value],
+            [ChatSessionStatus.DONE.value],
         )
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
         self.assertEqual(len(scores), 1)

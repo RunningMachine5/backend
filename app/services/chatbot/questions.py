@@ -19,8 +19,7 @@ from app.domain.fraud_type_codes import (
 
 # question_step 1의 시작 멘트. 유형판별 질문 앞에 붙는다.
 GREETING = (
-    "안녕하세요 FDShield의 챗봇 이지스입니다\n"
-    "고객님의 상황을 판단하기 위해 먼저 몇 가지 간단한 질문을 드릴게요!"
+    "고객님의 상황을 판단하기 위해 먼저 하나만 질문을 드릴게요!"
 )
 
 # question_step 2 이상에서 상한 없이 반복하는 추가 질문 멘트.

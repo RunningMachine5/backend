@@ -51,7 +51,7 @@ from app.services.chatbot.messages import (
     HANDOFF_WAITING_MESSAGE,
     NEXT_QUESTION_MESSAGE,
     TOO_VAGUE_MESSAGE,
-    WANT_END_HANDOFF_MESSAGE,
+    WANT_END_MESSAGE,
 )
 from app.services.chatbot.questions import (
     FOLLOW_UP_QUESTION,
@@ -464,7 +464,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     # -- 2.6 종료와 채점 집계 ------------------------------------------
 
-    def test_want_end_scores_once_and_requests_handoff(self) -> None:
+    def test_want_end_scores_once_and_completes_session(self) -> None:
         pipeline = self._start_chat(
             evaluator=FakeEvaluator(
                 AnswerQualityVerdict.SUFFICIENT,
@@ -485,8 +485,8 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
         result = pipeline.handle_message("종료할게요")
 
-        self.assertEqual(result.messages, (WANT_END_HANDOFF_MESSAGE,))
-        self.assertEqual(result.status, ChatSessionStatus.HANDOFF_REQUESTED)
+        self.assertEqual(result.messages, (WANT_END_MESSAGE,))
+        self.assertEqual(result.status, ChatSessionStatus.DONE)
         self.assertIsNotNone(self.chat_session.completed_at)
 
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
@@ -588,7 +588,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
         self.assertEqual(self._published_statuses(), [])
 
-    def test_want_end_publishes_handoff_requested(self) -> None:
+    def test_want_end_publishes_done(self) -> None:
         pipeline = self._start_chat(
             evaluator=FakeEvaluator(AnswerQualityVerdict.WANT_END)
         )
@@ -598,7 +598,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
         self.assertEqual(
             self._published_statuses(),
-            [ChatSessionStatus.HANDOFF_REQUESTED.value],
+            [ChatSessionStatus.DONE.value],
         )
 
     # -- 질문 진행 -----------------------------------------------------

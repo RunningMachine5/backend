@@ -213,10 +213,10 @@ FDS·Agent 결합.
      `is_adopted = true` 후 다음 질문)
   4. `SUFFICIENT` → 가이드 검색 질의 분해·저장·RAG와 사기 정황 추출·저장을 독립 실행한다.
      한 경로가 재시도 후 실패해도 성공한 경로는 반영하고 다음 질문으로 진행한다
-  5. `WANT_END` → 채점 집계(5단계) + `HANDOFF_REQUESTED` + `completed_at`
+  5. `WANT_END` → 채점 집계(5단계) + `DONE` + `completed_at`
      + 상태 변경 SSE 발행(7단계 훅). 문구는 B.6
-  6. `HANDOFF_REQUESTED` 진입 경로는 1번 버튼과 5번 둘뿐이다. 검색 0건·LLM 실패는
-     상태를 전이시키지 않는다 (PRD 2.5)
+  6. `HANDOFF_REQUESTED` 진입 경로는 1번의 "상담사 연결" 버튼뿐이다. `WANT_END`와
+     검색 0건·LLM 실패는 상담사 연결로 넘기지 않는다 (PRD 2.5, 2.7)
 - [x] 트랜잭션 소유: 턴 단위로 파이프라인이 `commit`/`rollback`. `question_step`은 턴 종료 시 갱신
 - [x] Fake 참조 제거 및 구 DTO 삭제 완료. 삭제한 것: `customer_chatbot_pipeline.py`,
   `fake_embedder.py`, `fake_guide_retriever.py`, `fake_transaction_repository.py`,
@@ -227,11 +227,12 @@ FDS·Agent 결합.
   남긴 것: `fake_llm.py`·`fake_vector_db.py` — Agent의 `monitoring_agent_pipeline.py`가 쓴다.
   `app/api/chat.py`는 빈 라우터만 남겨 7단계에서 재작성한다.
 - [x] 테스트 `tests/test_chatbot_pipeline.py`: LLM·RAG 서비스 모킹으로 그래프 분기 검증
-  (버튼 3종, 재시도 초과 채택, WANT_END 집계 1회 + `HANDOFF_REQUESTED` 전이,
+  (버튼 3종, 재시도 초과 채택, WANT_END 집계 1회 + `DONE` 전이,
   전체 0건이어도 상태 불변)
 - [x] `ChatSessionRepository.request_handoff` 신설 — 기존 `set_session_complete`가
   `DONE` 고정이라 `HANDOFF_REQUESTED` 전이 경로가 없었다. `completed_at`은 선택이며
-  버튼 경로는 남기지 않고 `WANT_END`만 기록한다
+  "상담사 연결" 버튼 경로는 상담을 시작하지 않았으므로 남기지 않는다.
+  `WANT_END`는 `set_session_complete`로 `DONE` + `completed_at`을 기록한다
 
 ## 7단계 — API + 세션 생성·이메일 발송 + 거래별 세션 상태 조회·변경 SSE
 
