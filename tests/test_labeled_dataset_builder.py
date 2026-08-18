@@ -325,6 +325,41 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertEqual(rows[1]["customer_name"], "테스트고객-1")
         self.assertEqual(rows[1]["account_account_number"], "stored-source-account")
 
+    def test_declined_transaction_keeps_ml_account_balance_in_dataset(self) -> None:
+        payload = _transaction_payload(
+            "TX-DATASET-1",
+            customer_id=1,
+            source_account_number="source-account-1",
+            recipient_account_number="recipient-account-1",
+            confirmed_is_fraud=True,
+        )
+        self._save(payload)
+
+        # 거절된 거래는 실제 계좌 잔액이 빠지지 않으므로 저장 잔액을 원복한다.
+        transaction = self.session.get(Transaction, payload.transaction_id)
+        assert transaction is not None
+        transaction.balance = transaction.initial_balance
+        self.session.add(transaction)
+        self.session.commit()
+
+        source_uri = "gs://bucket/generated/v1/train1.csv"
+        destination_uri = "gs://bucket/generated/v2/train1.csv"
+        storage = FakeObjectStorage({source_uri: _csv_bytes([])})
+
+        LabeledDatasetBuilder(storage, source_uri=source_uri).build(
+            self.session,
+            destination_uri=destination_uri,
+        )
+
+        row = next(
+            csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
+        )
+        expected_balance = (
+            payload.features.account_initial_balance
+            - payload.features.transaction_amount
+        )
+        self.assertEqual(int(row["account_balance"]), expected_balance)
+
     def test_zero_initial_balance_emits_empty_metadata_ratio(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",

@@ -185,7 +185,11 @@ def assemble_ml_features(
         account_account_type=source_account.account_type,
         account_creation_datetime=source_account.creation_datetime,
         account_initial_balance=transaction.initial_balance,
-        account_balance=transaction.balance,
+        # 거절 거래는 DB 잔액을 출금 전 값으로 되돌린다. ML이 처음 판단할 때
+        # 사용한 출금 시도 후 잔액은 담당자 계산식으로 다시 만든다.
+        account_balance=(
+            transaction.initial_balance - transaction.transaction_amount
+        ),
         account_indicator_release_limit_excess=(
             derived.indicator_release_limit_excess
         ),
