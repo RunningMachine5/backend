@@ -33,6 +33,10 @@ from app.services.agent.case_similarity import (
 from app.services.agent.type_confidence import TypeConfidenceResult
 
 
+# 모델 비교 시 조사 Agent의 추론 강도를 동일하게 맞춘다.
+INVESTIGATION_REASONING_EFFORT = "low"
+
+
 class SimilarCaseTools(Protocol):
     """조사 Agent가 선택하여 호출할 수 있는 읽기 전용 Tool 계약."""
 
@@ -83,6 +87,7 @@ class OpenAIInvestigationActionSelector:
         *,
         structured_llm: Any | None = None,
         model: str | None = None,
+        reasoning_effort: str = INVESTIGATION_REASONING_EFFORT,
     ) -> None:
         self.structured_llm = structured_llm or ChatOpenAI(
             model=model
@@ -93,6 +98,7 @@ class OpenAIInvestigationActionSelector:
             api_key=os.getenv("OPENAI_API_KEY"),
             timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
             max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
+            reasoning_effort=reasoning_effort,
         ).with_structured_output(
             InvestigationActionOutput,
             method="json_schema",
