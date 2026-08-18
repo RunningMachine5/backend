@@ -1,6 +1,6 @@
 ---
 document_id: FSS-FRAUD-USED-ACCOUNT-2026-05
-title: 개인 간 거래를 이용한 보이스피싱 자금세탁 소비자경보 요약
+title: 사기이용계좌 고의 가담 자동 확정 금지 소비자경보 요약
 source_type: OFFICIAL_GUIDE
 source_name: 금융감독원
 source_url: https://www.fss.or.kr/fss/bbs/B0000175/view.do?nttId=210797&menuNo=200204
@@ -23,7 +23,7 @@ action_codes:
   - REVIEW_ACCOUNT_FLOW
   - REVIEW_LINKED_ACCOUNTS
   - REQUEST_ACCOUNT_RISK_REVIEW
-version: "1.0"
+version: "1.1"
 published_at: 2026-02-09
 accessed_at: 2026-08-09
 ---
@@ -54,6 +54,12 @@ accessed_at: 2026-08-09
 
 이 자료는 개인 간 거래 당사자도 의도치 않게 사기이용계좌 흐름에 포함될 수 있음을 보여준다.
 따라서 계좌 유입·유출만으로 고의 가담을 확정하지 않고 거래 문맥과 담당자 검토를 함께 사용해야 한다.
+
+## 고의 가담을 자동 확정하면 안 되는 이유
+
+사기이용계좌 의심 사건에서 다수 입금, 빠른 출금, 제3자 입금 같은 거래 정황은 추가 검토의
+근거이지 계좌 명의자의 고의 가담을 자동 확정하는 근거는 아니다. 실제 거래 상대방, 물품·자금의
+이동 문맥, 과거 거래관계와 반대 근거를 담당자가 확인한 뒤 최종 판단해야 한다.
 
 ## 출처
 

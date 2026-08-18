@@ -1,6 +1,6 @@
 ---
 document_id: FSS-MESSENGER-PHISHING-2022-13
-title: 가족·지인 사칭 메신저피싱 소비자경보 요약
+title: 가족·지인 사칭 메신저피싱 피해 확인 자료 보존 소비자경보 요약
 source_type: OFFICIAL_GUIDE
 source_name: 금융감독원
 source_url: https://www.fss.or.kr/fss/bbs/B0000175/view.do?nttId=57029&menuNo=200204
@@ -23,7 +23,7 @@ action_codes:
   - VERIFY_MESSENGER_CONTEXT
   - GUIDE_SEPARATE_CONTACT_CHECK
   - GUIDE_MESSENGER_PHISHING_RESPONSE
-version: "1.0"
+version: "1.1"
 published_at: 2022-10-13
 accessed_at: 2026-08-09
 ---
@@ -48,6 +48,12 @@ accessed_at: 2026-08-09
 - 대화를 중단하고 사칭 대상자에게 별도 연락수단으로 사실 여부를 확인한다.
 - 이미 송금했다면 관련 금융회사와 수사기관에 신속히 피해 사실을 알린다.
 - 메시지, 송금 내역 등 사건 확인에 필요한 자료를 보존한다.
+
+## 피해 확인을 위해 보존할 자료
+
+메신저피싱 피해 여부를 확인하려면 사칭 메시지 화면, 상대방 계정 정보, 송금 요청 내용,
+거래 일시·금액·수취계좌가 포함된 이체 내역을 삭제하지 않고 보존한다. 고객은 자료를
+임의로 수정하거나 상대방 요청에 따라 대화·게시글을 삭제하지 않도록 안내받아야 한다.
 
 ## 문서 사용 시 주의사항
 
