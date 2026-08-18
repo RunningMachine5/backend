@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -392,6 +392,8 @@ class LabeledDatasetBuilder:
             )
         if field_name not in CSV_DATETIME_COLUMNS:
             return value
+        if field_name == "customer_birth_date" and isinstance(value, date):
+            return value.strftime("%Y-%m-%d 00:00:00")
         if not isinstance(value, datetime):
             raise DatasetBuildError(
                 f"확정 라벨 거래의 {field_name} 값이 datetime이 아닙니다."

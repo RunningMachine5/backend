@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.data.model.transaction import TransactionStatus
 
@@ -36,64 +36,21 @@ class TransactionRequestDTO(BaseModel):
     location_lat: float | None = Field(default=None, ge=-90, le=90)
     location_lon: float | None = Field(default=None, ge=-180, le=180)
 
-    rooting_jailbreak_indicator: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "rooting_jailbreak_indicator",
-            "customer_rooting_jailbreak_indicator",
-        ),
-    )
-    mobile_roaming_indicator: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "mobile_roaming_indicator",
-            "customer_mobile_roaming_indicator",
-        ),
-    )
-    vpn_indicator: bool = Field(
-        default=False,
-        validation_alias=AliasChoices("vpn_indicator", "customer_vpn_indicator"),
-    )
-    flag_terminal_malicious_behavior_1: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "flag_terminal_malicious_behavior_1",
-            "customer_flag_terminal_malicious_behavior_1",
-        ),
-    )
-    flag_terminal_malicious_behavior_2: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "flag_terminal_malicious_behavior_2",
-            "customer_flag_terminal_malicious_behavior_2",
-        ),
-    )
-    flag_terminal_malicious_behavior_3: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "flag_terminal_malicious_behavior_3",
-            "customer_flag_terminal_malicious_behavior_3",
-        ),
-    )
-    flag_terminal_malicious_behavior_5: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "flag_terminal_malicious_behavior_5",
-            "customer_flag_terminal_malicious_behavior_5",
-        ),
-    )
-    flag_terminal_malicious_behavior_6: bool = Field(
-        default=False,
-        validation_alias=AliasChoices(
-            "flag_terminal_malicious_behavior_6",
-            "customer_flag_terminal_malicious_behavior_6",
-        ),
-    )
+    rooting_jailbreak_indicator: bool = Field(default=False)
+    mobile_roaming_indicator: bool = Field(default=False)
+    vpn_indicator: bool = Field(default=False)
+    flag_terminal_malicious_behavior_1: bool = Field(default=False)
+    flag_terminal_malicious_behavior_2: bool = Field(default=False)
+    flag_terminal_malicious_behavior_3: bool = Field(default=False)
+    flag_terminal_malicious_behavior_5: bool = Field(default=False)
+    flag_terminal_malicious_behavior_6: bool = Field(default=False)
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
+
     transaction_id: int = Field(strict=True, gt=0)
-    prediction_status: Literal["COMPLETED", "FAILED", "DECLINED"]
+    # 추론 실행 상태이며 거래 승인 여부는 predict_result로 구분한다.
+    prediction_status: Literal["COMPLETED", "FAILED"]
     predict_result: bool | None = None
     predict_proba: float | None = Field(default=None, ge=0, le=1)
     rule_set_id: int | None = None

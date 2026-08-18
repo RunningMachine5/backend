@@ -63,7 +63,7 @@ def get_cases(
     transaction_id: int | None = Query(default=None, ge=1),
     period_start: datetime | None = Query(default=None),
     period_end: datetime | None = Query(default=None),
-    customer_id: str | None = Query(default=None),
+    customer_id: int | None = Query(default=None, ge=1),
     ip_address: str | None = Query(default=None),
     recipient_account_number: str | None = Query(default=None),
     min_amount: int | None = Query(default=None, ge=0),

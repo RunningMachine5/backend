@@ -1,8 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from sqlmodel import select
 
-from app.api.dependencies import DerivedFeatureServiceDep, DFraudDetectionPipelineDep
-from app.core.common_response import success_response, ApiResponse
+from app.api.dependencies import DFraudDetectionPipelineDep
 from app.core.db import SessionDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
@@ -16,8 +15,7 @@ from app.dto.transaction import (
     TransactionRequestDTO,
     TransactionResponseDTO,
 )
-from app.pipelines.fraud_detection_pipeline import (
-    FraudDetectionPipeline,
+from app.pipelines.d_fraud_detection_pipline import (
     FraudDetectionResult,
 )
 from app.repositories.transaction import (
@@ -27,7 +25,6 @@ from app.repositories.transaction import (
 from app.services.agent.task_runner import AgentTaskRunnerDep
 from app.services.analysis.risk_grader import RiskGrader
 from app.services.dashboard.dashboard_event_broker import dashboard_event_broker
-from app.services.ml_serving.client import MLServingClientDep
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -103,24 +100,16 @@ def _transaction_response(
 def create_transaction(
     payload: TransactionRequestDTO,
     background_tasks: BackgroundTasks,
-    session: SessionDep,
-    derived_features_service: DerivedFeatureServiceDep,
-    ml_client: MLServingClientDep,
+    fraud_detection_pipeline: DFraudDetectionPipelineDep,
     agent_task_runner: AgentTaskRunnerDep,
 ) -> TransactionResponseDTO:
     """HTTP 요청을 실제 사기 탐지 Pipeline에 전달한다."""
 
-    pipeline = FraudDetectionPipeline(
-        session=session,
-        derived_features_service=derived_features_service,
-        ml_client=ml_client,
-    )
-    received = pipeline.receive(payload)
+    result = fraud_detection_pipeline.run(payload)
     dashboard_event_broker.publish(
         event="dashboard_updated",
         data={"source": "transaction"},
     )
-    result = pipeline.analyze(received)
     agent_input = _build_agent_input(result)
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)
@@ -137,8 +126,7 @@ def create_transaction(
         result.transaction,
         result.prediction_result,
         result.score_result,
-        TransactionLabelRepository(session).get(result.transaction.id),
-        prediction_status=result.prediction_status,
+        None,
     )
 
 
@@ -239,14 +227,3 @@ def get_transaction(
         score_result,
         label,
     )
-
-
-@router.post("/doo", response_model=ApiResponse)
-async def transaction_validation(
-    transaction: TransactionRequestDTO,
-    fraud_detection_pipeline: DFraudDetectionPipelineDep,
-) -> ApiResponse:
-
-    response = await fraud_detection_pipeline.run(transaction)
-
-    return success_response(response)

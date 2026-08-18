@@ -4,11 +4,9 @@ from fastapi import FastAPI
 from sqlmodel import Session
 
 from app.api import agent_case, case_query, chat, dashboard_graph, fraud_rule, health, mlops, transaction, dashboard_insight
-from app.core.config import ML_SERVER_URL
 from app.core.db import engine
 from app.core.exception_handlers import register_exception_handlers
 from app.services.client_registry import ServiceClientRegistry
-from app.services.ml_serving.predict_client import MLServingClient
 from app.services.rules.bootstrap import initialize_default_rule_set
 
 @asynccontextmanager
@@ -17,12 +15,10 @@ async def lifespan(app: FastAPI):
     with Session(engine) as session:
         initialize_default_rule_set(session)
 
-    app.state.ml_serving_client = MLServingClient(base_url = ML_SERVER_URL)
     try:
         yield
     finally:
         app.state.service_clients.close()
-        await app.state.ml_serving_client.aclose()
 
 app = FastAPI(lifespan=lifespan)
 register_exception_handlers(app)
