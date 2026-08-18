@@ -31,6 +31,15 @@ class TransactionView(BaseModel):
     customer_id: str # 고객 ID
     source_account_id: str # 출금 계좌 ID
     recipient_account_id: str | None = None # 수취 계좌 ID
+    access_medium: str | None = None
+    operating_system: str | None = None
+    ip_address: str | None = None
+    mac_address: str | None = None
+    num_connection_failure: int = 0
+    rooting_jailbreak_indicator: bool = False
+    mobile_roaming_indicator: bool = False
+    vpn_indicator: bool = False
+    terminal_malicious_behavior_detected: bool = False
 
 # Fraud detection model 결과를 담는 DTO
 class MLView(BaseModel):
