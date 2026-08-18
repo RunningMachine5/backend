@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 
 from app.core import config
 
@@ -31,6 +31,7 @@ class MLflowRegistryClient:
         username: str = config.MLFLOW_TRACKING_USERNAME,
         password: str = config.MLFLOW_TRACKING_PASSWORD,
         timeout_seconds: float = config.MLFLOW_TRACKING_TIMEOUT_SECONDS,
+        http_client: httpx.Client | None = None,
     ) -> None:
         tracking_uri = tracking_uri.strip().rstrip("/")
         parsed = urlsplit(tracking_uri)
@@ -47,6 +48,7 @@ class MLflowRegistryClient:
         self.tracking_uri = tracking_uri
         self.timeout_seconds = timeout_seconds
         self._auth = (username, password) if username else None
+        self._http_client = http_client
 
     def _request(
         self,
@@ -59,7 +61,10 @@ class MLflowRegistryClient:
         """인증·timeout·응답 형식 검사를 한곳에서 처리한다."""
 
         try:
-            response = httpx.request(
+            request = (
+                self._http_client.request if self._http_client else httpx.request
+            )
+            response = request(
                 method,
                 f"{self.tracking_uri}{path}",
                 params=params,
@@ -76,6 +81,10 @@ class MLflowRegistryClient:
         if not isinstance(body, dict):
             raise MLflowRegistryError("MLflow 응답이 JSON 객체가 아닙니다.")
         return body
+
+    def close(self) -> None:
+        if self._http_client is not None:
+            self._http_client.close()
 
     def _model_versions(self, model_name: str) -> list[dict[str, Any]]:
         """페이지가 여러 개인 Registry 검색 결과를 빠짐없이 모은다."""
@@ -223,9 +232,9 @@ class MLflowRegistryClient:
             )
 
 
-def get_mlflow_registry_client() -> MLflowRegistryClient:
+def get_mlflow_registry_client(request: Request) -> MLflowRegistryClient:
     try:
-        return MLflowRegistryClient()
+        return request.app.state.service_clients.mlflow()
     except MLflowRegistryError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

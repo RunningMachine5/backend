@@ -20,7 +20,9 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Remove legacy fields and align renamed transaction feature columns."""
 
-    op.drop_column("transactions", "location")
+    # Parallel revision 114319f0f9d6 removes the same legacy column.
+    # Either branch may already have run before the heads are merged.
+    op.execute("ALTER TABLE transactions DROP COLUMN IF EXISTS location")
     op.alter_column(
         "derived_features",
         "flag_deposit_more_than_tenMillion",

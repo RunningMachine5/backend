@@ -144,6 +144,21 @@ class CloudRunAdminClientTest(unittest.TestCase):
             **kwargs,
         )
 
+    def test_injected_http_client_is_reused_and_closed(self) -> None:
+        http_client = Mock()
+        http_client.request.side_effect = [
+            api_response({"name": "training"}),
+            api_response({"name": "serving"}),
+        ]
+        client = self.make_client(http_client=http_client)
+
+        client.get_training_status()
+        client.get_serving_status()
+        client.close()
+
+        self.assertEqual(http_client.request.call_count, 2)
+        http_client.close.assert_called_once_with()
+
     @patch("app.services.mlops.cloud_run.httpx.request")
     def test_run_training_uses_job_override_without_changing_job(self, request: Mock) -> None:
         request.return_value = api_response(
@@ -502,6 +517,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
             "https://model-v17---serving.run.app",
             "https://serving.run.app",
         )
+        smoke_client.close.assert_called_once_with()
         patch_payload = request.call_args_list[2].kwargs["json"]
         self.assertEqual(
             patch_payload["traffic"],

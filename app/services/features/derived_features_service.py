@@ -1,11 +1,11 @@
 """ML로 보낼 피쳐들 다 조립하는 코드"""
-from datetime import UTC, datetime
-from math import asin, cos, radians, sin, sqrt
+from datetime import timedelta, datetime, UTC
+from math import radians, sin, cos, asin, sqrt
 
 from app.data.model import CustomerEventType
 from app.dto.ml_features import MLTransactionFeatures
-from app.dto.transaction import TransactionRequestDTO
-from app.repositories.feature_context import FeatureContext, FeatureContextRepository
+from app.dto.transaction import TransactionRequestDTO, TransactionCreateDTO
+from app.repositories.feature_context import FeatureContextRepository, FeatureContext
 
 
 def _calc_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -171,12 +171,7 @@ class DerivedFeatureService:
         )
 
         # time_difference 계산
-        time_difference = (
-            0
-            if last_transaction is None
-            else transaction.transaction_datetime
-            - last_transaction.transaction_datetime
-        )
+        time_difference = 0 if last_transaction is None else transaction.transaction_datetime - last_transaction.transaction_datetime
 
         # 거래 후 잔고 account_balance 계산
         account_balance = context.source_account.current_balance - transaction.transaction_amount
@@ -186,9 +181,7 @@ class DerivedFeatureService:
     def create_derived_features(self, transaction: TransactionRequestDTO) -> MLTransactionFeatures:
         # DB 조회
         context = self.feature_context_repository.get_feature_context(
-            transaction.source_account_number,
-            transaction.recipient_account_number,
-            transaction.customer_id,
+            transaction.source_account_number, transaction.recipient_account_number
         )
 
         # DB 조회만으로 채우기
@@ -253,6 +246,32 @@ class DerivedFeatureService:
             distance = calc_features["distance"],
             time_difference = calc_features["time_difference"],
             account_balance = calc_features["account_balance"],
+        ),
+        TransactionCreateDTO(
+            customer_id=context.customer.id if context.customer else transaction.customer_id,
+            source_account_number=transaction.source_account_number,
+            recipient_account_number=transaction.recipient_account_number,
+            transaction_datetime=transaction.transaction_datetime,
+            transaction_amount=transaction.transaction_amount,
+            channel=transaction.channel,
+            type_general_automatic=transaction.type_general_automatic,
+            access_medium=transaction.access_medium,
+            num_connection_failure=transaction.num_connection_failure,
+            initial_balance=filled_features["account_initial_balance"],  # 출금 전 잔액
+            balance=calc_features["account_balance"],  # 출금 후 잔액
+            operating_system=transaction.operating_system,
+            ip_address=transaction.ip_address,
+            mac_address=transaction.mac_address,
+            location_lat=transaction.location_lat,
+            location_lon=transaction.location_lon,
+            rooting_jailbreak_indicator=transaction.customer_rooting_jailbreak_indicator,
+            mobile_roaming_indicator=transaction.customer_mobile_roaming_indicator,
+            vpn_indicator=transaction.customer_vpn_indicator,
+            flag_terminal_malicious_behavior_1=transaction.customer_flag_terminal_malicious_behavior_1,
+            flag_terminal_malicious_behavior_2=transaction.customer_flag_terminal_malicious_behavior_2,
+            flag_terminal_malicious_behavior_3=transaction.customer_flag_terminal_malicious_behavior_3,
+            flag_terminal_malicious_behavior_5=transaction.customer_flag_terminal_malicious_behavior_5,
+            flag_terminal_malicious_behavior_6=transaction.customer_flag_terminal_malicious_behavior_6,
         )
 
         # 엔티티로 만들어 반환

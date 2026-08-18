@@ -200,6 +200,14 @@ class TransactionRepository:
         source_account.updated_at = datetime.now(UTC)
         self.session.add(source_account)
 
+    # doo
+    def save_transaction(self, transaction: Transaction) -> Transaction:
+        self.session.add(transaction)
+        self.session.commit()
+        self.session.refresh(transaction)
+        return transaction
+
+
 class TransactionLabelRepository:
     """담당자가 확정한 이진 라벨을 거래별 한 행으로 관리한다."""
 
@@ -344,7 +352,6 @@ class PredictionResultRepository:
             ).all()
         ]
         return rows[:limit], len(rows) > limit
-
 
 __all__ = [
     "PredictionResultRepository",
