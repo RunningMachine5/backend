@@ -166,6 +166,29 @@ class CaseQueryService:
                 customer_id=transaction.customer_id or "데이터 없음",
                 source_account_id=transaction.source_account_number,
                 recipient_account_id=transaction.recipient_account_number,
+                access_medium=transaction.access_medium,
+                operating_system=transaction.operating_system,
+                ip_address=(
+                    str(transaction.ip_address)
+                    if transaction.ip_address is not None
+                    else None
+                ),
+                mac_address=(
+                    str(transaction.mac_address)
+                    if transaction.mac_address is not None
+                    else None
+                ),
+                num_connection_failure=transaction.num_connection_failure,
+                rooting_jailbreak_indicator=transaction.rooting_jailbreak_indicator,
+                mobile_roaming_indicator=transaction.mobile_roaming_indicator,
+                vpn_indicator=transaction.vpn_indicator,
+                terminal_malicious_behavior_detected=any((
+                    transaction.flag_terminal_malicious_behavior_1,
+                    transaction.flag_terminal_malicious_behavior_2,
+                    transaction.flag_terminal_malicious_behavior_3,
+                    transaction.flag_terminal_malicious_behavior_5,
+                    transaction.flag_terminal_malicious_behavior_6,
+                )),
             )
         )
 

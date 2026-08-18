@@ -14,7 +14,7 @@ class ReviewActionInput(BaseModel):
 
 class ChecklistResultInput(BaseModel):
     item_code: str = Field(min_length=1, max_length=64)
-    cheked: bool
+    checked: bool
 
 class CaseReviewUpsertRequest(BaseModel):
     decision: ReviewDecision
@@ -65,6 +65,7 @@ class CaseReviewUpsertRequest(BaseModel):
 class CaseReviewResponse(BaseModel):
     case_id: str
     reviewer_id: str
+    decision: ReviewDecision
     confirmed_fraud_type: str | None = None
     performed_actions: list[ReviewActionInput] = Field(
         default_factory=list,
