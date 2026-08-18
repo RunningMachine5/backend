@@ -113,7 +113,8 @@ class DashboardInsightRepository:
     ) -> DashboardInsightSourceRecord:
         features = {
             "channel": transaction.channel,
-            "location": transaction.location,
+            "location_lat": transaction.location_lat,
+            "location_lon": transaction.location_lon,
             "vpn_indicator": transaction.vpn_indicator,
             "rooting_jailbreak_indicator": (
                 transaction.rooting_jailbreak_indicator
@@ -145,7 +146,7 @@ class DashboardInsightRepository:
                         derived.unused_account_status
                     ),
                     "large_deposit": (
-                        derived.flag_deposit_more_than_tenMillion
+                        derived.flag_deposit_more_than_ten_million
                     ),
                     "new_recipient": (
                         derived.number_of_transaction_with_the_account

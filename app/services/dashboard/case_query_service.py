@@ -155,7 +155,14 @@ class CaseQueryService:
                 transaction_datetime=transaction.transaction_datetime.isoformat(),
                 transaction_amount=transaction.transaction_amount,
                 channel=transaction.channel,
-                location=transaction.location,
+                location=(
+                    f"{transaction.location_lat}, {transaction.location_lon}"
+                    if(
+                        transaction.location_lat is not None
+                        and transaction.location_lon is not None
+                    )
+                    else "데이터 없음"
+                ),
                 customer_id=transaction.customer_id or "데이터 없음",
                 source_account_id=transaction.source_account_number,
                 recipient_account_id=transaction.recipient_account_number,
