@@ -1,6 +1,5 @@
 from app.data.model import Transaction
 from app.data.model.transaction import TransactionStatus
-from app.dto.transaction import TransactionResponseDTO
 from app.repositories.transaction import TransactionRepository
 
 
@@ -8,35 +7,29 @@ class TransactionService:
     def __init__(self, transaction_repository: TransactionRepository):
         self.transaction_repository = transaction_repository
 
-    def save_transaction(self, tx, predict_result) -> tuple:
+    def save_transaction(self, tx, predict_result) -> tuple[Transaction, bool]:
+        """Backend의 0.5 기준으로 거래 상태를 결정하고 저장한다."""
+
         # 예측 결과에 따라 거래 승인 여부, 에러 코드 추가
-        if predict_result.predict_proba >= 0.5:
-            # 거래 실패 상태 = True, error_code = f
+        is_fraud = predict_result.predict_proba >= 0.5
+        if is_fraud:
+            # 이상거래는 거절하고 출금 전 잔액을 유지한다.
             tx.transaction_status = TransactionStatus.DECLINED
-            tx.error_code = "f"
+            tx.error_code = "FRAUD"
             tx.balance = tx.initial_balance
-            # Transaction 테이블에 적재
-            tx_entity = Transaction(**tx.model_dump())
-            stored_tx = self.transaction_repository.save_transaction(tx_entity)
-            # transaction_id 다시 넣기
-            predict_result.transaction_id = stored_tx.id
-
-            return predict_result, TransactionResponseDTO(
-                transaction_id = stored_tx.id,
-                prediction_status = "DECLINED",
-                predict_proba = predict_result.predict_proba,
-                message = "이상거래 의심으로 거래가 거절되었습니다."
-            )
         else:
-            # Transaction 테이블에 적재
-            tx_entity = Transaction(**tx.model_dump())
-            stored_tx = self.transaction_repository.save_transaction(tx_entity)
-            # transaction_id 다시 넣기
-            predict_result.transaction_id = stored_tx.id
+            tx.transaction_status = TransactionStatus.APPROVED
+            tx.error_code = None
 
-            return predict_result, TransactionResponseDTO(
-                transaction_id = stored_tx.id,
-                prediction_status = "COMPLETED",
-                predict_proba = predict_result.predict_proba,
-                message = "거래가 승인 되었습니다."
+        # Transaction 테이블에 적재
+        tx_entity = Transaction(**tx.model_dump())
+        stored_tx = self.transaction_repository.save_transaction(tx_entity)
+
+        # 정상 거래만 실제 출금 계좌 잔액에 반영한다.
+        if not is_fraud and stored_tx.balance is not None:
+            self.transaction_repository.update_source_balance(
+                stored_tx.source_account_number,
+                stored_tx.balance,
             )
+
+        return stored_tx, is_fraud

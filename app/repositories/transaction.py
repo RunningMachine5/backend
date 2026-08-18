@@ -207,6 +207,16 @@ class TransactionRepository:
         self.session.refresh(transaction)
         return transaction
 
+    def update_source_balance(self, account_number: str, balance: int) -> None:
+        """승인된 거래의 출금 후 잔액을 계좌에 반영한다."""
+
+        account = self.session.exec(
+            select(Account).where(Account.account_number == account_number)
+        ).one()
+        account.current_balance = balance
+        account.updated_at = datetime.now(UTC)
+        self.session.add(account)
+
 
 class TransactionLabelRepository:
     """담당자가 확정한 이진 라벨을 거래별 한 행으로 관리한다."""
