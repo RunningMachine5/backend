@@ -12,7 +12,6 @@ from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
 from app.dto.ml_features import MLTransactionFeatures
 from app.dto.transaction import TransactionRequestDTO
-from app.repositories.feature_context import TEMP_ACCOUNT_ID_PREFIX
 from app.services.features.ml_feature_assembler import assemble_ml_features
 
 
@@ -178,29 +177,6 @@ class TransactionRepository:
             ),
         )
 
-    def apply_approved_balance(
-        self,
-        transaction: Transaction,
-        features: MLTransactionFeatures,
-    ) -> None:
-        """정상 거래로 판정된 경우에만 출금 계좌 잔액을 반영한다."""
-
-        source_account = self.session.exec(
-            select(Account).where(
-                Account.account_number == transaction.source_account_number
-            )
-        ).one()
-        # 임시 계좌는 실제 잔액 원장이 아니므로 추론용 기본값을 그대로 둔다.
-        if source_account.id.startswith(TEMP_ACCOUNT_ID_PREFIX):
-            return
-        source_account.current_balance = features.account_balance
-        source_account.remaining_daily_limit = (
-            features.account_remaining_amount_daily_limit_exceeded
-        )
-        source_account.updated_at = datetime.now(UTC)
-        self.session.add(source_account)
-
-    # doo
     def save_transaction(self, transaction: Transaction) -> Transaction:
         self.session.add(transaction)
         self.session.flush()
