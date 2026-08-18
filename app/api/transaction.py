@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from sqlmodel import select
 
 from app.api.dependencies import DerivedFeatureServiceDep, DFraudDetectionPipelineDep
+from app.core.common_response import success_response, ApiResponse
 from app.core.db import SessionDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
@@ -235,14 +236,12 @@ def get_transaction(
     )
 
 
-@router.post("/doo", response_model=TransactionResponseDTO)
+@router.post("/doo", response_model=ApiResponse)
 async def transaction_validation(
     transaction: TransactionRequestDTO,
     fraud_detection_pipeline: DFraudDetectionPipelineDep,
-) -> TransactionResponseDTO:
+) -> ApiResponse:
 
-    result = await fraud_detection_pipeline.run(transaction)
+    response = await fraud_detection_pipeline.run(transaction)
 
-    print(result)
-
-    return None #일단 None
+    return success_response(response)

@@ -2,9 +2,10 @@
 from datetime import timedelta, datetime, UTC
 from math import radians, sin, cos, asin, sqrt
 
-from app.data.model import CustomerEventType
-from app.dto.ml_features import MLTransactionFeatures
+from app.data.model import CustomerEventType, DerivedFeatures
+from app.dto.ml_features import MLTransactionFeatures, DerivedFeaturesCreateDTO
 from app.dto.transaction import TransactionRequestDTO, TransactionCreateDTO
+from app.repositories.derived_features import DerivedFeaturesRepository
 from app.repositories.feature_context import FeatureContextRepository, FeatureContext
 
 
@@ -17,8 +18,9 @@ def _calc_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 class DerivedFeatureService:
-    def __init__(self, feature_context_repository: FeatureContextRepository):
+    def __init__(self, feature_context_repository: FeatureContextRepository, derived_features_repository: DerivedFeaturesRepository):
         self.feature_context_repository = feature_context_repository
+        self.derived_features_repository = derived_features_repository
 
     def _fill_features(self, transaction: TransactionRequestDTO, context: FeatureContext) -> dict:
         repo = self.feature_context_repository
@@ -39,10 +41,8 @@ class DerivedFeatureService:
         account_account_type = source_account.account_type
         account_creation_datetime = source_account.creation_datetime
         account_initial_balance = source_account.current_balance
-        account_indicator_release_limit_excess = source_account.indicator_release_limit_excess
         account_amount_daily_limit = source_account.amount_daily_limit
         account_indicator_openbanking = source_account.indicator_openbanking
-        account_remaining_amount_daily_limit_exceeded = source_account.remaining_daily_limit
 
         # 수취인 계좌 조회
         another_person_account = 0 if recipient_account == source_account else 1
@@ -94,7 +94,10 @@ class DerivedFeatureService:
             transaction.source_account_number, datetime.now(UTC), 7
         )
         inquery_atm_limit = 1 if last_customer_events_7.get(CustomerEventType.ATM_LIMIT_INQUIRY) else 0
-        increase_atm_limit = 1 if last_customer_events_7.get(CustomerEventType.ATM_LIMIT_INCREASE) else 0
+        increase_atm_limit = (
+            1 if last_customer_events_7.get(CustomerEventType.ATM_LIMIT_INCREASE) else 0
+        )
+        account_indicator_release_limit_excess = 1 if last_customer_events_7.get(CustomerEventType.TRANSACTION_LIMIT_RELEASE) else 0
 
         # customer_event 30일
         last_customer_events_30 = repo.get_last_customer_events(
@@ -130,7 +133,6 @@ class DerivedFeatureService:
             "account_indicator_release_limit_excess": account_indicator_release_limit_excess,
             "account_amount_daily_limit": account_amount_daily_limit,
             "account_indicator_openbanking": account_indicator_openbanking,
-            "account_remaining_amount_daily_limit_exceeded": account_remaining_amount_daily_limit_exceeded,
             "another_person_account": another_person_account,
             "recipient_account_suspend_status": recipient_account_suspend_status,
             "number_of_transaction_with_the_account": number_of_transaction_with_the_account,
@@ -171,14 +173,27 @@ class DerivedFeatureService:
         )
 
         # time_difference 계산
-        time_difference = 0 if last_transaction is None else transaction.transaction_datetime - last_transaction.transaction_datetime
+        time_difference = (
+            timedelta(seconds=0)
+            if last_transaction is None
+            else transaction.transaction_datetime
+            - last_transaction.transaction_datetime
+        )
 
         # 거래 후 잔고 account_balance 계산
-        account_balance = context.source_account.current_balance - transaction.transaction_amount
+        account_balance = (
+            context.source_account.current_balance - transaction.transaction_amount
+        )
 
-        return {"distance": distance, "time_difference": time_difference, "account_balance": account_balance}
+        # 일 한도 잔액 계산
+        # 오늘 총 거래액 조회
+        today_amount = self.feature_context_repository.get_todays_transaction_amount(context.source_account.account_number, transaction.transaction_datetime.date())
+        # 일 한도 - 조회한 총 거래액 + 현재 거래액
+        account_remaining_amount_daily_limit_exceeded = context.source_account.amount_daily_limit - (transaction.transaction_amount + today_amount)
 
-    def create_derived_features(self, transaction: TransactionRequestDTO) -> MLTransactionFeatures:
+        return {"distance": distance, "time_difference": time_difference, "account_balance": account_balance, "account_remaining_amount_daily_limit_exceeded": account_remaining_amount_daily_limit_exceeded}
+
+    def create_derived_features(self, transaction: TransactionRequestDTO) -> tuple:
         # DB 조회
         context = self.feature_context_repository.get_feature_context(
             transaction.source_account_number, transaction.recipient_account_number
@@ -190,89 +205,192 @@ class DerivedFeatureService:
         # DB 조회 후 계산해야 하는 녀석들 채우기
         calc_features = self._calc_features(transaction, context)
 
-        # 다 합치기
-        result = MLTransactionFeatures(
-            # dto
-            transaction_datetime = transaction.transaction_datetime,
-            transaction_amount = transaction.transaction_amount,
-            channel = transaction.channel,
-            operating_system = transaction.operating_system,
-            type_general_automatic = transaction.type_general_automatic,
-            access_medium = transaction.access_medium,
-            transaction_num_connection_failure = transaction.num_connection_failure,
-            customer_rooting_jailbreak_indicator = transaction.customer_rooting_jailbreak_indicator,
-            customer_mobile_roaming_indicator = transaction.customer_mobile_roaming_indicator,
-            customer_vpn_indicator = transaction.customer_vpn_indicator,
-            customer_flag_terminal_malicious_behavior_1 = transaction.customer_flag_terminal_malicious_behavior_1,
-            customer_flag_terminal_malicious_behavior_2 = transaction.customer_flag_terminal_malicious_behavior_2,
-            customer_flag_terminal_malicious_behavior_3 = transaction.customer_flag_terminal_malicious_behavior_3,
-            customer_flag_terminal_malicious_behavior_5 = transaction.customer_flag_terminal_malicious_behavior_5,
-            customer_flag_terminal_malicious_behavior_6 = transaction.customer_flag_terminal_malicious_behavior_6,
-            # filled
-            customer_birth_date = filled_features["customer_birth_date"],
-            customer_gender = filled_features["customer_gender"],
-            customer_registration_datetime = filled_features["customer_registration_datetime"],
-            customer_credit_rating = filled_features["customer_credit_rating"],
-            customer_loan_type = filled_features["customer_loan_type"],
-            customer_flag_change_of_authentication_1 = filled_features["flag_change_of_authentication_1"],
-            customer_flag_change_of_authentication_2 = filled_features["flag_change_of_authentication_2"],
-            customer_flag_change_of_authentication_3 = filled_features["flag_change_of_authentication_3"],
-            customer_flag_change_of_authentication_4 = filled_features["flag_change_of_authentication_4"],
-            customer_inquery_atm_limit = filled_features["inquery_atm_limit"],
-            customer_increase_atm_limit = filled_features["increase_atm_limit"],
-            account_account_type = filled_features["account_account_type"],
-            account_creation_datetime = filled_features["account_creation_datetime"],
-            account_initial_balance = filled_features["account_initial_balance"],
-            account_indicator_release_limit_excess = filled_features["account_indicator_release_limit_excess"],
-            account_amount_daily_limit = filled_features["account_amount_daily_limit"],
-            account_indicator_openbanking = filled_features["account_indicator_openbanking"],
-            account_remaining_amount_daily_limit_exceeded = filled_features["account_remaining_amount_daily_limit_exceeded"],
-            recipient_release_suspension = filled_features["recipient_release_suspension"],
-            account_one_month_max_amount = filled_features["one_month_max_amount"],
-            account_one_month_std_dev = filled_features["one_month_std_dev"],
-            account_dawn_one_month_max_amount = filled_features["dawn_one_month_max_amount"],
-            account_dawn_one_month_std_dev = filled_features["dawn_one_month_std_dev"],
-            another_person_account = filled_features["another_person_account"],
-            unused_terminal_status = filled_features["unused_terminal_status"],
-            last_atm_transaction_datetime = filled_features["last_transaction_datetime"],
-            last_bank_branch_transaction_datetime = filled_features["last_bank_branch_transaction_datetime"],
-            flag_deposit_more_than_ten_million = filled_features["flag_deposit_more_than_ten_million"],
-            unused_account_status = filled_features["unused_account_status"],
-            recipient_account_suspend_status = filled_features["recipient_account_suspend_status"],
-            number_of_transaction_with_the_account = filled_features["number_of_transaction_with_the_account"],
-            transaction_history_with_the_account = filled_features["transaction_history_with_the_account"],
-            recipient_transaction_resumed_date = filled_features["recipient_transaction_resumed_date"],
-            # clac
-            distance = calc_features["distance"],
-            time_difference = calc_features["time_difference"],
-            account_balance = calc_features["account_balance"],
-        ),
-        TransactionCreateDTO(
-            customer_id=context.customer.id if context.customer else transaction.customer_id,
-            source_account_number=transaction.source_account_number,
-            recipient_account_number=transaction.recipient_account_number,
-            transaction_datetime=transaction.transaction_datetime,
-            transaction_amount=transaction.transaction_amount,
-            channel=transaction.channel,
-            type_general_automatic=transaction.type_general_automatic,
-            access_medium=transaction.access_medium,
-            num_connection_failure=transaction.num_connection_failure,
-            initial_balance=filled_features["account_initial_balance"],  # 출금 전 잔액
-            balance=calc_features["account_balance"],  # 출금 후 잔액
-            operating_system=transaction.operating_system,
-            ip_address=transaction.ip_address,
-            mac_address=transaction.mac_address,
-            location_lat=transaction.location_lat,
-            location_lon=transaction.location_lon,
-            rooting_jailbreak_indicator=transaction.customer_rooting_jailbreak_indicator,
-            mobile_roaming_indicator=transaction.customer_mobile_roaming_indicator,
-            vpn_indicator=transaction.customer_vpn_indicator,
-            flag_terminal_malicious_behavior_1=transaction.customer_flag_terminal_malicious_behavior_1,
-            flag_terminal_malicious_behavior_2=transaction.customer_flag_terminal_malicious_behavior_2,
-            flag_terminal_malicious_behavior_3=transaction.customer_flag_terminal_malicious_behavior_3,
-            flag_terminal_malicious_behavior_5=transaction.customer_flag_terminal_malicious_behavior_5,
-            flag_terminal_malicious_behavior_6=transaction.customer_flag_terminal_malicious_behavior_6,
+        result = (
+            MLTransactionFeatures(
+                # dto
+                transaction_datetime=transaction.transaction_datetime,
+                transaction_amount=transaction.transaction_amount,
+                channel=transaction.channel,
+                operating_system=transaction.operating_system,
+                type_general_automatic=transaction.type_general_automatic,
+                access_medium=transaction.access_medium,
+                transaction_num_connection_failure=transaction.num_connection_failure,
+                customer_rooting_jailbreak_indicator=transaction.customer_rooting_jailbreak_indicator,
+                customer_mobile_roaming_indicator=transaction.customer_mobile_roaming_indicator,
+                customer_vpn_indicator=transaction.customer_vpn_indicator,
+                customer_flag_terminal_malicious_behavior_1=transaction.customer_flag_terminal_malicious_behavior_1,
+                customer_flag_terminal_malicious_behavior_2=transaction.customer_flag_terminal_malicious_behavior_2,
+                customer_flag_terminal_malicious_behavior_3=transaction.customer_flag_terminal_malicious_behavior_3,
+                customer_flag_terminal_malicious_behavior_5=transaction.customer_flag_terminal_malicious_behavior_5,
+                customer_flag_terminal_malicious_behavior_6=transaction.customer_flag_terminal_malicious_behavior_6,
+                # filled
+                customer_birth_date=filled_features["customer_birth_date"],
+                customer_gender=filled_features["customer_gender"],
+                customer_registration_datetime=filled_features[
+                    "customer_registration_datetime"
+                ],
+                customer_credit_rating=filled_features["customer_credit_rating"],
+                customer_loan_type=filled_features["customer_loan_type"],
+                customer_flag_change_of_authentication_1=filled_features[
+                    "flag_change_of_authentication_1"
+                ],
+                customer_flag_change_of_authentication_2=filled_features[
+                    "flag_change_of_authentication_2"
+                ],
+                customer_flag_change_of_authentication_3=filled_features[
+                    "flag_change_of_authentication_3"
+                ],
+                customer_flag_change_of_authentication_4=filled_features[
+                    "flag_change_of_authentication_4"
+                ],
+                customer_inquery_atm_limit=filled_features["inquery_atm_limit"],
+                customer_increase_atm_limit=filled_features["increase_atm_limit"],
+                account_account_type=filled_features["account_account_type"],
+                account_creation_datetime=filled_features["account_creation_datetime"],
+                account_initial_balance=filled_features["account_initial_balance"],
+                account_indicator_release_limit_excess=filled_features[
+                    "account_indicator_release_limit_excess"
+                ],
+                account_amount_daily_limit=filled_features[
+                    "account_amount_daily_limit"
+                ],
+                account_indicator_openbanking=filled_features[
+                    "account_indicator_openbanking"
+                ],
+                recipient_release_suspension=filled_features[
+                    "recipient_release_suspension"
+                ],
+                account_one_month_max_amount=filled_features["one_month_max_amount"],
+                account_one_month_std_dev=filled_features["one_month_std_dev"],
+                account_dawn_one_month_max_amount=filled_features[
+                    "dawn_one_month_max_amount"
+                ],
+                account_dawn_one_month_std_dev=filled_features[
+                    "dawn_one_month_std_dev"
+                ],
+                another_person_account=filled_features["another_person_account"],
+                unused_terminal_status=filled_features["unused_terminal_status"],
+                last_atm_transaction_datetime=filled_features[
+                    "last_transaction_datetime"
+                ],
+                last_bank_branch_transaction_datetime=filled_features[
+                    "last_bank_branch_transaction_datetime"
+                ],
+                flag_deposit_more_than_ten_million=filled_features[
+                    "flag_deposit_more_than_ten_million"
+                ],
+                unused_account_status=filled_features["unused_account_status"],
+                recipient_account_suspend_status=filled_features[
+                    "recipient_account_suspend_status"
+                ],
+                number_of_transaction_with_the_account=filled_features[
+                    "number_of_transaction_with_the_account"
+                ],
+                transaction_history_with_the_account=filled_features[
+                    "transaction_history_with_the_account"
+                ],
+                recipient_transaction_resumed_date=filled_features[
+                    "recipient_transaction_resumed_date"
+                ],
+                # clac
+                distance=calc_features["distance"],
+                time_difference=calc_features["time_difference"],
+                account_balance=calc_features["account_balance"],
+                account_remaining_amount_daily_limit_exceeded=calc_features[
+                    "account_remaining_amount_daily_limit_exceeded"
+                ],
+            ),
+            TransactionCreateDTO(
+                customer_id=context.customer.id
+                if context.customer
+                else transaction.customer_id,
+                source_account_number=transaction.source_account_number,
+                recipient_account_number=transaction.recipient_account_number,
+                transaction_datetime=transaction.transaction_datetime,
+                transaction_amount=transaction.transaction_amount,
+                channel=transaction.channel,
+                type_general_automatic=transaction.type_general_automatic,
+                access_medium=transaction.access_medium,
+                num_connection_failure=transaction.num_connection_failure,
+                initial_balance=filled_features[
+                    "account_initial_balance"
+                ],  # 출금 전 잔액
+                balance=calc_features["account_balance"],  # 출금 후 잔액
+                operating_system=transaction.operating_system,
+                ip_address=transaction.ip_address,
+                mac_address=transaction.mac_address,
+                location_lat=transaction.location_lat,
+                location_lon=transaction.location_lon,
+                rooting_jailbreak_indicator=transaction.customer_rooting_jailbreak_indicator,
+                mobile_roaming_indicator=transaction.customer_mobile_roaming_indicator,
+                vpn_indicator=transaction.customer_vpn_indicator,
+                flag_terminal_malicious_behavior_1=transaction.customer_flag_terminal_malicious_behavior_1,
+                flag_terminal_malicious_behavior_2=transaction.customer_flag_terminal_malicious_behavior_2,
+                flag_terminal_malicious_behavior_3=transaction.customer_flag_terminal_malicious_behavior_3,
+                flag_terminal_malicious_behavior_5=transaction.customer_flag_terminal_malicious_behavior_5,
+                flag_terminal_malicious_behavior_6=transaction.customer_flag_terminal_malicious_behavior_6,
+            ),
+            DerivedFeaturesCreateDTO(
+                remaining_amount_daily_limit=calc_features[
+                    "account_remaining_amount_daily_limit_exceeded"
+                ],
+                distance=calc_features["distance"],
+                time_difference=calc_features["time_difference"],
+                one_month_max_amount=filled_features["one_month_max_amount"],
+                one_month_std_dev=filled_features["one_month_std_dev"],
+                dawn_one_month_max_amount=filled_features["dawn_one_month_max_amount"],
+                dawn_one_month_std_dev=filled_features["dawn_one_month_std_dev"],
+                another_person_account=filled_features["another_person_account"],
+                unused_terminal_status=filled_features["unused_terminal_status"],
+                unused_account_status=filled_features["unused_account_status"],
+                transaction_history_with_the_account=filled_features[
+                    "transaction_history_with_the_account"
+                ],
+                flag_deposit_more_than_ten_million=filled_features[
+                    "flag_deposit_more_than_ten_million"
+                ],
+                number_of_transaction_with_the_account=filled_features[
+                    "number_of_transaction_with_the_account"
+                ],
+                last_atm_transaction_datetime=filled_features[
+                    "last_transaction_datetime"
+                ],
+                last_bank_branch_transaction_datetime=filled_features[
+                    "last_bank_branch_transaction_datetime"
+                ],
+                flag_change_of_authentication_1=filled_features[
+                    "flag_change_of_authentication_1"
+                ],
+                flag_change_of_authentication_2=filled_features[
+                    "flag_change_of_authentication_2"
+                ],
+                flag_change_of_authentication_3=filled_features[
+                    "flag_change_of_authentication_3"
+                ],
+                flag_change_of_authentication_4=filled_features[
+                    "flag_change_of_authentication_4"
+                ],
+                inquery_atm_limit=filled_features["inquery_atm_limit"],
+                increase_atm_limit=filled_features["increase_atm_limit"],
+                indicator_release_limit_excess=filled_features[
+                    "account_indicator_release_limit_excess"
+                ],
+                recipient_release_suspension=filled_features[
+                    "recipient_release_suspension"
+                ],
+                recipient_transaction_resumed_date=filled_features[
+                    "recipient_transaction_resumed_date"
+                ],
+                recipient_account_suspend_status=filled_features[
+                    "recipient_account_suspend_status"
+                ],
+            ),
         )
 
         # 엔티티로 만들어 반환
         return result
+
+    def save_derived_features(self, df, tx_id) -> None:
+        derived_features = DerivedFeatures(id=tx_id, **df.model_dump())
+        self.derived_features_repository.save_derived_features(derived_features)
+

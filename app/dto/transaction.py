@@ -15,7 +15,7 @@ class TransactionRequestDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # ATM·지점 거래는 고객 식별자가 전달되지 않을 수 있다.
-    customer_id: int | None = Field(default=None, min_length=1, max_length=64)
+    customer_id: int | None = Field(default=None)
     source_account_number: str = Field(min_length=8, max_length=32)
     recipient_account_number: str = Field(
         min_length=8,
@@ -47,23 +47,10 @@ class TransactionRequestDTO(BaseModel):
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
-
     transaction_id: int = Field(strict=True, gt=0)
-
-    prediction_status: Literal["COMPLETED", "FAILED"]
-
-    predict_result: bool | None = None
+    prediction_status: Literal["COMPLETED", "DECLINED"]
     predict_proba: float | None = None
-
-    # 룰은 ML 판정을 바꾸지 않는다. Agent와 로컬 E2E가 바로 확인할 수 있도록
-    # 사용한 룰셋 ID와 사기유형별 점수만 거래 응답에 함께 싣는다.
-    rule_set_id: int | None = None
-    rule_scores: dict[str, float] | None = None
-
-    confirmed_is_fraud: bool | None = None
-    labeled_at: datetime | None = None
-
-    created_at: datetime
+    message: str | None = None
 
 #doo
 class TransactionCreateDTO(BaseModel):
