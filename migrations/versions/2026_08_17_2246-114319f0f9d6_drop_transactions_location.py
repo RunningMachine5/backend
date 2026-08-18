@@ -32,7 +32,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.drop_column("transactions", "location")
+    # Parallel revision c7e4a9b2d105 removes the same legacy column.
+    # Either branch may already have run before the heads are merged.
+    op.execute("ALTER TABLE transactions DROP COLUMN IF EXISTS location")
 
 
 def downgrade() -> None:
