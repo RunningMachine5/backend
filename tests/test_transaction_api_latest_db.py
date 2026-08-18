@@ -46,16 +46,13 @@ class StubMLClient:
         self.predict_result = 0
         self.predict_proba = 0.1
 
-    def predict(
+    def to_ml(
         self,
-        *,
         features: dict[str, object],
-        transaction_id: int | None = None,
     ) -> MLPredictionResponse:
         self.calls += 1
         self.last_features = features
         return MLPredictionResponse(
-            transaction_id=transaction_id,
             predict_result=self.predict_result,
             predict_proba=self.predict_proba,
             shap_values={},
@@ -94,14 +91,14 @@ def valid_transaction_request(**overrides: object) -> dict[str, object]:
         "mac_address": "00:1A:2B:3C:4D:5E",
         "location_lat": 37.5665,
         "location_lon": 126.978,
-        "rooting_jailbreak_indicator": False,
-        "mobile_roaming_indicator": False,
-        "vpn_indicator": False,
-        "flag_terminal_malicious_behavior_1": False,
-        "flag_terminal_malicious_behavior_2": False,
-        "flag_terminal_malicious_behavior_3": False,
-        "flag_terminal_malicious_behavior_5": False,
-        "flag_terminal_malicious_behavior_6": False,
+        "customer_rooting_jailbreak_indicator": False,
+        "customer_mobile_roaming_indicator": False,
+        "customer_vpn_indicator": False,
+        "customer_flag_terminal_malicious_behavior_1": False,
+        "customer_flag_terminal_malicious_behavior_2": False,
+        "customer_flag_terminal_malicious_behavior_3": False,
+        "customer_flag_terminal_malicious_behavior_5": False,
+        "customer_flag_terminal_malicious_behavior_6": False,
     }
     payload.update(overrides)
     return payload
@@ -122,6 +119,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                 1,
                 SQLiteStdDevPop,
             )
+
         Customer.__table__.create(self.engine)
         Account.__table__.create(self.engine)
         CustomerEvent.__table__.create(self.engine)
@@ -206,8 +204,8 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.ml_client = StubMLClient()
         self.agent_inputs: list[AgentInputDTO] = []
         app.dependency_overrides[get_ml_serving_client] = lambda: self.ml_client
-        app.dependency_overrides[get_agent_task_runner] = (
-            lambda: self.agent_inputs.append
+        app.dependency_overrides[get_agent_task_runner] = lambda: (
+            self.agent_inputs.append
         )
         self.client = TestClient(app)
 
@@ -226,6 +224,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertIsInstance(body["transaction_id"], int)
         self.assertGreater(body["transaction_id"], 0)
         self.assertEqual(body["prediction_status"], "COMPLETED")
+        self.assertEqual(body["message"], "거래가 승인 되었습니다.")
         self.assertIs(body["predict_result"], False)
         self.assertEqual(body["predict_proba"], 0.1)
         self.assertIsNone(body["rule_set_id"])
@@ -266,6 +265,11 @@ class TransactionApiLatestDBTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
+        self.assertEqual(body["prediction_status"], "DECLINED")
+        self.assertEqual(
+            body["message"],
+            "이상거래 의심으로 거래가 거절되었습니다.",
+        )
         self.assertIs(body["predict_result"], True)
         self.assertEqual(body["predict_proba"], 0.91)
         self.assertEqual(body["rule_set_id"], 1)

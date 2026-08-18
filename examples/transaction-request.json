@@ -13,12 +13,12 @@
   "mac_address": "00:1A:2B:3C:4D:40",
   "location_lat": 37.56,
   "location_lon": 126.9853,
-  "rooting_jailbreak_indicator": false,
-  "mobile_roaming_indicator": false,
-  "vpn_indicator": false,
-  "flag_terminal_malicious_behavior_1": false,
-  "flag_terminal_malicious_behavior_2": false,
-  "flag_terminal_malicious_behavior_3": false,
-  "flag_terminal_malicious_behavior_5": false,
-  "flag_terminal_malicious_behavior_6": false
+  "customer_rooting_jailbreak_indicator": false,
+  "customer_mobile_roaming_indicator": false,
+  "customer_vpn_indicator": false,
+  "customer_flag_terminal_malicious_behavior_1": false,
+  "customer_flag_terminal_malicious_behavior_2": false,
+  "customer_flag_terminal_malicious_behavior_3": false,
+  "customer_flag_terminal_malicious_behavior_5": false,
+  "customer_flag_terminal_malicious_behavior_6": false
 }

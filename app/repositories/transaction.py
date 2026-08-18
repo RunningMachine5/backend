@@ -21,19 +21,10 @@ class TransactionRepository:
 
     def save_transaction(self, transaction: Transaction) -> Transaction:
         self.session.add(transaction)
+        # 파생값·ML·룰 결과까지 모두 준비된 뒤 commit하도록 여기서는 ID만 발급한다.
         self.session.flush()
         self.session.refresh(transaction)
         return transaction
-
-    def update_source_balance(self, account_number: str, balance: int) -> None:
-        """승인된 거래의 출금 후 잔액을 계좌에 반영한다."""
-
-        account = self.session.exec(
-            select(Account).where(Account.account_number == account_number)
-        ).one()
-        account.current_balance = balance
-        account.updated_at = datetime.now(UTC)
-        self.session.add(account)
 
 
 class TransactionLabelRepository:
@@ -180,6 +171,7 @@ class PredictionResultRepository:
             ).all()
         ]
         return rows[:limit], len(rows) > limit
+
 
 __all__ = [
     "PredictionResultRepository",

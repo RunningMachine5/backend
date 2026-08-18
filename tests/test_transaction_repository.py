@@ -83,14 +83,6 @@ class TransactionRepositoryTest(unittest.TestCase):
         self.assertIsInstance(stored.id, int)
         self.assertIs(self.repository.get(stored.id), stored)
 
-    def test_update_source_balance_changes_current_balance(self) -> None:
-        self.repository.update_source_balance("source-0001", 90_000)
-        self.session.commit()
-
-        account = self.session.get(Account, 1)
-        self.assertIsNotNone(account)
-        self.assertEqual(account.current_balance, 90_000)
-
 
 if __name__ == "__main__":
     unittest.main()

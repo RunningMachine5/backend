@@ -12,6 +12,7 @@ class TransactionRequestDTO(BaseModel):
     외부 클라이언트가 보내는 거래 원시 데이터.
     계좌 정보와 단말기에서 감지할 수 있는 정보들이 들어온다.
     """
+
     model_config = ConfigDict(extra="forbid")
 
     # ATM·지점 거래는 고객 식별자가 전달되지 않을 수 있다.
@@ -36,29 +37,25 @@ class TransactionRequestDTO(BaseModel):
     location_lat: float | None = Field(default=None, ge=-90, le=90)
     location_lon: float | None = Field(default=None, ge=-180, le=180)
 
-    rooting_jailbreak_indicator: bool = Field(default=False)
-    mobile_roaming_indicator: bool = Field(default=False)
-    vpn_indicator: bool = Field(default=False)
-    flag_terminal_malicious_behavior_1: bool = Field(default=False)
-    flag_terminal_malicious_behavior_2: bool = Field(default=False)
-    flag_terminal_malicious_behavior_3: bool = Field(default=False)
-    flag_terminal_malicious_behavior_5: bool = Field(default=False)
-    flag_terminal_malicious_behavior_6: bool = Field(default=False)
+    # 외부 요청과 ML에서는 customer_* 이름을 사용하고, 저장할 때 DB 필드로 옮긴다.
+    customer_rooting_jailbreak_indicator: bool = Field(default=False)
+    customer_mobile_roaming_indicator: bool = Field(default=False)
+    customer_vpn_indicator: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_1: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_2: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_3: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_5: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_6: bool = Field(default=False)
+
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
 
     transaction_id: int = Field(strict=True, gt=0)
-    # 추론 실행 상태이며 거래 승인 여부는 predict_result로 구분한다.
-    prediction_status: Literal["COMPLETED", "FAILED"]
-    predict_result: bool | None = None
-    predict_proba: float | None = Field(default=None, ge=0, le=1)
-    rule_set_id: int | None = None
-    rule_scores: dict[str, float] | None = None
-    confirmed_is_fraud: bool | None = None
-    labeled_at: datetime | None = None
-    created_at: datetime
+    prediction_status: Literal["COMPLETED", "DECLINED"]
+    predict_proba: float | None = None
     message: str | None = None
+
 
 #doo
 class TransactionCreateDTO(BaseModel):
@@ -97,6 +94,7 @@ class TransactionCreateDTO(BaseModel):
     transaction_status: TransactionStatus | None = TransactionStatus.APPROVED
     error_code: str | None = None
 
+
 class TransactionLabelUpdateDTO(BaseModel):
     """담당자가 확정한 거래의 이진 정답 라벨."""
 
@@ -131,6 +129,7 @@ class TransactionFeaturesDTO:
     is_fraud: bool
     high_relevance_feature: dict
     fraud_probability: float
+
 
 __all__ = [
     "TransactionLabelResponseDTO",
