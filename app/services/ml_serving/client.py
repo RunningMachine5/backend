@@ -29,7 +29,8 @@ RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 class MLPredictionResponse(BaseModel):
     """ML 담당자의 정식 ``/ml/predict`` 응답."""
 
-    transaction_id: int = Field(strict=True, gt=0)
+    # 거래 ID는 ML 입력이 아니라 Backend 저장 후 붙이는 DB 식별자다.
+    transaction_id: int | None = Field(default=None, strict=True, gt=0)
     predict_result: Literal[0, 1]
     predict_proba: float = Field(ge=0.0, le=1.0)
     shap_values: dict[str, float] = Field(default_factory=dict)
@@ -137,15 +138,15 @@ class MLServingClient:
     def predict(
         self,
         *,
-        transaction_id: int,
         features: dict[str, Any],
+        transaction_id: int | None = None,
     ) -> MLPredictionResponse:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 post = self._http_client.post if self._http_client else httpx.post
                 response = post(
                     f"{self.base_url}/ml/predict",
-                    json={"transaction_id": transaction_id, **features},
+                    json=features,
                     headers=self._authorization_headers(),
                     timeout=self.timeout_seconds,
                 )
@@ -169,8 +170,7 @@ class MLServingClient:
                 )
                 raise MLServingError("ML 추론 서버 호출에 실패했습니다.") from exc
 
-            if prediction.transaction_id != transaction_id:
-                raise MLServingError("ML 응답의 transaction_id가 요청과 다릅니다.")
+            prediction.transaction_id = transaction_id
             return prediction
 
         raise AssertionError("ML Serving 재시도 루프가 결과 없이 종료되었습니다.")

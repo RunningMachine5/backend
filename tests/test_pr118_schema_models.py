@@ -96,12 +96,12 @@ class PR118SchemaModelTests(unittest.TestCase):
             "access_medium",
             "initial_balance",
             "balance",
-            "remaining_amount_daily_limit_exceeded",
             "operating_system",
         ):
             with self.subTest(column=column_name):
                 self.assertTrue(transactions[column_name].nullable)
-        self.assertEqual(transactions.error_code.type.length, 8)
+        self.assertNotIn("remaining_amount_daily_limit_exceeded", transactions)
+        self.assertTrue(transactions.error_code.nullable)
         self.assertEqual(transactions.source_account_number.type.length, 255)
         self.assertEqual(transactions.recipient_account_number.type.length, 255)
 
@@ -115,6 +115,7 @@ class PR118SchemaModelTests(unittest.TestCase):
                 "PRIVACY_MODIFICATION",
                 "ATM_LIMIT_INQUIRY",
                 "ATM_LIMIT_INCREASE",
+                "TRANSACTION_LIMIT_RELEASE",
                 "SUSPENSION_START",
                 "SUSPENSION_RELEASE",
             },
