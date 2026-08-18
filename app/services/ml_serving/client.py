@@ -135,6 +135,11 @@ class MLServingClient:
             (httpx.TimeoutException, httpx.NetworkError, MLServingError),
         )
 
+    def to_ml(self, features: dict[str, Any]) -> MLPredictionResponse:
+        """doo Pipeline에서 사용하는 ML 요청 진입점."""
+
+        return self.predict(features=features)
+
     def predict(
         self,
         *,

@@ -1,12 +1,12 @@
 """ML로 보낼 피쳐들 다 조립하는 코드"""
-from datetime import timedelta, datetime, UTC
-from math import radians, sin, cos, asin, sqrt
+from datetime import UTC, datetime, timedelta
+from math import asin, cos, radians, sin, sqrt
 
 from app.data.model import CustomerEventType, DerivedFeatures
-from app.dto.ml_features import MLTransactionFeatures, DerivedFeaturesCreateDTO
-from app.dto.transaction import TransactionRequestDTO, TransactionCreateDTO
+from app.dto.ml_features import DerivedFeaturesCreateDTO, MLTransactionFeatures
+from app.dto.transaction import TransactionCreateDTO, TransactionRequestDTO
 from app.repositories.derived_features import DerivedFeaturesRepository
-from app.repositories.feature_context import FeatureContextRepository, FeatureContext
+from app.repositories.feature_context import FeatureContext, FeatureContextRepository
 
 
 def _calc_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -215,14 +215,14 @@ class DerivedFeatureService:
                 type_general_automatic=transaction.type_general_automatic,
                 access_medium=transaction.access_medium,
                 transaction_num_connection_failure=transaction.num_connection_failure,
-                customer_rooting_jailbreak_indicator=transaction.rooting_jailbreak_indicator,
-                customer_mobile_roaming_indicator=transaction.mobile_roaming_indicator,
-                customer_vpn_indicator=transaction.vpn_indicator,
-                customer_flag_terminal_malicious_behavior_1=transaction.flag_terminal_malicious_behavior_1,
-                customer_flag_terminal_malicious_behavior_2=transaction.flag_terminal_malicious_behavior_2,
-                customer_flag_terminal_malicious_behavior_3=transaction.flag_terminal_malicious_behavior_3,
-                customer_flag_terminal_malicious_behavior_5=transaction.flag_terminal_malicious_behavior_5,
-                customer_flag_terminal_malicious_behavior_6=transaction.flag_terminal_malicious_behavior_6,
+                customer_rooting_jailbreak_indicator=transaction.customer_rooting_jailbreak_indicator,
+                customer_mobile_roaming_indicator=transaction.customer_mobile_roaming_indicator,
+                customer_vpn_indicator=transaction.customer_vpn_indicator,
+                customer_flag_terminal_malicious_behavior_1=transaction.customer_flag_terminal_malicious_behavior_1,
+                customer_flag_terminal_malicious_behavior_2=transaction.customer_flag_terminal_malicious_behavior_2,
+                customer_flag_terminal_malicious_behavior_3=transaction.customer_flag_terminal_malicious_behavior_3,
+                customer_flag_terminal_malicious_behavior_5=transaction.customer_flag_terminal_malicious_behavior_5,
+                customer_flag_terminal_malicious_behavior_6=transaction.customer_flag_terminal_malicious_behavior_6,
                 # filled
                 customer_birth_date=filled_features["customer_birth_date"],
                 customer_gender=filled_features["customer_gender"],
@@ -321,14 +321,14 @@ class DerivedFeatureService:
                 mac_address=transaction.mac_address,
                 location_lat=transaction.location_lat,
                 location_lon=transaction.location_lon,
-                rooting_jailbreak_indicator=transaction.rooting_jailbreak_indicator,
-                mobile_roaming_indicator=transaction.mobile_roaming_indicator,
-                vpn_indicator=transaction.vpn_indicator,
-                flag_terminal_malicious_behavior_1=transaction.flag_terminal_malicious_behavior_1,
-                flag_terminal_malicious_behavior_2=transaction.flag_terminal_malicious_behavior_2,
-                flag_terminal_malicious_behavior_3=transaction.flag_terminal_malicious_behavior_3,
-                flag_terminal_malicious_behavior_5=transaction.flag_terminal_malicious_behavior_5,
-                flag_terminal_malicious_behavior_6=transaction.flag_terminal_malicious_behavior_6,
+                rooting_jailbreak_indicator=transaction.customer_rooting_jailbreak_indicator,
+                mobile_roaming_indicator=transaction.customer_mobile_roaming_indicator,
+                vpn_indicator=transaction.customer_vpn_indicator,
+                flag_terminal_malicious_behavior_1=transaction.customer_flag_terminal_malicious_behavior_1,
+                flag_terminal_malicious_behavior_2=transaction.customer_flag_terminal_malicious_behavior_2,
+                flag_terminal_malicious_behavior_3=transaction.customer_flag_terminal_malicious_behavior_3,
+                flag_terminal_malicious_behavior_5=transaction.customer_flag_terminal_malicious_behavior_5,
+                flag_terminal_malicious_behavior_6=transaction.customer_flag_terminal_malicious_behavior_6,
             ),
             DerivedFeaturesCreateDTO(
                 remaining_amount_daily_limit=calc_features[
