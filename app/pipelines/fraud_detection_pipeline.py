@@ -69,11 +69,9 @@ class FraudDetectionPipeline:
             )
         except MLServingError:
             prediction_status = "FAILED"
-            transaction.transaction_failure_status = True
             transaction.error_code = "ML_FAIL"
         else:
             prediction_status = "COMPLETED"
-            transaction.transaction_failure_status = prediction.is_fraud
             transaction.error_code = "FRAUD" if prediction.is_fraud else None
             prediction_result = MLPredictionResult(
                 transaction_id=transaction.id,

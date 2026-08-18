@@ -20,7 +20,6 @@ def score_transaction_fraud_types(
     session: Session,
     transaction_id: int,
     features: MLTransactionFeatures,
-    engine: RuleEngine | None = None,
 ) -> FraudTypeScoreResult | None:
     """ACTIVE 룰셋으로 유형 점수를 만들되 ML 결과 저장은 막지 않는다.
 
@@ -39,7 +38,7 @@ def score_transaction_fraud_types(
 
     persisted_rule_set, definition = active
     try:
-        scored = (engine or RuleEngine()).score_validated(features, definition)
+        scored = RuleEngine().score_validated(features, definition)
     except RuleExpressionError:
         logger.exception(
             "거래 %s의 유형별 룰 점수 계산에 실패했습니다.",

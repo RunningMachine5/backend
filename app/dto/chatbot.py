@@ -236,6 +236,44 @@ class TransactionChatSessionStatusResponse(BaseModel):
     )
 
 
+class ChatFraudTypeScoreResponse(BaseModel):
+    """대화 채점으로 나온 사기유형 하나의 점수(PRD 2.6)."""
+
+    type_code: FraudTypeCode = Field(description="사기유형 코드.")
+    display_name: str = Field(description="사기유형의 화면 표시 이름.")
+    score: int = Field(ge=0, description="이 유형에 누적된 점수.")
+
+
+class AgentChatSessionDetailResponse(BaseModel):
+    """담당자가 거래 한 건의 상담 내용을 열었을 때 받는 내역"""
+
+    transaction_id: int = Field(gt=0, description="조회한 거래 id.")
+    chat_session_id: str | None = Field(
+        default=None,
+        description="연결된 채팅 세션 id. 세션이 없으면 `null`.",
+    )
+    status: ChatSessionStatusValue | None = Field(
+        default=None,
+        description="세션의 현재 상태. 세션이 없으면 `null`.",
+    )
+    completed_at: datetime | None = Field(
+        default=None,
+        description="상담이 끝난 시각. 진행 중이거나 세션이 없으면 `null`.",
+    )
+    messages: list[ChatMessageResponse] = Field(
+        default_factory=list,
+        description="이 세션의 전체 대화 이력(오래된 순).",
+    )
+    # 룰 채점과 같은 원칙으로 대표 유형을 고르지 않는다. 순위는 클라이언트가 정한다.
+    type_scores: list[ChatFraudTypeScoreResponse] = Field(
+        default_factory=list,
+        description=(
+            "사기유형별 점수 전체(점수 내림차순, 동점이면 코드 오름차순). "
+            "상담 종료 시 한 번 집계하므로 그 전에는 빈 배열이다."
+        ),
+    )
+
+
 class ChatSessionStatusChangedEventPayload(BaseModel):
     """담당자 화면에 전달하는 채팅 세션 상태 변경 SSE 이벤트."""
 

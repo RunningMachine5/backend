@@ -14,6 +14,7 @@ from urllib.parse import quote, urlsplit
 from fastapi import Depends
 from google import auth as google_auth
 from google.auth.transport.requests import AuthorizedSession
+from pydantic import ValidationError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 

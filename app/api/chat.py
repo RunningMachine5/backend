@@ -7,7 +7,7 @@
 
 **세션 생성은 HTTP 로 열지 않는다.** PRD 2.1 대로 FDS 파이프라인이
 [session_creator.py](../services/chatbot/session_creator.py)를 함수로 호출하고, 로컬에서
-접속 URL 이 필요하면 `scripts/create_chat_session.py` 를 쓴다.
+접속 URL 이 필요하면 `scripts/seed_chat_session.py` 를 쓴다.
 
 트랜잭션은 이 라우터가 소유한다(``get_session`` 은 commit 하지 않는다). 턴 실행은
 [customer_chatbot_pipeline.py](../pipelines/customer_chatbot_pipeline.py)가 커밋과 상태
@@ -27,9 +27,17 @@ from fastapi.responses import StreamingResponse
 
 from app.core.common_response import ApiResponse, success_response
 from app.core.db import SessionDep
-from app.data.model.chatbot import ChatMessage, ChatSession, ChatSessionStatus
+from app.data.model.chatbot import (
+    ChatMessage,
+    ChatSession,
+    ChatSessionStatus,
+    FraudTypeScoreAfterChat,
+)
+from app.domain.fraud_type_codes import get_fraud_type_display_name
 from app.dto.chatbot import (
+    AgentChatSessionDetailResponse,
     ChatButtonActionRequest,
+    ChatFraudTypeScoreResponse,
     ChatMessageResponse,
     ChatSessionDetailResponse,
     ChatTurnResponse,
@@ -391,6 +399,29 @@ def get_transaction_chat_session_status(
     )
 
 
+@agent_router.get(
+    "/transactions/{transaction_id}/chat-session/detail",
+    response_model=ApiResponse[AgentChatSessionDetailResponse],
+    summary="거래별 채팅 상담 내역 조회",
+)
+def get_transaction_chat_session_detail(
+    transaction_id: TransactionIdPath,
+    session: SessionDep,
+) -> ApiResponse[AgentChatSessionDetailResponse]:
+    """담당자가 거래 한 건의 상담 내용을 열었을 때 필요한 것을 한 번에 돌려준다"""
+
+    repository = ChatSessionRepository(session)
+    chat_session = repository.find_by_transaction(transaction_id)
+    if chat_session is None:
+        return success_response(
+            AgentChatSessionDetailResponse(transaction_id=transaction_id)
+        )
+
+    return success_response(
+        _agent_session_detail(repository, transaction_id, chat_session)
+    )
+
+
 # ----------------------------------------------------------------------
 # 공통 보조
 # ----------------------------------------------------------------------
@@ -447,6 +478,49 @@ def _session_detail(
         question_step=chat_session.question_step,
         messages=[_message_response(message) for message in messages],
     )
+
+
+def _agent_session_detail(
+    repository: ChatSessionRepository,
+    transaction_id: int,
+    chat_session: ChatSession,
+) -> AgentChatSessionDetailResponse:
+    """대화 이력에 추출·채점 결과를 붙여 담당자 화면용 상세 응답을 만든다."""
+
+    return AgentChatSessionDetailResponse(
+        transaction_id=transaction_id,
+        chat_session_id=chat_session.chat_session_id,
+        status=chat_session.status,
+        completed_at=chat_session.completed_at,
+        messages=[
+            _message_response(message)
+            for message in repository.list_messages(chat_session)
+        ],
+        type_scores=_type_score_responses(
+            repository.get_fraud_type_scores(transaction_id)
+        ),
+    )
+
+
+def _type_score_responses(
+    scores: FraudTypeScoreAfterChat | None,
+) -> list[ChatFraudTypeScoreResponse]:
+    """점수 내림차순으로 정렬한다. 동점이면 코드 오름차순이라 순서가 흔들리지 않는다."""
+
+    if scores is None:
+        return []
+
+    return [
+        ChatFraudTypeScoreResponse(
+            type_code=type_code,
+            display_name=get_fraud_type_display_name(type_code),
+            score=int(score),
+        )
+        for type_code, score in sorted(
+            scores.type_scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
 
 
 def _message_response(message: ChatMessage) -> ChatMessageResponse:

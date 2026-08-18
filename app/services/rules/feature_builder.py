@@ -62,8 +62,6 @@ RULE_RAW_FEATURES = (
     "transaction_history_with_the_account",
     "recipient_transaction_resumed_date",
 )
-RULE_RAW_FEATURE_SET = frozenset(RULE_RAW_FEATURES)
-
 # 개인 식별값과 원본 위치·생년월일은 평가 입력에는 존재하지만 관리자가 직접
 # 조건식에 사용할 수 없다. 관리자 registry는 이 목록을 제외한 필드만 노출한다.
 RULE_REGISTRY_EXCLUDED_RAW_FEATURES = frozenset(
@@ -415,7 +413,6 @@ __all__ = [
     "RULE_DERIVED_FEATURES",
     "RULE_EVALUATION_FIELDS",
     "RULE_RAW_FEATURES",
-    "RULE_RAW_FEATURE_SET",
     "RULE_REGISTRY_EXCLUDED_RAW_FEATURES",
     "RULE_REGISTRY_RAW_FEATURES",
     "TRANSITION_LEGACY_DERIVED_FEATURES",
