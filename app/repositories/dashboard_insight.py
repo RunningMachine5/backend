@@ -122,9 +122,6 @@ class DashboardInsightRepository:
             "mobile_roaming_indicator": (
                 transaction.mobile_roaming_indicator
             ),
-            "another_person_account": (
-                transaction.another_person_account
-            ),
             "malicious_terminal_behavior": any(
                 (
                     transaction.flag_terminal_malicious_behavior_1,
@@ -144,6 +141,9 @@ class DashboardInsightRepository:
                     ),
                     "unused_account_status": (
                         derived.unused_account_status
+                    ),
+                    "another_person_account": (
+                        derived.another_person_account
                     ),
                     "large_deposit": (
                         derived.flag_deposit_more_than_ten_million
@@ -169,7 +169,7 @@ class DashboardInsightRepository:
         return DashboardInsightSourceRecord(
             case_id = (agent_case.case_id
                        if agent_case is not None
-                       else transaction.id
+                       else str(transaction.id)
             ),
             account_number=transaction.source_account_number,
             transaction_time=transaction.transaction_datetime,

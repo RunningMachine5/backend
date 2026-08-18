@@ -58,8 +58,8 @@ class DashboardOverviewService:
 
         return DashboardOverviewResponse(
             period=DashboardOverviewPeriod(
-                period_start=period_start.isoformat(),
-                period_end=period_end.isoformat(),
+                period_start=period_start,
+                period_end=period_end,
             ),
             summary=self._build_summary(
                 total_transaction_count=total_transaction_count,
@@ -86,9 +86,9 @@ class DashboardOverviewService:
                 DashboardAgentInsight(
                     insight_id=latest_insight.insight_id,
                     title=latest_insight.title,
-                    summary=latest_insight.summary or "",
-                    chart_spec=latest_insight.chart_spec or {},
-                    created_at=latest_insight.created_at.isoformat(),
+                    summary=latest_insight.summary,
+                    chart_spec=latest_insight.chart_spec,
+                    created_at=latest_insight.created_at,
                 )
                 if latest_insight is not None
                 else None
@@ -257,7 +257,7 @@ class DashboardOverviewService:
         return self._build_distribution(
             suspicious_rows=suspicious_rows,
             group_by="channel",
-            order=["mobile", "internet", "ATM", "Others"],
+            order=["mobile", "internet", "atm", "others"],
         )
 
     # 날짜 헬퍼 2개
