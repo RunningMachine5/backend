@@ -60,6 +60,7 @@ def save_case_review(
 
 def get_cases(
     session: SessionDep,
+    transaction_id: int | None = Query(default=None, ge=1),
     period_start: datetime | None = Query(default=None),
     period_end: datetime | None = Query(default=None),
     customer_id: str | None = Query(default=None),
@@ -75,6 +76,7 @@ def get_cases(
 
     try:
         items, total_count = service.list_cases(
+            transaction_id=transaction_id,
             period_start=period_start,
             period_end=period_end,
             customer_id=customer_id,

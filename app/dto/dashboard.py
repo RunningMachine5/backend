@@ -1,5 +1,6 @@
 # 프론트에 반환할 통합 응답 DTO
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, Generic, TypeVar
 
@@ -24,13 +25,23 @@ class SectionResult(BaseModel, Generic[T]):
 # 각 섹션의 데이터 구조를 정의하는 DTO
 class TransactionView(BaseModel):
     transaction_id: int
-    transaction_datetime: str # 거래 시간
+    transaction_datetime: datetime # 거래 시간
     transaction_amount: int # 거래 금액
     channel: str # 거래 방법(atm, 카드 등)
-    location: str # 거래 위치
-    customer_id: str # 고객 ID
-    source_account_id: str # 출금 계좌 ID
-    recipient_account_id: str | None = None # 수취 계좌 ID
+    location_lat: float | None = None
+    location_lon: float | None = None
+    customer_id: int | None = None # 고객 ID
+    source_account_number: str # 출금 계좌 번호
+    recipient_account_number: str # 수취 계좌 번호
+    access_medium: str | None = None
+    operating_system: str | None = None
+    ip_address: str | None = None
+    mac_address: str | None = None
+    num_connection_failure: int = 0
+    rooting_jailbreak_indicator: bool = False
+    mobile_roaming_indicator: bool = False
+    vpn_indicator: bool = False
+    terminal_malicious_behavior_detected: bool = False
 
 # Fraud detection model 결과를 담는 DTO
 class MLView(BaseModel):
@@ -70,15 +81,15 @@ class CaseAgentView(BaseModel):
 
 # 채팅 부분(이거 거의 그대로 감)
 class ChatMessageView(BaseModel):
-    message_id: str
+    message_id: int
     sender_type: str # 채팅 메시지를 보낸 주체
     message_text: str
-    sent_at: str
+    sent_at: datetime
 class ChatView(BaseModel):
-    chat_session_id: str | None = None
-    session_status: str | None = None # 
-    started_at: str | None = None 
-    closed_at: str | None = None
+    chat_session_id: str
+    status: str
+    created_at: datetime
+    completed_at: datetime | None = None
     messages: list[ChatMessageView] = Field(default_factory=list)
 
 # 선택한 사건 하나의 상세 화면 전체 데이터
@@ -101,7 +112,8 @@ class CaseListItemResponse(BaseModel):
     risk_grade: str | None = None
     primary_fraud_type: str | None = None
     transaction_amount: int
-    transaction_datetime: str
+    transaction_datetime: datetime
+    ip_address: str | None = None
     review_status: str
 
 # 처리 페이지 목록 전체 응답
@@ -122,8 +134,8 @@ class DashboardSummaryResponse(BaseModel):
 
 # 대시보드 기간 설정 값
 class DashboardOverviewPeriod(BaseModel):
-    period_start: str
-    period_end: str
+    period_start: datetime
+    period_end: datetime
 
 # 대시보드 최상단 카드 값
 class DashboardOverviewSummary(BaseModel):
@@ -156,9 +168,9 @@ class DistributionItem(BaseModel):
 class DashboardAgentInsight(BaseModel):
     insight_id: str
     title: str
-    summary: str
-    chart_spec: dict
-    created_at: str
+    summary: str | None = None
+    chart_spec: dict[str, Any] | None = None
+    created_at: datetime
 
 
 # 대시보드 그래프 

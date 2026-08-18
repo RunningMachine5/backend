@@ -1,5 +1,6 @@
 # 프론트가 어떤 형식으로 최종 판정을 보내고 받는지 정의
 
+from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field, model_validator
 
@@ -14,7 +15,7 @@ class ReviewActionInput(BaseModel):
 
 class ChecklistResultInput(BaseModel):
     item_code: str = Field(min_length=1, max_length=64)
-    cheked: bool
+    checked: bool
 
 class CaseReviewUpsertRequest(BaseModel):
     decision: ReviewDecision
@@ -65,6 +66,7 @@ class CaseReviewUpsertRequest(BaseModel):
 class CaseReviewResponse(BaseModel):
     case_id: str
     reviewer_id: str
+    decision: ReviewDecision
     confirmed_fraud_type: str | None = None
     performed_actions: list[ReviewActionInput] = Field(
         default_factory=list,
@@ -73,4 +75,4 @@ class CaseReviewResponse(BaseModel):
         default_factory=list
     )
     resolution_summary: str | None=None
-    reviewed_at: str
+    reviewed_at: datetime

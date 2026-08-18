@@ -60,5 +60,5 @@ class CaseReviewService:
             performed_actions=review.performed_actions or [],
             checklist_results=review.checklist_results or [],
             resolution_summary=review.resolution_summary,
-            reviewed_at=review.reviewed_at.isoformat()
+            reviewed_at=review.reviewed_at
         )

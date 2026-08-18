@@ -25,6 +25,7 @@ class TransactionService:
                 transaction_id = stored_tx.id,
                 prediction_status = "DECLINED",
                 predict_proba = predict_result.predict_proba,
+                created_at = stored_tx.created_at,
                 message = "이상거래 의심으로 거래가 거절되었습니다."
             )
         else:
@@ -38,5 +39,6 @@ class TransactionService:
                 transaction_id = stored_tx.id,
                 prediction_status = "COMPLETED",
                 predict_proba = predict_result.predict_proba,
+                created_at = stored_tx.created_at,
                 message = "거래가 승인 되었습니다."
             )
