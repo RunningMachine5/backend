@@ -7,8 +7,6 @@ LLM 은 부르지 않는다 — CI 가 ``OPENAI_API_KEY=test-only-key`` 로 돌�
 있으면 깨진다. 평가 LLM 이 필요한 경로는 파이프라인이 지연 생성하는 자리를 대역으로 바꾼다.
 """
 
-import asyncio
-import json
 import os
 import unittest
 from datetime import UTC, date, datetime
@@ -21,7 +19,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
-from app.api.chat import stream_chat_session_events
 from app.core.db import get_session
 from app.data.model.chatbot import (
     ChatAnswer,
@@ -34,20 +31,23 @@ from app.data.model.chatbot import (
 )
 from app.data.model.customer import Customer
 from app.data.model.transaction import Transaction
-from app.domain.fraud_type_codes import MESSENGER_PHISHING, VOICE_PHISHING
+from app.domain.fraud_circumstance_codes import INCOMING_FUNDS_FORWARDED
+from app.domain.fraud_type_codes import (
+    FINAL_FRAUD_TYPE_CODES,
+    FRAUD_USED_ACCOUNT,
+    MESSENGER_PHISHING,
+    VOICE_PHISHING,
+)
 from app.dto.chatbot import AnswerQualityVerdict
 from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
+from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
     HANDOFF_WAITING_MESSAGE,
     TOO_VAGUE_MESSAGE,
-    WANT_END_HANDOFF_MESSAGE,
+    WANT_END_MESSAGE,
 )
 from app.services.chatbot.questions import GREETING
-from app.services.chatbot.session_event_broker import (
-    CHAT_SESSION_STATUS_CHANGED_EVENT,
-    chat_session_event_broker,
-)
 from main import app
 
 
@@ -102,11 +102,8 @@ class ChatApiTest(unittest.TestCase):
 
         app.dependency_overrides[get_session] = override_session
         self.client = TestClient(app)
-        # 라우터는 프로세스 전역 브로커를 쓴다. 발행 여부는 여기에 구독해 확인한다.
-        self.events = chat_session_event_broker.subscribe()
 
     def tearDown(self) -> None:
-        chat_session_event_broker.unsubscribe(self.events)
         app.dependency_overrides.clear()
         self.session.close()
         self.engine.dispose()
@@ -130,7 +127,7 @@ class ChatApiTest(unittest.TestCase):
         """
 
         customer = Customer(
-            id="CUST-1",
+            id=1,
             name="홍길동",
             birth_date=date(int(BIRTH_YEAR), 3, 1),
             gender="male",
@@ -141,7 +138,7 @@ class ChatApiTest(unittest.TestCase):
             loan_type="a",
         )
         transaction = Transaction(
-            customer_id="CUST-1",
+            customer_id=1,
             source_account_number="source-0001",
             recipient_account_number="recipient-0001",
             transaction_datetime=NOW,
@@ -150,7 +147,6 @@ class ChatApiTest(unittest.TestCase):
             type_general_automatic="general",
             access_medium="a",
             num_connection_failure=0,
-            location="서울특별시 중구",
             rooting_jailbreak_indicator=False,
             mobile_roaming_indicator=False,
             vpn_indicator=False,
@@ -203,12 +199,6 @@ class ChatApiTest(unittest.TestCase):
             ).all()
         )
 
-    def _published_statuses(self) -> list[str]:
-        statuses = []
-        while not self.events.empty():
-            statuses.append(self.events.get_nowait().payload.status)
-        return statuses
-
     # -- 2.2 본인인증과 첫 진입 ---------------------------------------
 
     def test_verify_returns_initial_notification_on_first_entry(self) -> None:
@@ -224,8 +214,6 @@ class ChatApiTest(unittest.TestCase):
         self.assertEqual(len(data["messages"]), 1)
         self.assertEqual(data["messages"][0]["sender_type"], "AI")
         self.assertIn("2026-08-16 14:03 1,234,000원 출금", data["messages"][0]["message_text"])
-        # 최초 알림은 상태를 바꾸지 않으므로 발행할 이벤트도 없다(PRD 2.3).
-        self.assertEqual(self._published_statuses(), [])
 
     def test_verify_does_not_repeat_notification_on_reentry(self) -> None:
         chat_session = self._seed_session()
@@ -286,12 +274,8 @@ class ChatApiTest(unittest.TestCase):
         self.assertEqual(data["question_step"], 1)
         self.assertEqual(len(data["messages"]), 1)
         self.assertIn(GREETING, data["messages"][0])
-        self.assertEqual(
-            self._published_statuses(),
-            [ChatSessionStatus.IN_PROGRESS.value],
-        )
 
-    def test_handoff_button_transitions_and_publishes_status(self) -> None:
+    def test_handoff_button_transitions_to_handoff_requested(self) -> None:
         chat_session = self._seed_session()
 
         response = self._action(chat_session.chat_session_id, "REQUEST_HANDOFF")
@@ -299,10 +283,6 @@ class ChatApiTest(unittest.TestCase):
         data = response.json()["data"]
         self.assertEqual(data["status"], ChatSessionStatus.HANDOFF_REQUESTED.value)
         self.assertEqual(data["messages"], [HANDOFF_WAITING_MESSAGE])
-        self.assertEqual(
-            self._published_statuses(),
-            [ChatSessionStatus.HANDOFF_REQUESTED.value],
-        )
 
     def test_end_button_completes_session(self) -> None:
         chat_session = self._seed_session()
@@ -378,9 +358,8 @@ class ChatApiTest(unittest.TestCase):
         # 고객 답변과 재질문 안내가 모두 이력에 남는다.
         senders = [message.sender_type for message in self._messages(chat_session.chat_session_id)]
         self.assertEqual(senders, ["HUMAN", "AI"])
-        self.assertEqual(self._published_statuses(), [])
 
-    def test_want_end_answer_scores_and_hands_off(self) -> None:
+    def test_want_end_answer_scores_and_completes_session(self) -> None:
         chat_session = self._seed_session(
             status=ChatSessionStatus.IN_PROGRESS,
             question_step=1,
@@ -391,12 +370,8 @@ class ChatApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()["data"]
-        self.assertEqual(data["status"], ChatSessionStatus.HANDOFF_REQUESTED.value)
-        self.assertEqual(data["messages"], [WANT_END_HANDOFF_MESSAGE])
-        self.assertEqual(
-            self._published_statuses(),
-            [ChatSessionStatus.HANDOFF_REQUESTED.value],
-        )
+        self.assertEqual(data["status"], ChatSessionStatus.DONE.value)
+        self.assertEqual(data["messages"], [WANT_END_MESSAGE])
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
         self.assertEqual(len(scores), 1)
 
@@ -406,7 +381,7 @@ class ChatApiTest(unittest.TestCase):
         chat_session = self._seed_session(status=ChatSessionStatus.IN_PROGRESS)
 
         response = self.client.get(
-            f"/agent/transactions/{chat_session.transaction_id}/chat-session"
+            f"/transactions/{chat_session.transaction_id}/chat-session"
         )
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -420,7 +395,7 @@ class ChatApiTest(unittest.TestCase):
         )
 
     def test_transaction_without_session_returns_empty_values(self) -> None:
-        response = self.client.get("/agent/transactions/999/chat-session")
+        response = self.client.get("/transactions/999/chat-session")
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(
@@ -432,43 +407,142 @@ class ChatApiTest(unittest.TestCase):
             },
         )
 
-    def test_event_stream_opens_with_retry_and_streams_status_change(self) -> None:
-        """SSE 는 TestClient 로 열지 않는다.
+    # -- 2.7 담당자 상세 조회 -------------------------------------------
 
-        끝나지 않는 스트림이라 ``client.stream(...)`` 은 연결을 닫을 때 매달린다.
-        라우터가 만든 응답 본문 이터레이터를 직접 읽어 프레임만 확인한다.
-        """
+    def _seed_transcript(self, chat_session: ChatSession) -> None:
+        """대화 두 건을 넣는다(채점은 하지 않는다)."""
 
-        chat_session = self._seed_session()
-        response = stream_chat_session_events()
+        self.session.add(
+            ChatMessage(
+                chat_session_id=chat_session.chat_session_id,
+                sender_type="AI",
+                message_text="어떤 일이 있으셨나요?",
+                sent_at=NOW,
+            )
+        )
+        self.session.add(
+            ChatMessage(
+                chat_session_id=chat_session.chat_session_id,
+                sender_type="HUMAN",
+                message_text="입금받은 돈을 다른 계좌로 다시 보냈어요",
+                sent_at=NOW,
+            )
+        )
+        self.session.commit()
 
-        self.assertEqual(response.media_type, "text/event-stream")
-        self.assertEqual(response.headers["cache-control"], "no-cache")
-        self.assertEqual(response.headers["x-accel-buffering"], "no")
+    def _detail(self, transaction_id: int):
+        return self.client.get(
+            f"/transactions/{transaction_id}/chat-session/detail"
+        )
 
-        async def read_frames() -> tuple[str, str]:
-            iterator = response.body_iterator
-            # 첫 조각을 받았다는 것은 구독이 끝났다는 뜻이다.
-            # 그 뒤에 발행해야 이 연결로 흐른다.
-            opening = await anext(iterator)
-            chat_session_event_broker.publish_status_changed(chat_session)
-            frame = await anext(iterator)
-            await iterator.aclose()
-            return opening, frame
+    def test_detail_returns_transcript_and_scores(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.HANDOFF_REQUESTED,
+            question_step=2,
+            is_older=True,
+        )
+        self._seed_transcript(chat_session)
+        self.session.add(
+            FraudTypeScoreAfterChat(
+                transaction_id=chat_session.transaction_id,
+                chat_session_id=chat_session.chat_session_id,
+                type_scores=score_chat_fraud_circumstances(
+                    [INCOMING_FUNDS_FORWARDED]
+                ),
+                scored_at=NOW,
+            )
+        )
+        self.session.commit()
 
-        opening, frame = asyncio.run(read_frames())
+        response = self._detail(chat_session.transaction_id)
 
-        self.assertEqual(opening, "retry: 3000\n\n")
-        # 프레임은 빈 줄로 끝나야 브라우저가 이벤트 하나로 끊어 읽는다.
-        self.assertTrue(frame.endswith("\n\n"))
-        event_line, data_line = frame.rstrip("\n").splitlines()
-        self.assertEqual(event_line, f"event: {CHAT_SESSION_STATUS_CHANGED_EVENT}")
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()["data"]
+        self.assertEqual(data["chat_session_id"], chat_session.chat_session_id)
         self.assertEqual(
-            json.loads(data_line.removeprefix("data: ")),
+            data["status"],
+            ChatSessionStatus.HANDOFF_REQUESTED.value,
+        )
+        self.assertEqual(len(data["messages"]), 2)
+        self.assertTrue(data["type_scores"])
+        # 화면이 쓰지 않는 값은 응답에 담지 않는다.
+        self.assertEqual(
+            set(data),
             {
-                "transaction_id": chat_session.transaction_id,
-                "chat_session_id": chat_session.chat_session_id,
-                "status": ChatSessionStatus.URL_SENT.value,
+                "transaction_id",
+                "chat_session_id",
+                "status",
+                "completed_at",
+                "messages",
+                "type_scores",
+            },
+        )
+
+    def test_detail_returns_messages_oldest_first(self) -> None:
+        chat_session = self._seed_session()
+        self._seed_transcript(chat_session)
+
+        data = self._detail(chat_session.transaction_id).json()["data"]
+
+        message_ids = [item["message_id"] for item in data["messages"]]
+        self.assertEqual(message_ids, sorted(message_ids))
+        self.assertEqual(
+            [item["sender_type"] for item in data["messages"]],
+            ["AI", "HUMAN"],
+        )
+
+    def test_detail_returns_every_fraud_type_score_highest_first(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.HANDOFF_REQUESTED
+        )
+        self.session.add(
+            FraudTypeScoreAfterChat(
+                transaction_id=chat_session.transaction_id,
+                chat_session_id=chat_session.chat_session_id,
+                type_scores=score_chat_fraud_circumstances(
+                    [INCOMING_FUNDS_FORWARDED]
+                ),
+                scored_at=NOW,
+            )
+        )
+        self.session.commit()
+
+        data = self._detail(chat_session.transaction_id).json()["data"]
+
+        scores = data["type_scores"]
+        # 대표 유형을 고르지 않고 4개 유형을 전부 돌려준다.
+        self.assertEqual(len(scores), len(FINAL_FRAUD_TYPE_CODES))
+        self.assertEqual(
+            [item["score"] for item in scores],
+            sorted((item["score"] for item in scores), reverse=True),
+        )
+        self.assertEqual(scores[0]["type_code"], FRAUD_USED_ACCOUNT)
+        self.assertEqual(scores[0]["display_name"], "사기이용계좌")
+
+    def test_detail_before_scoring_returns_empty_scores(self) -> None:
+        chat_session = self._seed_session(status=ChatSessionStatus.IN_PROGRESS)
+        self._seed_transcript(chat_session)
+
+        data = self._detail(chat_session.transaction_id).json()["data"]
+
+        self.assertEqual(data["type_scores"], [])
+        self.assertIsNone(data["completed_at"])
+        # 채점 전이라도 대화 이력은 그대로 보인다.
+        self.assertEqual(len(data["messages"]), 2)
+
+    def test_detail_without_session_returns_empty_values(self) -> None:
+        response = self._detail(999)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json()["data"],
+            {
+                "transaction_id": 999,
+                "chat_session_id": None,
+                "status": None,
+                "completed_at": None,
+                "messages": [],
+                "type_scores": [],
             },
         )
 

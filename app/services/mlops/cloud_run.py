@@ -10,7 +10,7 @@ from threading import Lock
 from typing import Annotated, Any
 
 import httpx
-from fastapi import Depends
+from fastapi import Depends, Request
 from google import auth as google_auth
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -115,6 +115,7 @@ def _default_smoke_client(
         base_url=tagged_url,
         auth_mode="google-id-token",
         token_provider=_google_id_token_provider(service_audience),
+        http_client=httpx.Client(),
     )
 
 
@@ -142,6 +143,7 @@ class CloudRunAdminClient:
         smoke_client_factory: Callable[[str, str], MLServingClient]
         | None = None,
         api_base_url: str = "https://run.googleapis.com/v2",
+        http_client: httpx.Client | None = None,
     ) -> None:
         required = {
             "GCP_PROJECT_ID": project_id,
@@ -166,6 +168,7 @@ class CloudRunAdminClient:
         self._token_provider = token_provider or _google_access_token_provider()
         self._smoke_client_factory = smoke_client_factory or _default_smoke_client
         self.api_base_url = api_base_url.rstrip("/")
+        self._http_client = http_client
 
     @property
     def _parent(self) -> str:
@@ -193,7 +196,10 @@ class CloudRunAdminClient:
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
-            response = httpx.request(
+            request = (
+                self._http_client.request if self._http_client else httpx.request
+            )
+            response = request(
                 method,
                 f"{self.api_base_url}/{resource}",
                 params=params,
@@ -241,6 +247,10 @@ class CloudRunAdminClient:
                 request_may_have_been_accepted=True,
             )
         return body
+
+    def close(self) -> None:
+        if self._http_client is not None:
+            self._http_client.close()
 
     def run_training(
         self,
@@ -792,10 +802,13 @@ class CloudRunAdminClient:
         )
 
         smoke_client = self._smoke_client_factory(tagged_url, service_uri)
-        prediction: MLPredictionResponse = smoke_client.predict(
-            transaction_id=transaction_id,
-            features=features,
-        )
+        try:
+            prediction: MLPredictionResponse = smoke_client.predict(
+                transaction_id=transaction_id,
+                features=features,
+            )
+        finally:
+            smoke_client.close()
         if prediction.model_name != self.model_name:
             raise CloudRunAdminError("스모크 응답의 model_name이 요청과 다릅니다.")
         if prediction.model_version != model_version:
@@ -828,8 +841,8 @@ class CloudRunAdminClient:
         }
 
 
-def get_cloud_run_admin_client() -> CloudRunAdminClient:
-    return CloudRunAdminClient()
+def get_cloud_run_admin_client(request: Request) -> CloudRunAdminClient:
+    return request.app.state.service_clients.cloud_run()
 
 
 CloudRunAdminClientDep = Annotated[

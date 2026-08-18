@@ -96,38 +96,9 @@ $selectedRowCount = $selectedRows.Count
 # 추가할 수 있다. 같은 CSV를 다시 실행하면 같은 원본 내용도 새 거래 ID를 받아
 # 다시 저장되며, 아래 라벨 요청은 그 실행에서 돌려받은 새 ID를 사용한다.
 
-$adminHeaders = @{ "X-MLOps-Admin-Token" = $AdminToken }
-try {
-    $activeRuleSet = Invoke-RestMethod `
-        -Uri "$BackendUrl/rule-sets/active" `
-        -Headers $adminHeaders `
-        -TimeoutSec 10
-} catch {
-    if ($_.Exception.Response.StatusCode.value__ -ne 404) {
-        throw
-    }
-
-    $draft = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$BackendUrl/rule-sets/drafts" `
-        -Headers $adminHeaders `
-        -ContentType "application/json" `
-        -Body "{}" `
-        -TimeoutSec 30
-    $validation = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$BackendUrl/rule-sets/$($draft.id)/validate" `
-        -Headers $adminHeaders `
-        -TimeoutSec 30
-    if (-not $validation.valid) {
-        throw "기본 룰셋 검증에 실패했습니다."
-    }
-    $activeRuleSet = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$BackendUrl/rule-sets/$($draft.id)/activate" `
-        -Headers $adminHeaders `
-        -TimeoutSec 30
-}
+# MLOps 관리 API가 비활성화된 개발 환경에서도 거래 주입을 실행한다.
+# POST /transactions 처리 과정에서 Rule/ML 파이프라인이 사용할 설정은
+# 백엔드의 현재 설정을 그대로 사용한다.
 
 function Convert-ToNullableString {
     param([object]$Value)
@@ -465,7 +436,7 @@ if ($WaitForAgent) {
 }
 
 Write-Output (
-    "Backend=$($backendHealth.status), ActiveRuleSet=$($activeRuleSet.id), " +
+    "Backend=$($backendHealth.status), " +
     "TransactionRateLimit=$TransactionsPerSecond/sec, " +
     "SmallRun=$smallRun, WaitForAgent=$WaitForAgent"
 )

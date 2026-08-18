@@ -55,7 +55,7 @@ class ChatSessionCreatorTest(unittest.TestCase):
         birth_year: int = 1990,
     ) -> int:
         customer = Customer(
-            id="CUST-1",
+            id=1,
             name="홍길동",
             birth_date=date(birth_year, 3, 1),
             gender="male",
@@ -66,7 +66,7 @@ class ChatSessionCreatorTest(unittest.TestCase):
             loan_type="a",
         )
         transaction = Transaction(
-            customer_id="CUST-1",
+            customer_id=1,
             source_account_number="source-0001",
             recipient_account_number="recipient-0001",
             transaction_datetime=NOW,

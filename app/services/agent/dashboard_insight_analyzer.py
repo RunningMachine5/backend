@@ -165,10 +165,20 @@ class DashboardInsightAnalyzer:
             if isinstance(value, bool) and value:
                 signals.add(f"FEATURE:{name.upper()}")
 
-            if name in {"channel", "location"} and value:
+            if name == "channel" and value:
                 signals.add(
                     f"{name.upper()}:{self._normalize(value)}"
                 )
+
+        # 원본 좌표를 그대로 분석 결과에 노출하지 않고, 약 0.1도 단위 격자로
+        # 묶어 증가한 지역 패턴만 집계한다.
+        location_lat = record.transaction_features.get("location_lat")
+        location_lon = record.transaction_features.get("location_lon")
+        if location_lat is not None and location_lon is not None:
+            signals.add(
+                "LOCATION:GRID_"
+                f"{float(location_lat):.1f}_{float(location_lon):.1f}"
+            )
 
         if abs(record.transaction_amount) >= 10_000_000:
             signals.add("FEATURE:HIGH_AMOUNT")

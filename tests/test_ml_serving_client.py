@@ -8,10 +8,9 @@ from app.services.ml_serving.client import MLServingClient, MLServingError
 
 class MLServingClientAuthTest(unittest.TestCase):
     @staticmethod
-    def _response(transaction_id: int) -> Mock:
+    def _response() -> Mock:
         response = Mock()
         response.json.return_value = {
-            "transaction_id": transaction_id,
             "predict_result": 0,
             "predict_proba": 0.1,
             "shap_values": {"transaction_amount": 0.05},
@@ -22,7 +21,7 @@ class MLServingClientAuthTest(unittest.TestCase):
 
     @patch("app.services.ml_serving.client.httpx.post")
     def test_none_mode_sends_no_authorization_header(self, post: Mock) -> None:
-        post.return_value = self._response(1)
+        post.return_value = self._response()
         client = MLServingClient(base_url="http://localhost:8001", auth_mode="none")
 
         client.predict(transaction_id=1, features={"amount": 1000})
@@ -34,12 +33,12 @@ class MLServingClientAuthTest(unittest.TestCase):
         )
         self.assertEqual(
             post.call_args.kwargs["json"],
-            {"transaction_id": 1, "amount": 1000},
+            {"amount": 1000},
         )
 
     @patch("app.services.ml_serving.client.httpx.post")
     def test_google_mode_sends_cached_provider_token(self, post: Mock) -> None:
-        post.return_value = self._response(2)
+        post.return_value = self._response()
         token_provider = Mock(return_value="test-id-token")
         client = MLServingClient(
             base_url="https://ml-serving.example.run.app",
@@ -63,7 +62,7 @@ class MLServingClientAuthTest(unittest.TestCase):
     def test_transient_timeout_is_retried_once(self, post: Mock) -> None:
         post.side_effect = [
             httpx.ReadTimeout("cold start timeout"),
-            self._response(3),
+            self._response(),
         ]
         client = MLServingClient(
             base_url="http://localhost:8001",
@@ -86,7 +85,7 @@ class MLServingClientAuthTest(unittest.TestCase):
             503,
             request=httpx.Request("POST", "http://localhost:8001/ml/predict"),
         )
-        post.side_effect = [failed, self._response(4)]
+        post.side_effect = [failed, self._response()]
         client = MLServingClient(
             base_url="http://localhost:8001",
             auth_mode="none",
@@ -115,6 +114,22 @@ class MLServingClientAuthTest(unittest.TestCase):
             client.predict(transaction_id=5, features={"amount": 1000})
 
         post.assert_called_once()
+
+    def test_injected_http_client_reuses_connection_and_closes(self) -> None:
+        http_client = Mock()
+        http_client.post.side_effect = [self._response(), self._response()]
+        client = MLServingClient(
+            base_url="https://ml-serving.example.run.app",
+            auth_mode="none",
+            http_client=http_client,
+        )
+
+        client.predict(transaction_id=6, features={"amount": 1000})
+        client.predict(transaction_id=7, features={"amount": 2000})
+        client.close()
+
+        self.assertEqual(http_client.post.call_count, 2)
+        http_client.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

@@ -139,6 +139,26 @@ class MLflowRegistryClientTest(unittest.TestCase):
         self.assertTrue(request.call_args_list[0].args[1].endswith("/alias"))
         self.assertTrue(request.call_args_list[1].args[1].endswith("/set-tag"))
 
+    def test_injected_http_client_is_reused_and_closed(self) -> None:
+        http_client = Mock()
+        http_client.request.return_value = response({"model_versions": []})
+        client = MLflowRegistryClient(
+            tracking_uri="https://mlflow.example",
+            username="user",
+            password="secret",
+            timeout_seconds=5,
+            http_client=http_client,
+        )
+
+        with self.assertRaises(MLflowRegistryError):
+            client.resolve_model_version("fraud-model", "missing")
+        with self.assertRaises(MLflowRegistryError):
+            client.resolve_model_version("fraud-model", "missing-again")
+        client.close()
+
+        self.assertEqual(http_client.request.call_count, 2)
+        http_client.close.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

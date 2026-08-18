@@ -20,6 +20,7 @@ class CustomerEventType(str, Enum):
     ATM_LIMIT_INCREASE = "ATM_LIMIT_INCREASE"
     SUSPENSION_START = "SUSPENSION_START"
     SUSPENSION_RELEASE = "SUSPENSION_RELEASE"
+    TRANSACTION_LIMIT_RELEASE = "TRANSACTION_LIMIT_RELEASE"
 
 class CustomerEvent(SQLModel, table=True):
     """인증 변경·ATM 한도 조정·정지 해제 등 고객 단위 사건 한 건."""
@@ -45,7 +46,7 @@ class CustomerEvent(SQLModel, table=True):
         ),
     )
 
-    id: int | None = Field(
+    id: int = Field(
         default=None,
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
@@ -53,10 +54,9 @@ class CustomerEvent(SQLModel, table=True):
             autoincrement=True,
         ),
     )
-    customer_id: str = Field(
+    customer_id: int = Field(
         foreign_key="customers.id",
         ondelete="CASCADE",
-        max_length=64,
     )
     account_number: str | None = Field(
         default=None,
@@ -66,6 +66,7 @@ class CustomerEvent(SQLModel, table=True):
         index=True,
     )
     event_type: str = Field(max_length=32)
+
     # 윈도우(90일 인증변경, 7일 ATM, 30일 정지해제) 판정의 기준 시각.
     occurred_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False)

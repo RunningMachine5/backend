@@ -3,11 +3,11 @@
 설계는 docs/customer-chatbot/README.md 의 2.2~2.3, 2.7 이다. 라우터는 두 개다.
 
 - ``/chat`` — 고객이 쓰는 경로(접속·본인인증, 버튼, 답변 송수신)
-- ``/agent`` — 담당자 화면이 쓰는 경로(거래별 세션 상태 조회, 상태 변경 SSE)
+- ``/transactions`` — 담당자 화면이 쓰는 경로(거래별 세션 상태 조회, 상담 내역 조회)
 
 **세션 생성은 HTTP 로 열지 않는다.** PRD 2.1 대로 FDS 파이프라인이
 [session_creator.py](../services/chatbot/session_creator.py)를 함수로 호출하고, 로컬에서
-접속 URL 이 필요하면 `scripts/create_chat_session.py` 를 쓴다.
+접속 URL 이 필요하면 `scripts/seed_chat_session.py` 를 쓴다.
 
 트랜잭션은 이 라우터가 소유한다(``get_session`` 은 commit 하지 않는다). 턴 실행은
 [customer_chatbot_pipeline.py](../pipelines/customer_chatbot_pipeline.py)가 커밋과 상태
@@ -17,24 +17,28 @@
 세션 TTL 은 MVP 범위 밖이다(PRD 3.3).
 """
 
-import json
-from collections.abc import Iterator
-from queue import Empty
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, status
-from fastapi.responses import StreamingResponse
 
 from app.core.common_response import ApiResponse, success_response
 from app.core.db import SessionDep
-from app.data.model.chatbot import ChatMessage, ChatSession, ChatSessionStatus
+from app.data.model.chatbot import (
+    ChatMessage,
+    ChatSession,
+    ChatSessionStatus,
+    FraudTypeScoreAfterChat,
+)
+from app.domain.fraud_type_codes import get_fraud_type_display_name
 from app.dto.chatbot import (
     ChatButtonActionRequest,
+    ChatFraudTypeScoreResponse,
     ChatMessageResponse,
     ChatSessionDetailResponse,
     ChatTurnResponse,
     ChatVerifyRequest,
     SendChatMessageRequest,
+    TransactionChatSessionDetailResponse,
     TransactionChatSessionStatusResponse,
 )
 from app.pipelines.customer_chatbot_pipeline import (
@@ -44,17 +48,12 @@ from app.pipelines.customer_chatbot_pipeline import (
 )
 from app.repositories.chat_session import ChatSessionRepository
 from app.services.chatbot.identity_verifier import verify_birth_year
-from app.services.chatbot.session_event_broker import (
-    ChatSessionEvent,
-    chat_session_event_broker,
-)
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-agent_router = APIRouter(prefix="/agent", tags=["agent-chat-sessions"])
-
-# SSE 연결에서 이벤트를 기다리는 시간. 넘기면 keep-alive 주석을 한 줄 보낸다.
-SSE_KEEP_ALIVE_SECONDS = 15
+transaction_chat_router = APIRouter(
+    prefix="/transactions", tags=["chat-sessions"]
+)
 
 
 # ----------------------------------------------------------------------
@@ -225,7 +224,7 @@ def send_chat_button_action(
     | `END_CHAT` | 상담 종료 안내 출력 | `DONE` |
 
     응답의 `messages` 는 **이번 턴에 챗봇이 보낸 메시지 본문만** 담는다(누적 이력이
-    아니다). 상태가 바뀌면 담당자 화면 SSE 로도 같은 변경이 발행된다.
+    아니다).
     """
 
     chat_session = _require_session(session, chat_session_id)
@@ -263,7 +262,7 @@ def send_chat_message(
     | --- | --- | --- |
     | `SUFFICIENT` | 대응 가이드(RAG) 안내 + 다음 질문 | `IN_PROGRESS` |
     | `TOO_VAGUE` | 재질문 안내(`question_step` 유지) | `IN_PROGRESS` |
-    | `WANT_END` | 사기 정황 채점을 집계한 뒤 상담사 연결 안내 | `HANDOFF_REQUESTED` |
+    | `WANT_END` | 사기 정황 채점을 집계한 뒤 상담 종료 안내 | `DONE` |
 
     한 질문에서 허용하는 응답은 최초 1회 + 재질문 2회다. `TOO_VAGUE` 가 3회째까지
     이어지면 마지막 답변을 채택하고 전환 안내와 함께 다음 질문으로 넘어간다.
@@ -285,79 +284,8 @@ def send_chat_message(
 # ----------------------------------------------------------------------
 
 
-@agent_router.get(
-    "/chat-sessions/events",
-    # StreamingResponse 라 response_model 을 두지 않는다. 이벤트 본문은
-    # ChatSessionStatusChangedEventPayload 다.
-    response_model=None,
-    summary="채팅 세션 상태 변경 구독(SSE)",
-    responses={
-        status.HTTP_200_OK: {
-            "description": (
-                "끊기지 않는 `text/event-stream`. 이벤트 이름은 "
-                "`chat_session_status_changed` 하나이고, `data` 는 "
-                "`ChatSessionStatusChangedEventPayload` 다."
-            ),
-            "content": {
-                "text/event-stream": {
-                    "example": (
-                        "retry: 3000\n\n"
-                        ": keep-alive\n\n"
-                        "event: chat_session_status_changed\n"
-                        'data: {"transaction_id": 1024, "chat_session_id": '
-                        '"CHAT-20260816-A1B2C3D4", "status": '
-                        '"HANDOFF_REQUESTED"}\n\n'
-                    )
-                }
-            },
-        }
-    },
-)
-def stream_chat_session_events() -> StreamingResponse:
-    """대시보드 연결 하나로 모든 세션의 상태 변경을 수신한다(PRD 2.7).
-
-    담당자 화면은 이 연결 하나만 열고 `transaction_id` 로 거래 목록 항목을 갱신한다.
-    Swagger 의 "Try it out" 은 스트림을 그대로 두므로 `EventSource` 로 확인하는 편이 낫다.
-
-    - 전체 세션 스냅샷은 보내지 않는다. 최초 접속·재연결 시의 현재값은
-      `GET /agent/transactions/{transaction_id}/chat-session` 으로 복구한다.
-    - 이벤트가 15초간 없으면 연결 유지를 위해 `: keep-alive` 주석 한 줄을 보낸다.
-    - 연결이 끊기면 `retry: 3000` 에 따라 3초 뒤 브라우저가 재연결한다.
-    - 프로세스 내 브로커라 다중 인스턴스에서는 공유되지 않는다(MVP 전제).
-    """
-
-    def event_stream() -> Iterator[str]:
-        subscriber_queue = chat_session_event_broker.subscribe()
-        try:
-            # 연결이 끊기면 3초 뒤 재연결한다.
-            yield "retry: 3000\n\n"
-
-            while True:
-                try:
-                    event = subscriber_queue.get(
-                        timeout=SSE_KEEP_ALIVE_SECONDS
-                    )
-                except Empty:
-                    yield ": keep-alive\n\n"
-                    continue
-
-                yield _format_sse_event(event)
-        finally:
-            chat_session_event_broker.unsubscribe(subscriber_queue)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@agent_router.get(
-    "/transactions/{transaction_id}/chat-session",
+@transaction_chat_router.get(
+    "/{transaction_id}/chat-session",
     response_model=ApiResponse[TransactionChatSessionStatusResponse],
     summary="거래별 채팅 세션 상태 조회",
 )
@@ -367,7 +295,7 @@ def get_transaction_chat_session_status(
 ) -> ApiResponse[TransactionChatSessionStatusResponse]:
     """거래 목록 항목 하나에 연결된 채팅 세션의 현재 상태를 조회한다(PRD 2.7).
 
-    담당자 화면이 SSE 에 최초 접속하거나 재연결했을 때 현재값을 복구하는 경로다.
+    담당자 화면이 주기적으로 폴링해 현재값을 확인하는 경로다.
     거래 한 건에 세션은 하나뿐이다.
 
     세션이 없는 거래도 목록에 그대로 남아야 하므로 404 가 아니라 빈 값을 돌려준다
@@ -388,6 +316,29 @@ def get_transaction_chat_session_status(
             chat_session_id=chat_session.chat_session_id,
             status=chat_session.status,
         )
+    )
+
+
+@transaction_chat_router.get(
+    "/{transaction_id}/chat-session/detail",
+    response_model=ApiResponse[TransactionChatSessionDetailResponse],
+    summary="거래별 채팅 상담 내역 조회",
+)
+def get_transaction_chat_session_detail(
+    transaction_id: TransactionIdPath,
+    session: SessionDep,
+) -> ApiResponse[TransactionChatSessionDetailResponse]:
+    """담당자가 거래 한 건의 상담 내용을 열었을 때 필요한 것을 한 번에 돌려준다"""
+
+    repository = ChatSessionRepository(session)
+    chat_session = repository.find_by_transaction(transaction_id)
+    if chat_session is None:
+        return success_response(
+            TransactionChatSessionDetailResponse(transaction_id=transaction_id)
+        )
+
+    return success_response(
+        _transaction_session_detail(repository, transaction_id, chat_session)
     )
 
 
@@ -449,6 +400,49 @@ def _session_detail(
     )
 
 
+def _transaction_session_detail(
+    repository: ChatSessionRepository,
+    transaction_id: int,
+    chat_session: ChatSession,
+) -> TransactionChatSessionDetailResponse:
+    """대화 이력에 추출·채점 결과를 붙여 담당자 화면용 상세 응답을 만든다."""
+
+    return TransactionChatSessionDetailResponse(
+        transaction_id=transaction_id,
+        chat_session_id=chat_session.chat_session_id,
+        status=chat_session.status,
+        completed_at=chat_session.completed_at,
+        messages=[
+            _message_response(message)
+            for message in repository.list_messages(chat_session)
+        ],
+        type_scores=_type_score_responses(
+            repository.get_fraud_type_scores(transaction_id)
+        ),
+    )
+
+
+def _type_score_responses(
+    scores: FraudTypeScoreAfterChat | None,
+) -> list[ChatFraudTypeScoreResponse]:
+    """점수 내림차순으로 정렬한다. 동점이면 코드 오름차순이라 순서가 흔들리지 않는다."""
+
+    if scores is None:
+        return []
+
+    return [
+        ChatFraudTypeScoreResponse(
+            type_code=type_code,
+            display_name=get_fraud_type_display_name(type_code),
+            score=int(score),
+        )
+        for type_code, score in sorted(
+            scores.type_scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
+
+
 def _message_response(message: ChatMessage) -> ChatMessageResponse:
     return ChatMessageResponse(
         message_id=message.message_id,
@@ -468,8 +462,3 @@ def _turn_response(
         question_step=result.question_step,
         messages=list(result.messages),
     )
-
-
-def _format_sse_event(event: ChatSessionEvent) -> str:
-    data = json.dumps(event.payload.model_dump(), ensure_ascii=False)
-    return f"event: {event.event}\ndata: {data}\n\n"

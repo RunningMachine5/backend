@@ -154,9 +154,6 @@ def _add_resolved_case(
     component_keys: list[str],
 ) -> None:
     suffix = f"{type_index + 1:02d}-{case_index + 1:02d}"
-    customer_id = f"DEMO-CUSTOMER-{suffix}"
-    source_account_id = f"DEMO-SOURCE-{suffix}"
-    recipient_account_id = f"DEMO-RECIPIENT-{suffix}"
     source_account_number = f"DEMO-SOURCE-NUMBER-{suffix}"
     recipient_account_number = f"DEMO-RECIPIENT-NUMBER-{suffix}"
     case_id = _case_id(type_index, case_index)
@@ -164,24 +161,22 @@ def _add_resolved_case(
         days=type_index * CASES_PER_TYPE + case_index
     )
 
-    session.add(
-        Customer(
-            id=customer_id,
-            birth_date=date(1960 + case_index * 5, 1, 1),
-            gender="female" if case_index % 2 == 0 else "male",
-            name=f"시연고객-{suffix}",
-            identification_number=f"DEMO-ID-{suffix}",
-            registration_datetime=occurred_at - timedelta(days=365),
-            credit_rating=3 + case_index,
-            loan_type="a",
-        )
+    customer = Customer(
+        birth_date=date(1960 + case_index * 5, 1, 1),
+        gender="female" if case_index % 2 == 0 else "male",
+        name=f"시연고객-{suffix}",
+        identification_number=f"DEMO-ID-{suffix}",
+        registration_datetime=occurred_at - timedelta(days=365),
+        credit_rating=3 + case_index,
+        loan_type="a",
     )
+    session.add(customer)
     # 관계 객체 없이 FK 값만 지정하므로 PostgreSQL INSERT 순서를 명시한다.
     session.flush()
+    customer_id = customer.id
     session.add_all(
         [
             Account(
-                id=source_account_id,
                 customer_id=customer_id,
                 account_number=source_account_number,
                 account_type="a",
@@ -191,7 +186,6 @@ def _add_resolved_case(
                 remaining_daily_limit=20_000_000,
             ),
             Account(
-                id=recipient_account_id,
                 account_number=recipient_account_number,
                 account_type="a",
                 creation_datetime=occurred_at - timedelta(days=30),
@@ -214,12 +208,9 @@ def _add_resolved_case(
         access_medium="a",
         error_code="a",
         num_connection_failure=case_index,
-        another_person_account=True,
         initial_balance=30_000_000,
         balance=30_000_000 - transaction_amount,
-        remaining_amount_daily_limit_exceeded=0,
         operating_system="Android",
-        location="시연용 거래 위치",
         rooting_jailbreak_indicator=False,
         mobile_roaming_indicator=False,
         vpn_indicator=case_index == 2,

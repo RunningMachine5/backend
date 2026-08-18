@@ -113,16 +113,14 @@ class DashboardInsightRepository:
     ) -> DashboardInsightSourceRecord:
         features = {
             "channel": transaction.channel,
-            "location": transaction.location,
+            "location_lat": transaction.location_lat,
+            "location_lon": transaction.location_lon,
             "vpn_indicator": transaction.vpn_indicator,
             "rooting_jailbreak_indicator": (
                 transaction.rooting_jailbreak_indicator
             ),
             "mobile_roaming_indicator": (
                 transaction.mobile_roaming_indicator
-            ),
-            "another_person_account": (
-                transaction.another_person_account
             ),
             "malicious_terminal_behavior": any(
                 (
@@ -144,8 +142,11 @@ class DashboardInsightRepository:
                     "unused_account_status": (
                         derived.unused_account_status
                     ),
+                    "another_person_account": (
+                        derived.another_person_account
+                    ),
                     "large_deposit": (
-                        derived.flag_deposit_more_than_tenMillion
+                        derived.flag_deposit_more_than_ten_million
                     ),
                     "new_recipient": (
                         derived.number_of_transaction_with_the_account
@@ -168,7 +169,7 @@ class DashboardInsightRepository:
         return DashboardInsightSourceRecord(
             case_id = (agent_case.case_id
                        if agent_case is not None
-                       else transaction.id
+                       else str(transaction.id)
             ),
             account_number=transaction.source_account_number,
             transaction_time=transaction.transaction_datetime,

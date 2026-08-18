@@ -4,20 +4,23 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.data.model.transaction import TransactionStatus
+
 
 class TransactionRequestDTO(BaseModel):
     """
     외부 클라이언트가 보내는 거래 원시 데이터.
     계좌 정보와 단말기에서 감지할 수 있는 정보들이 들어온다.
     """
+
     model_config = ConfigDict(extra="forbid")
 
     # ATM·지점 거래는 고객 식별자가 전달되지 않을 수 있다.
-    customer_id: str | None = Field(default=None, min_length=1, max_length=64)
-    source_account_number: str = Field(min_length=8, max_length=32)
+    customer_id: int | None = Field(default=None)
+    source_account_number: str = Field(min_length=8, max_length=255)
     recipient_account_number: str = Field(
         min_length=8,
-        max_length=32,
+        max_length=255,
     )
     transaction_datetime: datetime
     transaction_amount: int
@@ -31,37 +34,65 @@ class TransactionRequestDTO(BaseModel):
     ip_address: str | None = None
     mac_address: str | None = None
 
-    location_lat: float = Field(ge=-90, le=90)
-    location_lon: float = Field(ge=-180, le=180)
+    location_lat: float | None = Field(default=None, ge=-90, le=90)
+    location_lon: float | None = Field(default=None, ge=-180, le=180)
 
-    customer_rooting_jailbreak_indicator: bool = Field(default=0)
-    customer_mobile_roaming_indicator: bool = Field(default=0)
-    customer_vpn_indicator: bool = Field(default=0)
-    customer_flag_terminal_malicious_behavior_1: bool = Field(default=0)
-    customer_flag_terminal_malicious_behavior_2: bool = Field(default=0)
-    customer_flag_terminal_malicious_behavior_3: bool = Field(default=0)
-    customer_flag_terminal_malicious_behavior_5: bool = Field(default=0)
-    customer_flag_terminal_malicious_behavior_6: bool = Field(default=0)
+    # 외부 요청과 ML에서는 customer_* 이름을 사용하고, 저장할 때 DB 필드로 옮긴다.
+    customer_rooting_jailbreak_indicator: bool = Field(default=False)
+    customer_mobile_roaming_indicator: bool = Field(default=False)
+    customer_vpn_indicator: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_1: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_2: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_3: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_5: bool = Field(default=False)
+    customer_flag_terminal_malicious_behavior_6: bool = Field(default=False)
+
 
 class TransactionResponseDTO(BaseModel):
     """저장된 거래와 ML·룰 탐지 결과를 반환하는 응답 DTO."""
 
     transaction_id: int = Field(strict=True, gt=0)
-
-    prediction_status: Literal["COMPLETED", "FAILED"]
-
-    predict_result: bool | None = None
+    prediction_status: Literal["COMPLETED", "DECLINED"]
     predict_proba: float | None = None
+    message: str | None = None
 
-    # 룰은 ML 판정을 바꾸지 않는다. Agent와 로컬 E2E가 바로 확인할 수 있도록
-    # 사용한 룰셋 ID와 사기유형별 점수만 거래 응답에 함께 싣는다.
-    rule_set_id: int | None = None
-    rule_scores: dict[str, float] | None = None
 
-    confirmed_is_fraud: bool | None = None
-    labeled_at: datetime | None = None
+#doo
+class TransactionCreateDTO(BaseModel):
+    customer_id: int | None = None
 
-    created_at: datetime
+    source_account_number: str
+    recipient_account_number: str
+    transaction_datetime: datetime
+    transaction_amount: int
+
+    channel: str
+    type_general_automatic: str
+    access_medium: str | None = None
+    num_connection_failure: int = 0
+
+    # 거래 시점 계좌 상태 스냅샷
+    initial_balance: int | None = None
+    balance: int | None = None
+
+    # 단말·접속 환경
+    operating_system: str | None = None
+    ip_address: str | None = None
+    mac_address: str | None = None
+    location_lat: float | None = None
+    location_lon: float | None = None
+
+    rooting_jailbreak_indicator: bool
+    mobile_roaming_indicator: bool
+    vpn_indicator: bool
+    flag_terminal_malicious_behavior_1: bool
+    flag_terminal_malicious_behavior_2: bool
+    flag_terminal_malicious_behavior_3: bool
+    flag_terminal_malicious_behavior_5: bool
+    flag_terminal_malicious_behavior_6: bool
+
+    transaction_status: TransactionStatus | None = TransactionStatus.APPROVED
+    error_code: str | None = None
 
 
 class TransactionLabelUpdateDTO(BaseModel):

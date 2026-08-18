@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Float
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, Float
 from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, INTERVAL_COLUMN
@@ -57,6 +57,11 @@ class DerivedFeatures(SQLModel, table=True):
         sa_type=BIGINT_PRIMARY_KEY,
     )
 
+    # TXN 현재
+    remaining_amount_daily_limit: int = Field(
+        sa_column=Column(BigInteger, nullable=False),
+    )
+
     # TXN 직전 1건
     distance: float = Field(sa_column=Column(Float, nullable=False))
     time_difference: timedelta = Field(
@@ -70,6 +75,7 @@ class DerivedFeatures(SQLModel, table=True):
     dawn_one_month_std_dev: float = Field(sa_column=Column(Float, nullable=False))
 
     # 기존 거래 전체
+    another_person_account: bool
     unused_terminal_status: bool
     unused_account_status: bool
     transaction_history_with_the_account: int
@@ -96,12 +102,15 @@ class DerivedFeatures(SQLModel, table=True):
     flag_change_of_authentication_3: bool
     flag_change_of_authentication_4: bool
 
-    # EVENT 7일 (ERD 원문 inquery_atm_limit의 오타를 바로잡음)
-    inquiry_atm_limit: bool
+    # EVENT 7일
+    inquery_atm_limit: bool
     increase_atm_limit: bool
+    indicator_release_limit_excess: bool = Field(
+        sa_column=Column(Boolean(), nullable=True, default=False),
+    )
 
-    # EVENT 30일 (ERD 원문 release_suspention의 오타를 바로잡음)
-    release_suspension: bool
+    # EVENT 30일
+    recipient_release_suspension: bool
     recipient_transaction_resumed_date: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
@@ -109,7 +118,6 @@ class DerivedFeatures(SQLModel, table=True):
 
     # 조인 결과 스냅샷
     recipient_account_suspend_status: bool
-    # first_time_ios_by_vulnerable_user: bool
 
     computed_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

@@ -31,7 +31,7 @@ END_CHAT_MESSAGE = (
 )
 
 # B.3 평가 판정별 안내 — SUFFICIENT는 문구가 없고 WANT_END는 B.6을 쓴다.
-TOO_VAGUE_MESSAGE = "좀 더 구체적으로 다시 말해주실 수 있을까요?"
+TOO_VAGUE_MESSAGE = "저는 금융사기와 관련된 질문에만 대답이 가능해요 관련된 내용을 좀 더 구체적으로 말씀해주실 수 있을까요?"
 # B.4 재시도 소진 또는 평가 LLM 장애 시 다음 질문 전환 안내
 NEXT_QUESTION_MESSAGE = "알겠습니다 다음 질문을 할게요"
 
@@ -41,11 +41,8 @@ UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE = (
     "정확한 안내가 필요하시면 상담사를 연결해드릴게요."
 )
 
-# B.6 상담 종료 요청(WANT_END) 시 상담사 연결 안내
-WANT_END_HANDOFF_MESSAGE = (
-    "상담을 종료하겠습니다."
-    " 정확한 안내를 위해 상담사를 연결해드릴게요. 잠시만 기다려주세요."
-)
+# B.6 상담 종료 요청(WANT_END) 시 종료 안내
+WANT_END_MESSAGE = "상담을 종료하겠습니다."
 
 def render_initial_notification(
     *,
@@ -86,6 +83,6 @@ __all__ = [
     "NEXT_QUESTION_MESSAGE",
     "TOO_VAGUE_MESSAGE",
     "UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE",
-    "WANT_END_HANDOFF_MESSAGE",
+    "WANT_END_MESSAGE",
     "render_initial_notification",
 ]

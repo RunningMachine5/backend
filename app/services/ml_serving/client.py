@@ -8,7 +8,7 @@ from time import sleep
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import Depends
+from fastapi import Depends, Request
 from google.auth import compute_engine
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -29,7 +29,8 @@ RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 class MLPredictionResponse(BaseModel):
     """ML 담당자의 정식 ``/ml/predict`` 응답."""
 
-    transaction_id: int = Field(strict=True, gt=0)
+    # 거래 ID는 ML 입력이 아니라 Backend 저장 후 붙이는 DB 식별자다.
+    transaction_id: int | None = Field(default=None, strict=True, gt=0)
     predict_result: Literal[0, 1]
     predict_proba: float = Field(ge=0.0, le=1.0)
     shap_values: dict[str, float] = Field(default_factory=dict)
@@ -100,12 +101,14 @@ class MLServingClient:
         token_provider: Callable[[], str] | None = None,
         max_attempts: int = ML_SERVING_MAX_ATTEMPTS,
         retry_delay_seconds: float = ML_SERVING_RETRY_DELAY_SECONDS,
+        http_client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.auth_mode = auth_mode.strip().lower()
         self.max_attempts = max(1, max_attempts)
         self.retry_delay_seconds = max(0.0, retry_delay_seconds)
+        self._http_client = http_client
 
         if self.auth_mode == "none":
             self._token_provider = None
@@ -132,17 +135,23 @@ class MLServingClient:
             (httpx.TimeoutException, httpx.NetworkError, MLServingError),
         )
 
+    def to_ml(self, features: dict[str, Any]) -> MLPredictionResponse:
+        """doo의 메서드 이름만 연결하고 실제 HTTP 처리는 ``predict``를 재사용한다."""
+
+        return self.predict(features=features)
+
     def predict(
         self,
         *,
-        transaction_id: int,
         features: dict[str, Any],
+        transaction_id: int | None = None,
     ) -> MLPredictionResponse:
         for attempt in range(1, self.max_attempts + 1):
             try:
-                response = httpx.post(
+                post = self._http_client.post if self._http_client else httpx.post
+                response = post(
                     f"{self.base_url}/ml/predict",
-                    json={"transaction_id": transaction_id, **features},
+                    json=features,
                     headers=self._authorization_headers(),
                     timeout=self.timeout_seconds,
                 )
@@ -166,16 +175,20 @@ class MLServingClient:
                 )
                 raise MLServingError("ML 추론 서버 호출에 실패했습니다.") from exc
 
-            if prediction.transaction_id != transaction_id:
-                raise MLServingError("ML 응답의 transaction_id가 요청과 다릅니다.")
+            prediction.transaction_id = transaction_id
             return prediction
 
         raise AssertionError("ML Serving 재시도 루프가 결과 없이 종료되었습니다.")
 
-def get_ml_serving_client() -> MLServingClient:
-    """테스트에서 대체할 수 있도록 ML 클라이언트를 의존성으로 제공한다."""
+    def close(self) -> None:
+        if self._http_client is not None:
+            self._http_client.close()
 
-    return MLServingClient()
+
+def get_ml_serving_client(request: Request) -> MLServingClient:
+    """애플리케이션 lifespan이 소유한 공용 추론 클라이언트를 제공한다."""
+
+    return request.app.state.service_clients.ml_serving()
 
 
 MLServingClientDep = Annotated[MLServingClient, Depends(get_ml_serving_client)]

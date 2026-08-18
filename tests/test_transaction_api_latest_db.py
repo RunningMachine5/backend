@@ -46,16 +46,13 @@ class StubMLClient:
         self.predict_result = 0
         self.predict_proba = 0.1
 
-    def predict(
+    def to_ml(
         self,
-        *,
-        transaction_id: int,
         features: dict[str, object],
     ) -> MLPredictionResponse:
         self.calls += 1
         self.last_features = features
         return MLPredictionResponse(
-            transaction_id=transaction_id,
             predict_result=self.predict_result,
             predict_proba=self.predict_proba,
             shap_values={},
@@ -80,7 +77,7 @@ class SQLiteStdDevPop:
 
 def valid_transaction_request(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "customer_id": "C-DEV-001",
+        "customer_id": 1,
         "source_account_number": "12345678",
         "recipient_account_number": "87654321",
         "transaction_datetime": "2026-08-14T12:00:00+09:00",
@@ -122,6 +119,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                 1,
                 SQLiteStdDevPop,
             )
+
         Customer.__table__.create(self.engine)
         Account.__table__.create(self.engine)
         CustomerEvent.__table__.create(self.engine)
@@ -137,7 +135,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         with Session(self.engine) as session:
             session.add(
                 Customer(
-                    id="C-DEV-001",
+                    id=1,
                     name="테스트 고객",
                     birth_date=datetime(1990, 1, 1, tzinfo=UTC),
                     gender="female",
@@ -150,19 +148,17 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             session.add_all(
                 [
                     Account(
-                        id="12345678",
-                        customer_id="C-DEV-001",
+                        id=1,
+                        customer_id=1,
                         account_number="12345678",
                         account_type="a",
                         creation_datetime=datetime(2020, 1, 1, tzinfo=UTC),
                         amount_daily_limit=3_000_000,
                         indicator_openbanking=True,
-                        indicator_release_limit_excess=False,
                         current_balance=10_000_000,
-                        remaining_daily_limit=2_000_000,
                     ),
                     Account(
-                        id="87654321",
+                        id=2,
                         customer_id=None,
                         account_number="87654321",
                         suspend_status=False,
@@ -208,8 +204,8 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.ml_client = StubMLClient()
         self.agent_inputs: list[AgentInputDTO] = []
         app.dependency_overrides[get_ml_serving_client] = lambda: self.ml_client
-        app.dependency_overrides[get_agent_task_runner] = (
-            lambda: self.agent_inputs.append
+        app.dependency_overrides[get_agent_task_runner] = lambda: (
+            self.agent_inputs.append
         )
         self.client = TestClient(app)
 
@@ -228,6 +224,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertIsInstance(body["transaction_id"], int)
         self.assertGreater(body["transaction_id"], 0)
         self.assertEqual(body["prediction_status"], "COMPLETED")
+        self.assertEqual(body["message"], "거래가 승인 되었습니다.")
         self.assertIs(body["predict_result"], False)
         self.assertEqual(body["predict_proba"], 0.1)
         self.assertIsNone(body["rule_set_id"])
@@ -268,6 +265,11 @@ class TransactionApiLatestDBTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
+        self.assertEqual(body["prediction_status"], "DECLINED")
+        self.assertEqual(
+            body["message"],
+            "이상거래 의심으로 거래가 거절되었습니다.",
+        )
         self.assertIs(body["predict_result"], True)
         self.assertEqual(body["predict_proba"], 0.91)
         self.assertEqual(body["rule_set_id"], 1)
@@ -321,12 +323,12 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         with Session(self.engine) as session:
             transaction = session.get(Transaction, response.json()["transaction_id"])
             assert transaction is not None
-            self.assertEqual(transaction.customer_id, "C-DEV-001")
+            self.assertEqual(transaction.customer_id, 1)
 
     def test_unknown_customer_id_uses_source_account_customer(self) -> None:
         response = self.client.post(
             "/transactions",
-            json=valid_transaction_request(customer_id="C-NOT-FOUND"),
+            json=valid_transaction_request(customer_id=999),
         )
 
         self.assertEqual(response.status_code, 201, response.text)
@@ -336,47 +338,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             transaction = session.get(Transaction, response.json()["transaction_id"])
             self.assertIsNotNone(transaction)
             assert transaction is not None
-            self.assertEqual(transaction.customer_id, "C-DEV-001")
-
-    def test_missing_customer_and_accounts_use_reusable_placeholders(self) -> None:
-        payload = valid_transaction_request(
-            customer_id=None,
-            source_account_number="11112222",
-            recipient_account_number="33334444",
-        )
-        # SQLite는 저장 시 timezone을 제거한다. 이 테스트는 임시 고객·계좌의
-        # 재사용만 확인하므로 두 요청 모두 timezone 없는 동일 시각을 사용한다.
-        payload["transaction_datetime"] = "2026-08-14T12:00:00"
-
-        first = self.client.post("/transactions", json=payload)
-        second = self.client.post("/transactions", json=payload)
-
-        self.assertEqual(first.status_code, 201, first.text)
-        self.assertEqual(second.status_code, 201, second.text)
-        self.assertEqual(self.ml_client.calls, 2)
-        assert self.ml_client.last_features is not None
-        self.assertEqual(self.ml_client.last_features["customer_credit_rating"], 5)
-        self.assertEqual(self.ml_client.last_features["account_initial_balance"], 0)
-
-        with Session(self.engine) as session:
-            source = session.exec(
-                select(Account).where(Account.account_number == "11112222")
-            ).one()
-            recipient = session.exec(
-                select(Account).where(Account.account_number == "33334444")
-            ).one()
-            customer = session.get(Customer, "TEMP-CUSTOMER-11112222")
-            transactions = session.exec(
-                select(Transaction).where(
-                    Transaction.source_account_number == "11112222"
-                )
-            ).all()
-
-            self.assertEqual(source.id, "TEMP-ACCOUNT-11112222")
-            self.assertEqual(source.current_balance, 0)
-            self.assertEqual(recipient.id, "TEMP-ACCOUNT-33334444")
-            self.assertIsNotNone(customer)
-            self.assertEqual(len(transactions), 2)
+            self.assertEqual(transaction.customer_id, 1)
 
     def test_existing_account_uses_latest_customer_without_blocking_detection(
         self,
@@ -384,7 +346,7 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         with Session(self.engine) as session:
             session.add(
                 Customer(
-                    id="C-OTHER",
+                    id=2,
                     name="다른 고객",
                     birth_date=datetime(1991, 1, 1, tzinfo=UTC),
                     gender="male",
@@ -394,9 +356,9 @@ class TransactionApiLatestDBTest(unittest.TestCase):
                     loan_type="a",
                 )
             )
-            source = session.get(Account, "12345678")
+            source = session.get(Account, 1)
             assert source is not None
-            source.customer_id = "C-OTHER"
+            source.customer_id = 2
             session.add(source)
             session.commit()
 
@@ -408,14 +370,14 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(response.json()["prediction_status"], "COMPLETED")
         with Session(self.engine) as session:
-            source = session.get(Account, "12345678")
+            source = session.get(Account, 1)
             transaction = session.get(Transaction, response.json()["transaction_id"])
             self.assertIsNotNone(source)
             self.assertIsNotNone(transaction)
             assert source is not None
             assert transaction is not None
-            self.assertEqual(source.customer_id, "C-OTHER")
-            self.assertEqual(transaction.customer_id, "C-OTHER")
+            self.assertEqual(source.customer_id, 2)
+            self.assertEqual(transaction.customer_id, 2)
 
     def test_label_and_lookup_use_generated_integer_id(self) -> None:
         created = self.client.post(

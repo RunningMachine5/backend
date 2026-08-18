@@ -1,40 +1,92 @@
-"""서비스, 리포지토리 객체 자동 주입을 위한 의존성 정의 코드"""
+"""서비스와 파이프라인 의존성 정의."""
 
 from typing import Annotated
-from fastapi import Depends, Request
+
+from fastapi import Depends
 
 from app.core.db import SessionDep
 from app.pipelines.d_fraud_detection_pipline import DFraudDetectionPipeline
+from app.repositories.derived_features import DerivedFeaturesRepository
 from app.repositories.feature_context import FeatureContextRepository
+from app.repositories.transaction import TransactionRepository
 from app.services.features.derived_features_service import DerivedFeatureService
-from app.services.ml_serving.predict_client import MLServingClient
+from app.services.ml_serving.client import MLServingClientDep
+from app.services.transaction.detection_result_service import DetectionResultService
+from app.services.transaction.transaction_service import TransactionService
 
 
-def get_feature_context_repository(session: SessionDep) -> FeatureContextRepository:
-    return FeatureContextRepository(session)
+def get_derived_features_repository(
+    session: SessionDep,
+) -> DerivedFeaturesRepository:
+    return DerivedFeaturesRepository(session)
 
-FeatureContextRepositoryDep = Annotated[
-    FeatureContextRepository, Depends(get_feature_context_repository),
+
+DerivedFeaturesRepositoryDep = Annotated[
+    DerivedFeaturesRepository, Depends(get_derived_features_repository)
 ]
 
-def get_derived_feature_service(repository: FeatureContextRepositoryDep) -> DerivedFeatureService:
-    return DerivedFeatureService(repository)
+
+def get_feature_context_repository(
+    session: SessionDep,
+) -> FeatureContextRepository:
+    return FeatureContextRepository(session)
+
+
+FeatureContextRepositoryDep = Annotated[
+    FeatureContextRepository,
+    Depends(get_feature_context_repository),
+]
+
+
+def get_derived_feature_service(
+    feature_context_repository: FeatureContextRepositoryDep,
+    derived_features_repository: DerivedFeaturesRepositoryDep,
+) -> DerivedFeatureService:
+    return DerivedFeatureService(
+        feature_context_repository,
+        derived_features_repository,
+    )
+
 
 DerivedFeatureServiceDep = Annotated[
     DerivedFeatureService, Depends(get_derived_feature_service)
 ]
 
-def get_ml_serving_client(request: Request) -> MLServingClient:
-    return request.app.state.ml_serving_client
 
-MLServingClientDep = Annotated[
-    MLServingClient, Depends(get_ml_serving_client)
+def get_transaction_service(session: SessionDep) -> TransactionService:
+    return TransactionService(TransactionRepository(session))
+
+
+TransactionServiceDep = Annotated[TransactionService, Depends(get_transaction_service)]
+
+
+def get_detection_result_service(session: SessionDep) -> DetectionResultService:
+    # doo 거래 서비스와 우리 운영 결과 저장이 같은 DB 작업 단위를 사용한다.
+    return DetectionResultService(session)
+
+
+DetectionResultServiceDep = Annotated[
+    DetectionResultService, Depends(get_detection_result_service)
 ]
 
-def get_fraud_detection_pipeline(derived_feature_service: DerivedFeatureServiceDep, client: MLServingClientDep) -> DFraudDetectionPipeline:
-    return DFraudDetectionPipeline(derived_feature_service, client)
+
+def get_fraud_detection_pipeline(
+    derived_feature_service: DerivedFeatureServiceDep,
+    client: MLServingClientDep,
+    transaction_service: TransactionServiceDep,
+    detection_result_service: DetectionResultServiceDep,
+) -> DFraudDetectionPipeline:
+    return DFraudDetectionPipeline(
+        derived_features_service=derived_feature_service,
+        ml_serving_client=client,
+        transaction_service=transaction_service,
+        detection_result_service=detection_result_service,
+    )
+
 
 DFraudDetectionPipelineDep = Annotated[
     DFraudDetectionPipeline, Depends(get_fraud_detection_pipeline)
 ]
 
+
+__all__ = ["DFraudDetectionPipelineDep", "DerivedFeatureServiceDep"]

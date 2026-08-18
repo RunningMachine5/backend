@@ -51,14 +51,13 @@ from app.services.chatbot.messages import (
     HANDOFF_WAITING_MESSAGE,
     NEXT_QUESTION_MESSAGE,
     TOO_VAGUE_MESSAGE,
-    WANT_END_HANDOFF_MESSAGE,
+    WANT_END_MESSAGE,
 )
 from app.services.chatbot.questions import (
     FOLLOW_UP_QUESTION,
     GREETING,
     TYPE_DISCRIMINATION_QUESTIONS,
 )
-from app.services.chatbot.session_event_broker import ChatSessionEventBroker
 
 
 class FakeEvaluator:
@@ -142,7 +141,6 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
             type_general_automatic="general",
             access_medium="a",
             num_connection_failure=0,
-            location="서울특별시 중구",
             rooting_jailbreak_indicator=False,
             mobile_roaming_indicator=False,
             vpn_indicator=False,
@@ -163,10 +161,6 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         )
         self.session.add(self.chat_session)
         self.session.commit()
-
-        # 상태 변경 SSE 는 프로세스 전역 브로커 대신 테스트 전용 브로커로 받는다.
-        self.event_broker = ChatSessionEventBroker()
-        self.events = self.event_broker.subscribe()
 
     def tearDown(self) -> None:
         self.session.close()
@@ -190,7 +184,6 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
             session=self.session,
             chat_session=self.chat_session,
             checkpointer=checkpointer,
-            event_broker=self.event_broker,
             **options,
         )
 
@@ -200,17 +193,6 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         pipeline = self._pipeline(**overrides)
         pipeline.handle_button(ChatButtonAction.START_CHAT)
         return pipeline
-
-    def _drain_events(self) -> list:
-        """이번 검증 이전에 쌓인 이벤트를 비운다."""
-
-        drained = []
-        while not self.events.empty():
-            drained.append(self.events.get_nowait())
-        return drained
-
-    def _published_statuses(self) -> list[str]:
-        return [event.payload.status for event in self._drain_events()]
 
     def _answers(self) -> list[ChatAnswer]:
         return list(
@@ -465,7 +447,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     # -- 2.6 종료와 채점 집계 ------------------------------------------
 
-    def test_want_end_scores_once_and_requests_handoff(self) -> None:
+    def test_want_end_scores_once_and_completes_session(self) -> None:
         pipeline = self._start_chat(
             evaluator=FakeEvaluator(
                 AnswerQualityVerdict.SUFFICIENT,
@@ -486,8 +468,8 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
         result = pipeline.handle_message("종료할게요")
 
-        self.assertEqual(result.messages, (WANT_END_HANDOFF_MESSAGE,))
-        self.assertEqual(result.status, ChatSessionStatus.HANDOFF_REQUESTED)
+        self.assertEqual(result.messages, (WANT_END_MESSAGE,))
+        self.assertEqual(result.status, ChatSessionStatus.DONE)
         self.assertIsNotNone(self.chat_session.completed_at)
 
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
@@ -540,67 +522,10 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
             guide_responder=responder,
         )
 
-        # 상담 시작(IN_PROGRESS) 이벤트를 비우고 이번 턴만 본다.
-        self._drain_events()
-
         result = pipeline.handle_message("신분증 사진을 보냈어요")
 
         self.assertEqual(result.status, ChatSessionStatus.IN_PROGRESS)
         self.assertEqual(result.question_step, 2)
-        self.assertEqual(self._published_statuses(), [])
-
-    # -- 2.7 상태 변경 SSE 발행 ----------------------------------------
-
-    def test_button_transitions_publish_one_event_each(self) -> None:
-        for action, expected in (
-            (ChatButtonAction.START_CHAT, ChatSessionStatus.IN_PROGRESS),
-            (ChatButtonAction.REQUEST_HANDOFF, ChatSessionStatus.HANDOFF_REQUESTED),
-            (ChatButtonAction.END_CHAT, ChatSessionStatus.DONE),
-        ):
-            with self.subTest(action=action):
-                self.setUp()
-
-                self._pipeline().handle_button(action)
-
-                published = self._drain_events()
-                self.assertEqual(
-                    [event.payload.status for event in published],
-                    [expected.value],
-                )
-                self.assertEqual(
-                    published[0].payload.transaction_id,
-                    self.transaction.id,
-                )
-
-    def test_initial_notification_publishes_nothing(self) -> None:
-        """상태가 그대로면 담당자 화면을 갱신할 것이 없다."""
-
-        self._pipeline().send_initial_notification()
-
-        self.assertEqual(self._published_statuses(), [])
-
-    def test_reask_turn_publishes_nothing(self) -> None:
-        pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.TOO_VAGUE)
-        )
-        self._drain_events()
-
-        pipeline.handle_message("몰라요")
-
-        self.assertEqual(self._published_statuses(), [])
-
-    def test_want_end_publishes_handoff_requested(self) -> None:
-        pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.WANT_END)
-        )
-        self._drain_events()
-
-        pipeline.handle_message("그만할래요")
-
-        self.assertEqual(
-            self._published_statuses(),
-            [ChatSessionStatus.HANDOFF_REQUESTED.value],
-        )
 
     # -- 질문 진행 -----------------------------------------------------
 
