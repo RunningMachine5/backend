@@ -6,9 +6,9 @@ from app.pipelines.d_fraud_detection_pipline import DFraudDetectionPipeline
 from app.services.ml_serving.client import MLPredictionResponse
 
 
-def _prediction(probability: float) -> MLPredictionResponse:
+def _prediction(*, result: int, probability: float) -> MLPredictionResponse:
     return MLPredictionResponse(
-        predict_result=int(probability >= 0.5),
+        predict_result=result,
         predict_proba=probability,
         shap_values={},
         model_name="fdshield-fraud-detector",
@@ -51,7 +51,7 @@ class FraudDetectionPipelineTest(unittest.TestCase):
         "app.pipelines.d_fraud_detection_pipline.score_transaction_fraud_types"
     )
     def test_normal_transaction_skips_rule_scoring(self, score: Mock) -> None:
-        self.ml_client.predict.return_value = _prediction(0.1)
+        self.ml_client.predict.return_value = _prediction(result=1, probability=0.1)
         self.transaction_service.save_transaction.return_value = (
             self.transaction,
             False,
@@ -75,7 +75,7 @@ class FraudDetectionPipelineTest(unittest.TestCase):
         "app.pipelines.d_fraud_detection_pipline.score_transaction_fraud_types"
     )
     def test_fraud_transaction_saves_rule_result(self, score: Mock) -> None:
-        self.ml_client.predict.return_value = _prediction(0.9)
+        self.ml_client.predict.return_value = _prediction(result=0, probability=0.9)
         self.transaction_service.save_transaction.return_value = (
             self.transaction,
             True,

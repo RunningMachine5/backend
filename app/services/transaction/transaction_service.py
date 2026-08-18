@@ -8,11 +8,11 @@ class TransactionService:
         self.transaction_repository = transaction_repository
 
     def save_transaction(self, tx, predict_result) -> tuple[Transaction, bool]:
-        """ML 서버가 판정한 결과로 거래 상태를 결정하고 저장한다."""
+        """ML 확률에 고정 임계값 0.5를 적용해 거래 상태를 결정하고 저장한다."""
 
         # 예측 결과에 따라 거래 승인 여부, 에러 코드 추가
-        # 모델별 임계값은 ML 서버가 관리하므로 Backend에서 다시 계산하지 않는다.
-        is_fraud = bool(predict_result.predict_result)
+        # Doo 거래 흐름과 같은 고정 기준을 사용한다.
+        is_fraud = predict_result.predict_proba >= 0.5
         if is_fraud:
             # 이상거래는 거절하고 출금 전 잔액을 유지한다.
             tx.transaction_status = TransactionStatus.DECLINED

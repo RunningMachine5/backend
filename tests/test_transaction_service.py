@@ -41,14 +41,14 @@ def _prediction(*, result: int, probability: float) -> MLPredictionResponse:
 
 
 class TransactionServiceTest(unittest.TestCase):
-    def test_ml_fraud_result_declines_even_with_low_probability(self) -> None:
+    def test_probability_at_threshold_declines_transaction(self) -> None:
         repository = Mock()
         repository.save_transaction.side_effect = lambda transaction: transaction
         service = TransactionService(repository)
 
         transaction, is_fraud = service.save_transaction(
             _transaction(),
-            _prediction(result=1, probability=0.1),
+            _prediction(result=0, probability=0.5),
         )
 
         self.assertTrue(is_fraud)
@@ -57,14 +57,14 @@ class TransactionServiceTest(unittest.TestCase):
         self.assertEqual(transaction.balance, transaction.initial_balance)
         repository.update_source_balance.assert_not_called()
 
-    def test_ml_normal_result_approves_even_with_high_probability(self) -> None:
+    def test_probability_below_threshold_approves_transaction(self) -> None:
         repository = Mock()
         repository.save_transaction.side_effect = lambda transaction: transaction
         service = TransactionService(repository)
 
         transaction, is_fraud = service.save_transaction(
             _transaction(),
-            _prediction(result=0, probability=0.9),
+            _prediction(result=1, probability=0.49),
         )
 
         self.assertFalse(is_fraud)
