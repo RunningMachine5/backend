@@ -140,7 +140,12 @@ class CaseQueryService:
                 else None
             ),
             transaction_amount=row.transaction.transaction_amount,
-            transaction_datetime=row.transaction.transaction_datetime.isoformat(),
+            transaction_datetime=row.transaction.transaction_datetime,
+            ip_address=(
+                str(row.transaction.ip_address)
+                if row.transaction.ip_address is not None
+                else None
+            ),
             review_status=review_status
         )
 
@@ -152,20 +157,14 @@ class CaseQueryService:
             status=SectionStatus.AVAILABLE,
             data=TransactionView(
                 transaction_id=transaction.id,
-                transaction_datetime=transaction.transaction_datetime.isoformat(),
+                transaction_datetime=transaction.transaction_datetime,
                 transaction_amount=transaction.transaction_amount,
                 channel=transaction.channel,
-                location=(
-                    f"{transaction.location_lat}, {transaction.location_lon}"
-                    if(
-                        transaction.location_lat is not None
-                        and transaction.location_lon is not None
-                    )
-                    else "데이터 없음"
-                ),
-                customer_id=transaction.customer_id or "데이터 없음",
-                source_account_id=transaction.source_account_number,
-                recipient_account_id=transaction.recipient_account_number,
+                location_lat=transaction.location_lat,
+                location_lon=transaction.location_lon,
+                customer_id=transaction.customer_id,
+                source_account_number=transaction.source_account_number,
+                recipient_account_number=transaction.recipient_account_number,
                 access_medium=transaction.access_medium,
                 operating_system=transaction.operating_system,
                 ip_address=(
@@ -271,19 +270,15 @@ class CaseQueryService:
             status=SectionStatus.AVAILABLE,
             data=ChatView(
                 chat_session_id=chat_session.chat_session_id,
-                session_status=chat_session.status,
-                started_at=chat_session.created_at.isoformat(),
-                closed_at=(
-                    chat_session.completed_at.isoformat()
-                    if chat_session.completed_at is not None
-                    else None
-                ),
+                status=chat_session.status,
+                created_at=chat_session.created_at,
+                completed_at=chat_session.completed_at,
                 messages=[
                     ChatMessageView(
-                        message_id=str(message.message_id),
+                        message_id=message.message_id,
                         sender_type=message.sender_type,
                         message_text=message.message_text,
-                        sent_at=message.sent_at.isoformat(),
+                        sent_at=message.sent_at,
                     )
                     for message in chat_messages
                 ],
