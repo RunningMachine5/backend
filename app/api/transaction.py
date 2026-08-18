@@ -115,7 +115,12 @@ def create_transaction(
         derived_features_service=derived_features_service,
         ml_client=ml_client,
     )
-    result = pipeline.run(payload)
+    received = pipeline.receive(payload)
+    dashboard_event_broker.publish(
+        event="dashboard_updated",
+        data={"source": "transaction"},
+    )
+    result = pipeline.analyze(received)
     agent_input = _build_agent_input(result)
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)
