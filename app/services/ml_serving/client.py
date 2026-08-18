@@ -8,7 +8,7 @@ from time import sleep
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import Depends
+from fastapi import Depends, Request
 from google.auth import compute_engine
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -100,12 +100,14 @@ class MLServingClient:
         token_provider: Callable[[], str] | None = None,
         max_attempts: int = ML_SERVING_MAX_ATTEMPTS,
         retry_delay_seconds: float = ML_SERVING_RETRY_DELAY_SECONDS,
+        http_client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.auth_mode = auth_mode.strip().lower()
         self.max_attempts = max(1, max_attempts)
         self.retry_delay_seconds = max(0.0, retry_delay_seconds)
+        self._http_client = http_client
 
         if self.auth_mode == "none":
             self._token_provider = None
@@ -140,7 +142,8 @@ class MLServingClient:
     ) -> MLPredictionResponse:
         for attempt in range(1, self.max_attempts + 1):
             try:
-                response = httpx.post(
+                post = self._http_client.post if self._http_client else httpx.post
+                response = post(
                     f"{self.base_url}/ml/predict",
                     json={"transaction_id": transaction_id, **features},
                     headers=self._authorization_headers(),
@@ -172,10 +175,15 @@ class MLServingClient:
 
         raise AssertionError("ML Serving 재시도 루프가 결과 없이 종료되었습니다.")
 
-def get_ml_serving_client() -> MLServingClient:
-    """테스트에서 대체할 수 있도록 ML 클라이언트를 의존성으로 제공한다."""
+    def close(self) -> None:
+        if self._http_client is not None:
+            self._http_client.close()
 
-    return MLServingClient()
+
+def get_ml_serving_client(request: Request) -> MLServingClient:
+    """애플리케이션 lifespan이 소유한 공용 추론 클라이언트를 제공한다."""
+
+    return request.app.state.service_clients.ml_serving()
 
 
 MLServingClientDep = Annotated[MLServingClient, Depends(get_ml_serving_client)]
