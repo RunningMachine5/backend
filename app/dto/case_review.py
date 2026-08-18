@@ -1,5 +1,6 @@
 # 프론트가 어떤 형식으로 최종 판정을 보내고 받는지 정의
 
+from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field, model_validator
 
@@ -74,4 +75,4 @@ class CaseReviewResponse(BaseModel):
         default_factory=list
     )
     resolution_summary: str | None=None
-    reviewed_at: str
+    reviewed_at: datetime

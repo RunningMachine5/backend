@@ -36,6 +36,7 @@ class CaseQueryRepository:
     def list_suspicious_cases(
         self,
         *,
+        transaction_id: int | None = None,
         period_start: datetime | None = None,
         period_end: datetime | None = None,
         customer_id: str | None = None,
@@ -75,6 +76,8 @@ class CaseQueryRepository:
             .where(MLPredictionResult.predict_result.is_(True))
         )
 
+        if transaction_id is not None:
+            statement = statement.where(Transaction.id == transaction_id)
         if period_start is not None:
             statement = statement.where(Transaction.transaction_datetime >= period_start)
         if period_end is not None:
