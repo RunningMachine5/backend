@@ -17,7 +17,7 @@ class FakeSession:
         if model is Transaction:
             return self.transaction if object_id == 1 else None
         if model is Customer:
-            return self.customer if object_id == "CUST-1" else None
+            return self.customer if object_id == 1 else None
         return None
 
 
@@ -58,7 +58,7 @@ class AgentEmailRepositoryTest(unittest.TestCase):
 
     def _repository(self, *, email: str | None) -> AgentEmailRepository:
         customer = SimpleNamespace(
-            id="CUST-1",
+            id=1,
             name="홍길동",
             email=email,
         )
@@ -73,7 +73,7 @@ class AgentEmailRepositoryTest(unittest.TestCase):
     def _transaction():
         return SimpleNamespace(
             id=1,
-            customer_id="CUST-1",
+            customer_id=1,
             transaction_datetime=datetime(2026, 8, 16, 9, 0, tzinfo=UTC),
             transaction_amount=100_000,
             channel="mobile",

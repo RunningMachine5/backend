@@ -260,7 +260,7 @@ class ChatSessionAlertNotifierIntegrationTest(unittest.TestCase):
 
     def _seed_transaction(self) -> int:
         customer = Customer(
-            id="CUST-INTEGRATION",
+            id=1,
             name="홍길동",
             birth_date=date(1990, 3, 1),
             gender="male",

@@ -127,7 +127,7 @@ class ChatApiTest(unittest.TestCase):
         """
 
         customer = Customer(
-            id="CUST-1",
+            id=1,
             name="홍길동",
             birth_date=date(int(BIRTH_YEAR), 3, 1),
             gender="male",
@@ -138,7 +138,7 @@ class ChatApiTest(unittest.TestCase):
             loan_type="a",
         )
         transaction = Transaction(
-            customer_id="CUST-1",
+            customer_id=1,
             source_account_number="source-0001",
             recipient_account_number="recipient-0001",
             transaction_datetime=NOW,

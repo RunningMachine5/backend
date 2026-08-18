@@ -24,7 +24,7 @@ class CaseQueryService:
         transaction_id: int | None = None,
         period_start: datetime | None = None,
         period_end: datetime | None = None,
-        customer_id: str | None = None,
+        customer_id: int | None = None,
         ip_address: str | None = None,
         recipient_account_number: str | None = None,
         min_amount: int | None = None, # amount가 금액인가?
