@@ -407,23 +407,15 @@ class CloudRunAdminClient:
                 "GET",
                 self._revision_resource(live_revision),
             )
-            container = self._target_container(revision)
-            env = container.get("env", [])
-            if not isinstance(env, list):
-                raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
-            env_by_name = {
-                item.get("name"): item.get("value")
-                for item in env
-                if isinstance(item, dict) and isinstance(item.get("name"), str)
-            }
+            contract = self._inspect_revision_model_contract(
+                revision,
+                model_version=model_version,
+            )
+            env_by_name = contract["env"]
             revision_model_version = env_by_name.get("ML_MODEL_VERSION")
             revision_model_name = env_by_name.get("ML_MODEL_NAME")
             revision_predictor_mode = env_by_name.get("ML_PREDICTOR_MODE")
-            image = container.get("image")
-            if not isinstance(image, str) or not re.search(
-                r"@sha256:[0-9a-f]{64}$",
-                image,
-            ):
+            if not contract["image_digest_valid"]:
                 revision_contract_error = "트래픽 100% 리비전 이미지가 digest로 고정되지 않았습니다."
             elif "ML_FRAUD_THRESHOLD" in env_by_name:
                 revision_contract_error = "트래픽 100% 리비전에 레거시 임계값 설정이 남아 있습니다."
@@ -509,23 +501,68 @@ class CloudRunAdminClient:
             f"Serving 컨테이너 {self.serving_container!r}를 찾지 못했습니다."
         )
 
-    @staticmethod
-    def _set_plain_env(container: dict[str, Any], values: Mapping[str, str]) -> None:
-        current = container.get("env", [])
-        if not isinstance(current, list):
-            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
-        preserved = [item for item in current if item.get("name") not in values]
-        preserved.extend(
-            {"name": name, "value": value} for name, value in values.items()
-        )
-        container["env"] = preserved
+    def _inspect_revision_model_contract(
+        self,
+        resource: Mapping[str, Any],
+        *,
+        model_version: str,
+    ) -> dict[str, Any]:
+        """리비전의 이미지와 MLflow 환경변수를 공통 형식으로 읽는다."""
 
-    @staticmethod
-    def _remove_env(container: dict[str, Any], names: set[str]) -> None:
-        current = container.get("env", [])
-        if not isinstance(current, list):
+        container = self._target_container(dict(resource))
+        env = container.get("env", [])
+        if not isinstance(env, list):
             raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
-        container["env"] = [item for item in current if item.get("name") not in names]
+        env_by_name = {
+            item.get("name"): item.get("value")
+            for item in env
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        expected = {
+            "ML_PREDICTOR_MODE": "mlflow",
+            "ML_MODEL_NAME": self.model_name,
+            "ML_MODEL_VERSION": model_version,
+        }
+        mismatched = [
+            name for name, value in expected.items() if env_by_name.get(name) != value
+        ]
+        if "ML_FRAUD_THRESHOLD" in env_by_name:
+            mismatched.append("ML_FRAUD_THRESHOLD")
+        image = container.get("image")
+        return {
+            "container": container,
+            "env": env_by_name,
+            "image": image,
+            "image_digest_valid": isinstance(image, str)
+            and re.search(r"@sha256:[0-9a-f]{64}$", image) is not None,
+            "mismatched": mismatched,
+        }
+
+    def _validate_revision_model_contract(
+        self,
+        resource: Mapping[str, Any],
+        *,
+        model_version: str,
+        context: str,
+    ) -> dict[str, Any]:
+        """공통 모델 계약을 검증하고 기존 오류 문구를 유지한다."""
+
+        contract = self._inspect_revision_model_contract(
+            resource,
+            model_version=model_version,
+        )
+        if not contract["image_digest_valid"]:
+            raise CloudRunAdminError(f"{context} 리비전 이미지가 digest로 고정되지 않았습니다.")
+        if contract["mismatched"]:
+            raise CloudRunAdminError(
+                f"{context} 리비전의 모델 설정이 승인 대상과 다릅니다: "
+                + ", ".join(contract["mismatched"])
+            )
+        return {
+            "container": contract["container"],
+            "env": contract["env"],
+            "image": contract["image"],
+        }
 
     @staticmethod
     def _pinned_current_traffic(service: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -564,64 +601,6 @@ class CloudRunAdminClient:
             }
             for revision, percent in by_revision.items()
         ]
-
-    def _create_model_revision_from_service(
-        self,
-        model_version: str,
-        service: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        tag = self._deployment_tag(model_version)
-        template = self._copy_template(service)
-        container = self._target_container(template)
-        # 판정 임계값은 모델 artifact와 Registry 버전 태그에 저장된다. 이전
-        # 리비전의 수동 환경변수가 새 모델 판정을 덮어쓰지 않도록 제거한다.
-        self._remove_env(container, {"ML_FRAUD_THRESHOLD"})
-        self._set_plain_env(
-            container,
-            {
-                "ML_PREDICTOR_MODE": "mlflow",
-                "ML_MODEL_NAME": self.model_name,
-                "ML_MODEL_VERSION": model_version,
-            },
-        )
-        traffic = self._pinned_current_traffic(service)
-        traffic.append(
-            {
-                "type": TRAFFIC_LATEST,
-                "percent": 0,
-                "tag": tag,
-            }
-        )
-
-        payload: dict[str, Any] = {
-            "name": self._service_name,
-            "template": template,
-            "traffic": traffic,
-        }
-        if service.get("etag"):
-            payload["etag"] = service["etag"]
-
-        operation = self._request(
-            "PATCH",
-            self._service_name,
-            params={
-                "updateMask": "template,traffic",
-                "forceNewRevision": "true",
-            },
-            payload=payload,
-        )
-        return {
-            "operation": operation,
-            "tag": tag,
-            "previousTraffic": traffic[:-1],
-            "reused": False,
-        }
-
-    def create_model_revision(self, model_version: str) -> dict[str, Any]:
-        """기존 트래픽을 고정한 채 새 모델 리비전과 태그 URL만 만든다."""
-
-        service = self.get_serving_status()
-        return self._create_model_revision_from_service(model_version, service)
 
     @staticmethod
     def _find_tagged_target(
@@ -680,41 +659,11 @@ class CloudRunAdminClient:
             raise CloudRunAdminError("CD가 준비한 Serving 리비전의 태그 URL이 없습니다.")
 
         template = self._copy_template(service)
-        container = self._target_container(template)
-        image = container.get("image")
-        if not isinstance(image, str) or not re.search(
-            r"@sha256:[0-9a-f]{64}$",
-            image,
-        ):
-            raise CloudRunAdminError(
-                "CD가 준비한 Serving 리비전 이미지가 digest로 고정되지 않았습니다."
-            )
-
-        env = container.get("env", [])
-        if not isinstance(env, list):
-            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
-        env_by_name = {
-            item.get("name"): item.get("value")
-            for item in env
-            if isinstance(item, dict) and isinstance(item.get("name"), str)
-        }
-        expected_env = {
-            "ML_PREDICTOR_MODE": "mlflow",
-            "ML_MODEL_NAME": self.model_name,
-            "ML_MODEL_VERSION": model_version,
-        }
-        mismatched = [
-            name
-            for name, expected in expected_env.items()
-            if env_by_name.get(name) != expected
-        ]
-        if "ML_FRAUD_THRESHOLD" in env_by_name:
-            mismatched.append("ML_FRAUD_THRESHOLD")
-        if mismatched:
-            raise CloudRunAdminError(
-                "CD가 준비한 Serving 리비전의 모델 설정이 승인 대상과 다릅니다: "
-                + ", ".join(mismatched)
-            )
+        contract = self._validate_revision_model_contract(
+            template,
+            model_version=model_version,
+            context="CD가 준비한 Serving",
+        )
 
         current_traffic = self._pinned_current_traffic(service)
         if any(item["revision"] == revision for item in current_traffic):
@@ -726,14 +675,14 @@ class CloudRunAdminClient:
             "operation": None,
             "tag": tag,
             "revision": revision,
-            "image": image,
+            "image": contract["image"],
             "taggedUrl": tagged_url,
             "previousTraffic": current_traffic,
             "reused": True,
         }
 
-    def stage_model_revision(self, model_version: str) -> dict[str, Any]:
-        """ML Serving CD가 준비한 검증된 0% 리비전만 재사용한다."""
+    def verify_staged_model_revision(self, model_version: str) -> dict[str, Any]:
+        """ML Serving CD가 준비한 0% 리비전의 계약을 검증한다."""
 
         tag = self._deployment_tag(model_version)
         service = self.get_serving_status()
@@ -790,38 +739,11 @@ class CloudRunAdminClient:
         if not ready:
             raise CloudRunAdminError(f"{context} 리비전이 Ready 상태가 아닙니다.")
 
-        concrete = dict(revision)
-        container = self._target_container(concrete)
-        image = container.get("image")
-        if not isinstance(image, str) or not re.search(
-            r"@sha256:[0-9a-f]{64}$",
-            image,
-        ):
-            raise CloudRunAdminError(f"{context} 리비전 이미지가 digest로 고정되지 않았습니다.")
-        env = container.get("env", [])
-        if not isinstance(env, list):
-            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
-        env_by_name = {
-            item.get("name"): item.get("value")
-            for item in env
-            if isinstance(item, dict) and isinstance(item.get("name"), str)
-        }
-        expected = {
-            "ML_PREDICTOR_MODE": "mlflow",
-            "ML_MODEL_NAME": self.model_name,
-            "ML_MODEL_VERSION": model_version,
-        }
-        mismatched = [
-            name for name, value in expected.items() if env_by_name.get(name) != value
-        ]
-        if "ML_FRAUD_THRESHOLD" in env_by_name:
-            mismatched.append("ML_FRAUD_THRESHOLD")
-        if mismatched:
-            raise CloudRunAdminError(
-                f"{context} 리비전의 모델 설정이 승인 대상과 다릅니다: "
-                + ", ".join(mismatched)
-            )
-        return {"container": container, "env": env_by_name, "image": image}
+        return self._validate_revision_model_contract(
+            revision,
+            model_version=model_version,
+            context=context,
+        )
 
     def promote_model_revision(
         self,

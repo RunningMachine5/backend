@@ -19,9 +19,13 @@ from app.core import config
 from app.core.db import SessionDep
 from app.data.model.mlops import DatasetVersion, TrainingRun
 from app.dto.mlops import (
+    CloudRunOperationResponse,
     DatasetVersionRequest,
+    DatasetVersionResponse,
     DeploymentCompleteRequest,
     LabeledDatasetBuildRequest,
+    LabeledDatasetBuildResponse,
+    MLflowDetailsPointer,
     MLflowModelDetails,
     ModelPromotionRequest,
     TrainingDecision,
@@ -29,6 +33,8 @@ from app.dto.mlops import (
     TrainingResultRequest,
     TrainingResultStatus,
     TrainingRunRequest,
+    TrainingRunResponse,
+    TrainingRunStartResponse,
 )
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
@@ -92,36 +98,38 @@ def _upstream_error(exc: Exception) -> HTTPException:
     )
 
 
-def _dataset_payload(dataset: DatasetVersion) -> dict[str, Any]:
-    return {
-        "id": dataset.id,
-        "version": dataset.version,
-        "gcs_uri": dataset.gcs_uri,
-        "row_count": dataset.row_count,
-        "created_at": dataset.created_at,
-    }
+def _dataset_payload(dataset: DatasetVersion) -> DatasetVersionResponse:
+    assert dataset.id is not None
+    return DatasetVersionResponse(
+        id=dataset.id,
+        version=dataset.version,
+        gcs_uri=dataset.gcs_uri,
+        row_count=dataset.row_count,
+        created_at=dataset.created_at,
+    )
 
 
-def _training_run_payload(run: TrainingRun) -> dict[str, Any]:
+def _training_run_payload(run: TrainingRun) -> TrainingRunResponse:
+    assert run.id is not None
     details_endpoint = (
         f"/mlops/training/runs/{run.id}/model-details"
-        if run.id is not None and run.mlflow_run_id is not None
+        if run.mlflow_run_id is not None
         else None
     )
-    return {
-        "id": run.id,
-        "model_key": run.model_key,
-        "dataset_version_id": run.dataset_version_id,
-        "cloud_run_execution_name": run.cloud_run_execution_name,
-        "mlflow_run_id": run.mlflow_run_id,
-        "status": run.status,
-        "created_at": run.created_at,
-        "model_details": {
-            "source": "MLFLOW",
-            "run_id": run.mlflow_run_id,
-            "details_endpoint": details_endpoint,
-        },
-    }
+    return TrainingRunResponse(
+        id=run.id,
+        model_key=run.model_key,
+        dataset_version_id=run.dataset_version_id,
+        cloud_run_execution_name=run.cloud_run_execution_name,
+        mlflow_run_id=run.mlflow_run_id,
+        status=run.status,
+        error_message=run.error_message,
+        created_at=run.created_at,
+        model_details=MLflowDetailsPointer(
+            run_id=run.mlflow_run_id,
+            details_endpoint=details_endpoint,
+        ),
+    )
 
 
 def _get_training_run_or_404(run_id: int, session: SessionDep) -> TrainingRun:
@@ -163,11 +171,15 @@ def _resolve_run_model_version(
         raise _upstream_error(exc) from exc
 
 
-@router.post("/datasets", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/datasets",
+    status_code=status.HTTP_201_CREATED,
+    response_model=DatasetVersionResponse,
+)
 def create_dataset_version(
     payload: DatasetVersionRequest,
     session: SessionDep,
-) -> dict[str, Any]:
+) -> DatasetVersionResponse:
     """GCS에 준비된 불변 학습 데이터셋을 버전으로 등록한다."""
 
     dataset = DatasetVersion(**payload.model_dump())
@@ -181,15 +193,19 @@ def create_dataset_version(
     return _dataset_payload(dataset)
 
 
-@router.get("/datasets")
-def list_dataset_versions(session: SessionDep) -> list[dict[str, Any]]:
+@router.get("/datasets", response_model=list[DatasetVersionResponse])
+def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
     datasets = session.exec(
         select(DatasetVersion).order_by(DatasetVersion.created_at.desc())
     ).all()
     return [_dataset_payload(dataset) for dataset in datasets]
 
 
-@router.post("/datasets/build", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/datasets/build",
+    status_code=status.HTTP_201_CREATED,
+    response_model=LabeledDatasetBuildResponse,
+)
 def build_labeled_dataset_version(
     payload: LabeledDatasetBuildRequest,
     builder: LabeledDatasetBuilderDep,
@@ -232,7 +248,7 @@ def build_labeled_dataset_version(
         ) from exc
     session.refresh(dataset)
     return {
-        **_dataset_payload(dataset),
+        **_dataset_payload(dataset).model_dump(),
         "base_dataset_uri": MLOPS_BASE_DATASET_URI,
         "build": {
             "source_row_count": result.source_row_count,
@@ -245,6 +261,7 @@ def build_labeled_dataset_version(
 @router.post(
     "/training/runs",
     status_code=status.HTTP_202_ACCEPTED,
+    response_model=TrainingRunStartResponse,
 )
 def start_training_run(
     payload: TrainingRunRequest,
@@ -311,16 +328,16 @@ def start_training_run(
 # 돌려준다. 아래 조회/결과 API는 그 비동기 실행 상태를 연결하는 경계다.
 
 
-@router.get("/training/runs")
-def list_training_runs(session: SessionDep) -> list[dict[str, Any]]:
+@router.get("/training/runs", response_model=list[TrainingRunResponse])
+def list_training_runs(session: SessionDep) -> list[TrainingRunResponse]:
     runs = session.exec(
         select(TrainingRun).order_by(TrainingRun.created_at.desc())
     ).all()
     return [_training_run_payload(run) for run in runs]
 
 
-@router.get("/training/runs/{run_id}")
-def get_training_run(run_id: int, session: SessionDep) -> dict[str, Any]:
+@router.get("/training/runs/{run_id}", response_model=TrainingRunResponse)
+def get_training_run(run_id: int, session: SessionDep) -> TrainingRunResponse:
     return _training_run_payload(_get_training_run_or_404(run_id, session))
 
 
@@ -347,12 +364,15 @@ def get_training_run_model_details(
         raise _upstream_error(exc) from exc
 
 
-@router.post("/training/runs/{run_id}/result")
+@router.post(
+    "/training/runs/{run_id}/result",
+    response_model=TrainingRunResponse,
+)
 def record_training_result(
     run_id: int,
     payload: TrainingResultRequest,
     session: SessionDep,
-) -> dict[str, Any]:
+) -> TrainingRunResponse:
     """Training Job 결과를 최소 TrainingRun 스키마에 멱등 기록한다."""
 
     run = _get_training_run_for_update_or_404(run_id, session)
@@ -396,6 +416,9 @@ def record_training_result(
             run.mlflow_run_id = payload.mlflow_run_id
             run.status = "CANDIDATE"
             execution_changed = True
+        if run.error_message is not None:
+            run.error_message = None
+            execution_changed = True
         if execution_changed:
             session.add(run)
             session.commit()
@@ -405,12 +428,16 @@ def record_training_result(
 
     if run.status in {"REQUESTED", "RUNNING"}:
         run.status = "FAILED"
+        run.error_message = payload.error_message
         execution_changed = True
     elif run.status != "FAILED":
         raise HTTPException(
             status_code=409,
             detail="이미 성공 결과가 기록된 학습 실행을 실패로 변경할 수 없습니다.",
         )
+    elif run.error_message is None and payload.error_message is not None:
+        run.error_message = payload.error_message
+        execution_changed = True
     if execution_changed:
         session.add(run)
         session.commit()
@@ -460,7 +487,7 @@ def decide_training_run(
         return {"training_run": _training_run_payload(run), "operation": None}
 
     try:
-        result = client.stage_model_revision(model_version)
+        result = client.verify_staged_model_revision(model_version)
     except CloudRunAdminError as exc:
         raise _upstream_error(exc) from exc
     # 승인 태그는 CD 후보 리비전 검증이 성공한 뒤에만 기록한다. 그렇지 않으면
@@ -555,7 +582,10 @@ def get_training_status(
     }
 
 
-@router.get("/operations/{operation_id}")
+@router.get(
+    "/operations/{operation_id}",
+    response_model=CloudRunOperationResponse,
+)
 def get_operation(
     operation_id: str,
     client: CloudRunAdminClientDep,

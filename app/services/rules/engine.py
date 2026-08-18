@@ -88,14 +88,6 @@ class RuleEngine:
         context = self.feature_builder.build(features)
         return self.score_validated_context(context, rule_set)
 
-    def score_context(
-        self,
-        context: Mapping[str, Any],
-        rule_set: RuleSetDefinition,
-    ) -> RuleScoreResult:
-        self.validate_rule_set(rule_set)
-        return self.score_validated_context(context, rule_set)
-
     def score_validated_context(
         self,
         context: Mapping[str, Any],
@@ -104,7 +96,7 @@ class RuleEngine:
         """이미 ``validate_rule_set``을 통과한 정의를 검증 없이 평가한다.
 
         동일한 불변 RuleSetDefinition으로 많은 거래를 평가하는 리플레이 전용
-        최적화 경로다. 일반 호출자는 검증을 포함하는 ``score_context``를 쓴다.
+        최적화 경로다. 일반 호출자는 원본 Feature를 받는 ``score``를 쓴다.
         """
 
         type_scores: dict[str, float] = {}

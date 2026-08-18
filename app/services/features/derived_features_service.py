@@ -171,20 +171,12 @@ class DerivedFeatureService:
         )
 
         # time_difference 계산
-        if last_transaction is None:
-            time_difference = 0
-        else:
-            current_datetime = transaction.transaction_datetime
-            previous_datetime = last_transaction.transaction_datetime
-            # SQLite 테스트 DB는 timezone을 제거하므로 두 값의 기준만 맞춰 계산한다.
-            if (
-                previous_datetime.tzinfo is None
-                and current_datetime.tzinfo is not None
-            ):
-                previous_datetime = previous_datetime.replace(
-                    tzinfo=current_datetime.tzinfo
-                )
-            time_difference = current_datetime - previous_datetime
+        time_difference = (
+            0
+            if last_transaction is None
+            else transaction.transaction_datetime
+            - last_transaction.transaction_datetime
+        )
 
         # 거래 후 잔고 account_balance 계산
         account_balance = context.source_account.current_balance - transaction.transaction_amount
