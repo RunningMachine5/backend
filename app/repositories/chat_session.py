@@ -326,6 +326,18 @@ class ChatSessionRepository:
             index_elements=["transaction_id"],
         )
 
+    def get_fraud_type_scores(
+        self,
+        transaction_id: int,
+    ) -> FraudTypeScoreAfterChat | None:
+        """거래의 채팅 채점 결과를 조회한다(담당자 화면용).
+
+        상담 종료 시점에 한 번만 집계하므로, 그 전에 조회하면 ``None`` 이다.
+        """
+
+        # transaction_id 가 PK 라 그대로 조회한다.
+        return self.session.get(FraudTypeScoreAfterChat, transaction_id)
+
     def get_status_by_transaction(
         self,
         transaction_id: int,
