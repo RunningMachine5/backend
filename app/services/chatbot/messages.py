@@ -31,7 +31,7 @@ END_CHAT_MESSAGE = (
 )
 
 # B.3 평가 판정별 안내 — SUFFICIENT는 문구가 없고 WANT_END는 B.6을 쓴다.
-TOO_VAGUE_MESSAGE = "좀 더 구체적으로 다시 말해주실 수 있을까요?"
+TOO_VAGUE_MESSAGE = "저는 금융사기와 관련된 질문에만 대답이 가능해요 관련된 내용을 좀 더 구체적으로 말씀해주실 수 있을까요?"
 # B.4 재시도 소진 또는 평가 LLM 장애 시 다음 질문 전환 안내
 NEXT_QUESTION_MESSAGE = "알겠습니다 다음 질문을 할게요"
 
