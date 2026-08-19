@@ -1,6 +1,7 @@
 import csv
 import unittest
 from dataclasses import dataclass
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -31,6 +32,8 @@ from tests.ml_feature_fixture import valid_ml_raw_data, valid_transaction_row
 
 FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
 FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
+TEST_PERIOD_START = date(2026, 8, 1)
+TEST_PERIOD_END = date(2026, 8, 31)
 
 
 class FakeObjectStorage:
@@ -253,6 +256,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             ).build(
                 self.session,
                 destination_uri=destination_uri,
+                period_start=TEST_PERIOD_START,
+                period_end=TEST_PERIOD_END,
             )
         finally:
             event.remove(self.engine, "before_cursor_execute", record_select)
@@ -271,6 +276,67 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertIn(FLAG_DEPOSIT_CANONICAL, first_row)
         self.assertNotIn(FLAG_DEPOSIT_ALIAS, first_row)
         self.assertEqual(first_row["is_fraud"], "1")
+        self.assertEqual(result.normal_count, 1)
+        self.assertEqual(result.fraud_count, 1)
+
+    def test_uses_only_confirmed_labels_in_selected_period(self) -> None:
+        august = _transaction_payload(
+            "TX-DATASET-1",
+            customer_id=1,
+            source_account_number="source-account-1",
+            recipient_account_number="recipient-account-1",
+            confirmed_is_fraud=True,
+        )
+        september = _transaction_payload(
+            "TX-DATASET-2",
+            customer_id=2,
+            source_account_number="source-account-2",
+            recipient_account_number="recipient-account-2",
+            confirmed_is_fraud=False,
+        )
+        self._save(august)
+        self._save(september)
+        september_transaction = self.session.get(Transaction, september.transaction_id)
+        assert september_transaction is not None
+        september_transaction.transaction_datetime = datetime(2026, 9, 1)
+        self.session.add(september_transaction)
+        self.session.commit()
+
+        source_uri = "gs://bucket/base/train1.csv"
+        destination_uri = "gs://bucket/versions/august.csv"
+        storage = FakeObjectStorage({source_uri: _csv_bytes([])})
+        builder = LabeledDatasetBuilder(storage, source_uri=source_uri)
+
+        summary = builder.label_summary(
+            self.session,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
+        )
+        result = builder.build(
+            self.session,
+            destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
+        )
+
+        self.assertEqual(summary.labeled_count, 1)
+        self.assertEqual(summary.normal_count, 0)
+        self.assertEqual(summary.fraud_count, 1)
+        self.assertEqual(result.appended_label_count, 1)
+        rows = list(
+            csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
+        )
+        self.assertEqual([row["transaction_id"] for row in rows], ["1"])
+
+    def test_rejects_period_already_included_in_base_dataset(self) -> None:
+        builder = LabeledDatasetBuilder(FakeObjectStorage({}))
+
+        with self.assertRaisesRegex(DatasetBuildError, "2026-08-01"):
+            builder.label_summary(
+                self.session,
+                period_start=date(2026, 7, 1),
+                period_end=date(2026, 7, 31),
+            )
 
     def test_preserves_source_row_and_appends_confirmed_db_row(self) -> None:
         payload = _transaction_payload(
@@ -296,6 +362,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         ).build(
             self.session,
             destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
         )
 
         self.assertEqual(result.source_row_count, 1)
@@ -348,6 +416,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         ).build(
             self.session,
             destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
         )
 
         rows = list(
@@ -387,6 +457,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         LabeledDatasetBuilder(storage, source_uri=source_uri).build(
             self.session,
             destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
         )
 
         row = next(
@@ -418,6 +490,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         ).build(
             self.session,
             destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
         )
 
         row = next(
@@ -455,6 +529,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             ).build(
                 self.session,
                 destination_uri=destination_uri,
+                period_start=TEST_PERIOD_START,
+                period_end=TEST_PERIOD_END,
             )
 
         self.assertNotIn(destination_uri, storage.objects)
@@ -485,6 +561,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             ).build(
                 self.session,
                 destination_uri="gs://bucket/generated/v2/transactions.csv",
+                period_start=TEST_PERIOD_START,
+                period_end=TEST_PERIOD_END,
             )
 
 

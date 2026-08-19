@@ -9,7 +9,7 @@ MLflow에서, 실제 리비전과 트래픽의 원본은 Cloud Run에서 다시 
 from __future__ import annotations
 
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Annotated, Any
 
@@ -22,6 +22,8 @@ from app.core.db import SessionDep
 from app.data.model.mlops import DatasetVersion, TrainingRun
 from app.dto.mlops import (
     CloudRunOperationResponse,
+    DatasetPeriodRequest,
+    DatasetPeriodSummaryResponse,
     DatasetVersionRequest,
     DatasetVersionResponse,
     DeploymentCompleteRequest,
@@ -46,6 +48,8 @@ from app.services.mlops.cloud_run import (
     CloudRunAdminError,
 )
 from app.services.mlops.dataset_builder import (
+    MLOPS_BASE_DATASET_PERIOD_END,
+    MLOPS_BASE_DATASET_PERIOD_START,
     MLOPS_BASE_DATASET_URI,
     DatasetBuildError,
     DatasetStorageError,
@@ -96,13 +100,17 @@ DATASET_VERSION_DIRECTORY = "versions"
 # 객체의 주소와 버전만 가리킨다.
 
 
-def _new_labeled_dataset_target() -> tuple[str, str]:
-    """고정 원본 이름과 생성 시각으로 새 버전명과 저장 위치를 만든다."""
+def _new_labeled_dataset_target(
+    period_start: date,
+    period_end: date,
+) -> tuple[str, str]:
+    """선택 기간과 생성 시각으로 새 버전명과 저장 위치를 만든다."""
 
     source = parse_gcs_uri(MLOPS_BASE_DATASET_URI)
     source_name = PurePosixPath(source.name).stem
     created_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    version = f"{source_name}-labeled-{created_at}"
+    period = f"{period_start:%Y%m%d}-{period_end:%Y%m%d}"
+    version = f"{source_name}-labeled-{period}-{created_at}"
     gcs_uri = f"gs://{source.bucket}/{DATASET_VERSION_DIRECTORY}/{version}.csv"
     return version, gcs_uri
 
@@ -128,6 +136,10 @@ def _dataset_payload(dataset: DatasetVersion) -> DatasetVersionResponse:
         version=dataset.version,
         gcs_uri=dataset.gcs_uri,
         row_count=dataset.row_count,
+        period_start=dataset.period_start,
+        period_end=dataset.period_end,
+        period_normal_count=dataset.period_normal_count,
+        period_fraud_count=dataset.period_fraud_count,
         created_at=dataset.created_at,
     )
 
@@ -225,17 +237,51 @@ def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
 
 
 @router.post(
+    "/datasets/preview",
+    response_model=DatasetPeriodSummaryResponse,
+)
+def preview_labeled_dataset_version(
+    payload: DatasetPeriodRequest,
+    builder: LabeledDatasetBuilderDep,
+    session: SessionDep,
+) -> DatasetPeriodSummaryResponse:
+    """선택 기간에 학습 데이터로 추가할 확정 라벨 건수를 보여준다."""
+
+    try:
+        summary = builder.label_summary(
+            session,
+            period_start=payload.period_start,
+            period_end=payload.period_end,
+        )
+    except DatasetBuildError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return DatasetPeriodSummaryResponse(
+        base_period_start=MLOPS_BASE_DATASET_PERIOD_START,
+        base_period_end=MLOPS_BASE_DATASET_PERIOD_END,
+        period_start=payload.period_start,
+        period_end=payload.period_end,
+        labeled_count=summary.labeled_count,
+        normal_count=summary.normal_count,
+        fraud_count=summary.fraud_count,
+    )
+
+
+@router.post(
     "/datasets/build",
     status_code=status.HTTP_201_CREATED,
     response_model=LabeledDatasetBuildResponse,
 )
 def build_labeled_dataset_version(
+    payload: DatasetPeriodRequest,
     builder: LabeledDatasetBuilderDep,
     session: SessionDep,
 ) -> dict[str, Any]:
     """고정 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
 
-    version, gcs_uri = _new_labeled_dataset_target()
+    version, gcs_uri = _new_labeled_dataset_target(
+        payload.period_start,
+        payload.period_end,
+    )
     existing_version = session.exec(
         select(DatasetVersion).where(DatasetVersion.version == version)
     ).first()
@@ -249,6 +295,8 @@ def build_labeled_dataset_version(
         result = builder.build(
             session,
             destination_uri=gcs_uri,
+            period_start=payload.period_start,
+            period_end=payload.period_end,
         )
     except DatasetStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -259,6 +307,10 @@ def build_labeled_dataset_version(
         version=version,
         gcs_uri=gcs_uri,
         row_count=result.output_row_count,
+        period_start=payload.period_start,
+        period_end=payload.period_end,
+        period_normal_count=result.normal_count,
+        period_fraud_count=result.fraud_count,
     )
     session.add(dataset)
     try:
@@ -277,6 +329,8 @@ def build_labeled_dataset_version(
             "source_row_count": result.source_row_count,
             "confirmed_label_count": result.confirmed_label_count,
             "appended_label_count": result.appended_label_count,
+            "normal_count": result.normal_count,
+            "fraud_count": result.fraud_count,
         },
     }
 

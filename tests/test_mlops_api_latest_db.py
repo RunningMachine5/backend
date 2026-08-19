@@ -16,6 +16,7 @@ from app.services.mlops.cloud_run import (
 )
 from app.services.mlops.dataset_builder import (
     DatasetBuildResult,
+    DatasetLabelSummary,
     get_labeled_dataset_builder,
 )
 from app.services.mlops.mlflow import MLflowRegistryError, get_mlflow_registry_client
@@ -82,15 +83,21 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             output_row_count=200_012,
             confirmed_label_count=12,
             appended_label_count=12,
+            normal_count=9,
+            fraud_count=3,
         )
 
-        response = self.client.post("/mlops/datasets/build", headers=self.headers)
+        response = self.client.post(
+            "/mlops/datasets/build",
+            headers=self.headers,
+            json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
+        )
 
         self.assertEqual(response.status_code, 201, response.text)
         created = response.json()
         self.assertRegex(
             created["version"],
-            r"^train1-labeled-\d{8}T\d{6}Z$",
+            r"^train1-labeled-20260801-20260831-\d{8}T\d{6}Z$",
         )
         self.assertEqual(
             created["gcs_uri"],
@@ -100,6 +107,39 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.dataset_builder.build.assert_called_once_with(
             ANY,
             destination_uri=created["gcs_uri"],
+            period_start=ANY,
+            period_end=ANY,
+        )
+        self.assertEqual(created["period_start"], "2026-08-01")
+        self.assertEqual(created["period_end"], "2026-08-31")
+        self.assertEqual(created["period_normal_count"], 9)
+        self.assertEqual(created["period_fraud_count"], 3)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_dataset_preview_returns_period_label_counts(self) -> None:
+        self.dataset_builder.label_summary.return_value = DatasetLabelSummary(
+            normal_count=9,
+            fraud_count=3,
+        )
+
+        response = self.client.post(
+            "/mlops/datasets/preview",
+            headers=self.headers,
+            json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "base_period_start": "2026-01-01",
+                "base_period_end": "2026-07-31",
+                "period_start": "2026-08-01",
+                "period_end": "2026-08-31",
+                "labeled_count": 12,
+                "normal_count": 9,
+                "fraud_count": 3,
+            },
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")

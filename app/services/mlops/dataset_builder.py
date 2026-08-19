@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +16,7 @@ from google import auth as google_auth
 from google.auth.transport.requests import AuthorizedSession
 from pydantic import ValidationError
 from sqlalchemy.orm import aliased
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from app.data.model.account import Account
 from app.data.model.customer import Customer
@@ -67,6 +67,8 @@ TRAINING_CSV_COLUMNS = (
 MLOPS_BASE_DATASET_URI = (
     "gs://fdshield-ml-data-801817539291/base/train1.csv"
 )
+MLOPS_BASE_DATASET_PERIOD_START = date(2026, 1, 1)
+MLOPS_BASE_DATASET_PERIOD_END = date(2026, 7, 31)
 if len(TRAINING_CSV_COLUMNS) != 53:  # pragma: no cover - import invariant
     raise RuntimeError("TRAINING_CSV_COLUMNS must contain exactly 53 columns.")
 if len(TRAINING_CSV_COLUMNS) != len(  # pragma: no cover - import invariant
@@ -183,6 +185,18 @@ class DatasetBuildResult:
     output_row_count: int
     confirmed_label_count: int
     appended_label_count: int
+    normal_count: int
+    fraud_count: int
+
+
+@dataclass(frozen=True)
+class DatasetLabelSummary:
+    normal_count: int
+    fraud_count: int
+
+    @property
+    def labeled_count(self) -> int:
+        return self.normal_count + self.fraud_count
 
 
 @dataclass(frozen=True)
@@ -214,9 +228,55 @@ class LabeledDatasetBuilder:
         self._source_uri = source_uri
 
     @staticmethod
-    def _confirmed_transactions(
+    def _period_bounds(period_start: date, period_end: date) -> tuple[datetime, datetime]:
+        """선택한 날짜 전체를 UTC 거래 시각 범위로 바꾼다."""
+
+        if period_start > period_end:
+            raise DatasetBuildError("기간 시작일은 종료일보다 늦을 수 없습니다.")
+        if period_start <= MLOPS_BASE_DATASET_PERIOD_END:
+            raise DatasetBuildError(
+                "추가 기간은 기본 데이터 다음 날인 2026-08-01부터 선택할 수 있습니다."
+            )
+        return (
+            datetime.combine(period_start, time.min, tzinfo=UTC),
+            datetime.combine(period_end, time.max, tzinfo=UTC),
+        )
+
+    @classmethod
+    def label_summary(
+        cls,
         session: Session,
+        *,
+        period_start: date,
+        period_end: date,
+    ) -> DatasetLabelSummary:
+        """선택 기간에 담당자가 확정한 정상·사기 건수를 센다."""
+
+        start_at, end_at = cls._period_bounds(period_start, period_end)
+        rows = session.exec(
+            select(TransactionLabel.confirmed_is_fraud, func.count())
+            .join(Transaction, Transaction.id == TransactionLabel.transaction_id)
+            .where(
+                Transaction.transaction_datetime >= start_at,
+                Transaction.transaction_datetime <= end_at,
+            )
+            .group_by(TransactionLabel.confirmed_is_fraud)
+        ).all()
+        counts = {bool(is_fraud): count for is_fraud, count in rows}
+        return DatasetLabelSummary(
+            normal_count=counts.get(False, 0),
+            fraud_count=counts.get(True, 0),
+        )
+
+    @classmethod
+    def _confirmed_transactions(
+        cls,
+        session: Session,
+        *,
+        period_start: date,
+        period_end: date,
     ) -> dict[int, ConfirmedTransaction]:
+        start_at, end_at = cls._period_bounds(period_start, period_end)
         source_account = aliased(Account, name="source_account")
         recipient_account = aliased(Account, name="recipient_account")
         rows = session.exec(
@@ -245,6 +305,10 @@ class LabeledDatasetBuilder:
             .outerjoin(
                 DerivedFeatures,
                 DerivedFeatures.id == Transaction.id,
+            )
+            .where(
+                Transaction.transaction_datetime >= start_at,
+                Transaction.transaction_datetime <= end_at,
             )
             .order_by(TransactionLabel.labeled_at, Transaction.id)
         ).all()
@@ -361,11 +425,17 @@ class LabeledDatasetBuilder:
         session: Session,
         *,
         destination_uri: str,
+        period_start: date,
+        period_end: date,
     ) -> DatasetBuildResult:
         if parse_gcs_uri(self._source_uri) == parse_gcs_uri(destination_uri):
             raise DatasetBuildError("새 데이터셋은 기존 GCS 객체와 달라야 합니다.")
 
-        confirmed = self._confirmed_transactions(session)
+        confirmed = self._confirmed_transactions(
+            session,
+            period_start=period_start,
+            period_end=period_end,
+        )
         if not confirmed:
             raise DatasetBuildError("반영할 확정 거래 라벨이 없습니다.")
 
@@ -424,11 +494,16 @@ class LabeledDatasetBuilder:
             output_row_count = source_row_count + appended_label_count
             self._storage.upload_new(output_path, destination_uri)
 
+        fraud_count = sum(
+            1 for item in confirmed.values() if item.label.confirmed_is_fraud
+        )
         return DatasetBuildResult(
             source_row_count=source_row_count,
             output_row_count=output_row_count,
             confirmed_label_count=len(confirmed),
             appended_label_count=appended_label_count,
+            normal_count=len(confirmed) - fraud_count,
+            fraud_count=fraud_count,
         )
 
 
@@ -445,10 +520,13 @@ LabeledDatasetBuilderDep = Annotated[
 
 __all__ = [
     "MLOPS_BASE_DATASET_URI",
+    "MLOPS_BASE_DATASET_PERIOD_END",
+    "MLOPS_BASE_DATASET_PERIOD_START",
     "TRAINING_CSV_COLUMNS",
     "ConfirmedTransaction",
     "DatasetBuildError",
     "DatasetBuildResult",
+    "DatasetLabelSummary",
     "DatasetStorageError",
     "GCSObjectStorage",
     "LabeledDatasetBuilder",

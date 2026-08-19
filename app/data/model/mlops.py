@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import BigInteger, Column, DateTime
 from sqlmodel import Field, SQLModel
@@ -22,6 +22,10 @@ class DatasetVersion(SQLModel, table=True):
     version: str = Field(max_length=64, unique=True)
     gcs_uri: str = Field(max_length=2048)
     row_count: int = Field(ge=0, sa_type=BigInteger)
+    period_start: date | None = Field(default=None)
+    period_end: date | None = Field(default=None)
+    period_normal_count: int = Field(default=0, ge=0, sa_type=BigInteger)
+    period_fraud_count: int = Field(default=0, ge=0, sa_type=BigInteger)
     created_at: datetime = Field(
         default_factory=datetime.now,
         sa_column=Column(DateTime(timezone=True), nullable=False),
