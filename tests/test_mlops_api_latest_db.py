@@ -78,6 +78,10 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_dataset_build_generates_version_and_gcs_uri(self) -> None:
+        self.dataset_builder.label_summary.return_value = DatasetLabelSummary(
+            normal_count=9,
+            fraud_count=3,
+        )
         self.dataset_builder.build.return_value = DatasetBuildResult(
             source_row_count=200_000,
             output_row_count=200_012,
@@ -97,7 +101,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         created = response.json()
         self.assertRegex(
             created["version"],
-            r"^train1-labeled-20260801-20260831-\d{8}T\d{6}Z$",
+            r"^train1-labeled-20260801-20260831-n9-f3-\d{8}T\d{6}Z$",
         )
         self.assertEqual(
             created["gcs_uri"],

@@ -8,6 +8,7 @@ MLflow에서, 실제 리비전과 트래픽의 원본은 Cloud Run에서 다시 
 
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
@@ -103,16 +104,40 @@ DATASET_VERSION_DIRECTORY = "versions"
 def _new_labeled_dataset_target(
     period_start: date,
     period_end: date,
+    normal_count: int,
+    fraud_count: int,
 ) -> tuple[str, str]:
-    """선택 기간과 생성 시각으로 새 버전명과 저장 위치를 만든다."""
+    """기간과 라벨 수를 이름에 넣어 DB 컬럼 없이도 다시 표시한다."""
 
     source = parse_gcs_uri(MLOPS_BASE_DATASET_URI)
     source_name = PurePosixPath(source.name).stem
     created_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     period = f"{period_start:%Y%m%d}-{period_end:%Y%m%d}"
-    version = f"{source_name}-labeled-{period}-{created_at}"
+    version = (
+        f"{source_name}-labeled-{period}"
+        f"-n{normal_count}-f{fraud_count}-{created_at}"
+    )
     gcs_uri = f"gs://{source.bucket}/{DATASET_VERSION_DIRECTORY}/{version}.csv"
     return version, gcs_uri
+
+
+def _dataset_metadata_from_version(
+    version: str,
+) -> tuple[date | None, date | None, int, int]:
+    """우리가 만든 버전명에서 기간과 정상·사기 건수를 읽는다."""
+
+    match = re.fullmatch(
+        r".+-labeled-(\d{8})-(\d{8})-n(\d+)-f(\d+)-\d{8}T\d{6}Z",
+        version,
+    )
+    if match is None:
+        return None, None, 0, 0
+    return (
+        datetime.strptime(match.group(1), "%Y%m%d").date(),
+        datetime.strptime(match.group(2), "%Y%m%d").date(),
+        int(match.group(3)),
+        int(match.group(4)),
+    )
 
 
 def _operation_id(payload: dict[str, Any]) -> str | None:
@@ -131,15 +156,18 @@ def _upstream_error(exc: Exception) -> HTTPException:
 
 def _dataset_payload(dataset: DatasetVersion) -> DatasetVersionResponse:
     assert dataset.id is not None
+    period_start, period_end, normal_count, fraud_count = (
+        _dataset_metadata_from_version(dataset.version)
+    )
     return DatasetVersionResponse(
         id=dataset.id,
         version=dataset.version,
         gcs_uri=dataset.gcs_uri,
         row_count=dataset.row_count,
-        period_start=dataset.period_start,
-        period_end=dataset.period_end,
-        period_normal_count=dataset.period_normal_count,
-        period_fraud_count=dataset.period_fraud_count,
+        period_start=period_start,
+        period_end=period_end,
+        period_normal_count=normal_count,
+        period_fraud_count=fraud_count,
         created_at=dataset.created_at,
     )
 
@@ -312,9 +340,22 @@ def build_labeled_dataset_version(
 ) -> dict[str, Any]:
     """고정 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
 
+    try:
+        summary = builder.label_summary(
+            session,
+            period_start=payload.period_start,
+            period_end=payload.period_end,
+        )
+    except DatasetBuildError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if summary.labeled_count == 0:
+        raise HTTPException(status_code=422, detail="반영할 확정 거래 라벨이 없습니다.")
+
     version, gcs_uri = _new_labeled_dataset_target(
         payload.period_start,
         payload.period_end,
+        summary.normal_count,
+        summary.fraud_count,
     )
     existing_version = session.exec(
         select(DatasetVersion).where(DatasetVersion.version == version)
@@ -341,10 +382,6 @@ def build_labeled_dataset_version(
         version=version,
         gcs_uri=gcs_uri,
         row_count=result.output_row_count,
-        period_start=payload.period_start,
-        period_end=payload.period_end,
-        period_normal_count=result.normal_count,
-        period_fraud_count=result.fraud_count,
     )
     session.add(dataset)
     try:
