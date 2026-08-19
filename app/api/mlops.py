@@ -9,6 +9,7 @@ MLflow에서, 실제 리비전과 트래픽의 원본은 Cloud Run에서 다시 
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -23,6 +24,7 @@ from app.dto.mlops import (
     DatasetVersionRequest,
     DatasetVersionResponse,
     DeploymentCompleteRequest,
+    InferencePerformanceResponse,
     LabeledDatasetBuildRequest,
     LabeledDatasetBuildResponse,
     MLflowDetailsPointer,
@@ -36,6 +38,7 @@ from app.dto.mlops import (
     TrainingRunResponse,
     TrainingRunStartResponse,
 )
+from app.repositories.inference_performance import InferencePerformanceRepository
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
     CloudRunAdminClientDep,
@@ -79,6 +82,8 @@ router = APIRouter(
     tags=["mlops-admin"],
     dependencies=[Depends(require_mlops_admin)],
 )
+
+PERFORMANCE_WINDOW_MINUTES = 5
 
 # DatasetVersion은 CSV 자체를 DB에 복사하지 않고, 학습에 사용할 불변 GCS
 # 객체의 주소와 버전만 가리킨다.
@@ -613,6 +618,25 @@ def get_serving_status(
         "traffic": service.get("trafficStatuses", []),
         "terminal_condition": service.get("terminalCondition"),
     }
+
+
+@router.get(
+    "/serving/performance",
+    response_model=InferencePerformanceResponse,
+)
+def get_serving_performance(
+    session: SessionDep,
+) -> InferencePerformanceResponse:
+    """최근 5분 동안 저장된 온라인 추론 성능을 반환한다."""
+
+    since = datetime.now() - timedelta(minutes=PERFORMANCE_WINDOW_MINUTES)
+    summary = InferencePerformanceRepository(session).summarize_since(since)
+    return InferencePerformanceResponse(
+        window_minutes=PERFORMANCE_WINDOW_MINUTES,
+        inference_count=summary.inference_count,
+        p95_latency_ms=summary.p95_latency_ms,
+        latest_inference_at=summary.latest_inference_at,
+    )
 
 
 @router.post(

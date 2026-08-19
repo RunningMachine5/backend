@@ -161,6 +161,15 @@ class TrainingRunResponse(StrictMLOpsDTO):
     model_details: MLflowDetailsPointer
 
 
+class InferencePerformanceResponse(StrictMLOpsDTO):
+    """모델 관리 화면에 표시할 최근 온라인 추론 성능."""
+
+    window_minutes: int
+    inference_count: int
+    p95_latency_ms: int | None
+    latest_inference_at: datetime | None
+
+
 class CloudRunOperationResponse(BaseModel):
     """Cloud Run 장기 실행 operation의 공통 필드와 확장 필드."""
 
@@ -199,6 +208,7 @@ __all__ = [
     "DatasetVersionRequest",
     "DatasetVersionResponse",
     "DeploymentCompleteRequest",
+    "InferencePerformanceResponse",
     "LabeledDatasetBuildRequest",
     "LabeledDatasetBuildResponse",
     "MLflowDetailsPointer",
