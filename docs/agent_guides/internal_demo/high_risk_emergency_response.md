@@ -24,7 +24,7 @@ action_codes:
   - REQUEST_EMERGENCY_REVIEW
   - URGENT_ACCOUNT_FLOW_REVIEW
   - PRESERVE_CASE_EVIDENCE
-version: "1.0"
+version: "1.1"
 published_at: 2026-08-11
 accessed_at: 2026-08-11
 ---
@@ -35,7 +35,7 @@ accessed_at: 2026-08-11
 
 ## 우선 확인
 
-거래 식별자, 탐지 시각, 위험등급, Rule 대표 유형과 적중 근거를 확인한다. 고객 연락이 필요한
+거래 식별자, 탐지 시각, 위험등급, 유형별 Rule 점수와 Agent 적용 유형, 적중 근거를 확인한다. 고객 연락이 필요한
 경우 등록된 공식 연락처를 사용하고 추가 거래가 진행 중인지 우선 확인한다.
 
 ## 유형별 긴급 조치 방향

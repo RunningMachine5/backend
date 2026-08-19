@@ -194,7 +194,7 @@ uv run python -m unittest tests.test_agent_guide_evaluation -v
 메타데이터가 바뀌면 해당 문서의 Chunk만 교체하며, 변경이 없으면 재임베딩하지 않는다.
 
 ```powershell
-python -m app.scripts.index_agent_guides
+uv run --env-file .env python -m app.scripts.index_agent_guides
 ```
 
 검색은 사기 유형, 대상, 위험등급, 조치 코드로 후보 문서를 먼저 제한한 후 pgvector
@@ -202,7 +202,7 @@ python -m app.scripts.index_agent_guides
 벡터 검색과 메타데이터 결합 검색의 Precision@1, Hit Rate@3/5, MRR을 비교한다.
 
 ```powershell
-python -m app.scripts.evaluate_agent_guide_search
+uv run --env-file .env python -m app.scripts.evaluate_agent_guide_search
 ```
 
 ### 문서·메타데이터 1차 개선 결과
@@ -224,7 +224,7 @@ python -m app.scripts.evaluate_agent_guide_search
 외부 API와 PostgreSQL 없이 실행하는 단위 테스트는 다음과 같다.
 
 ```powershell
-python -m unittest tests.test_agent_guide_vector_search -v
+uv run python -m unittest tests.test_agent_guide_vector_search -v
 ```
 
 ## RAG·LLM 대응 계획 품질 평가
@@ -280,10 +280,9 @@ fallback되었다. 정책 조치 코드는 모든 결과에서 그대로 유지�
 
 ### 생성 지연시간 개선 결과
 
-1차 평가에서 확인된 평균 26.48초의 생성 지연과 12.5% fallback을 개선하기 위해
-검색 문맥을 Top-5에서 Top-3으로 줄이고, `gpt-5-mini`의 reasoning effort를
-`low`로 설정했다. 구조화 출력이 중간에 종료되지 않도록 최대 생성 토큰은 3000으로
-설정했다. 최종 후보는 8개 시나리오를 3회씩 총 24건 실행하여 검증했다.
+1차 평가에서 확인된 평균 26.48초의 생성 지연과 12.5% fallback을 비교하기 위해
+검색 문맥 Top-3, `gpt-5-mini` reasoning effort `low`, 최대 생성 토큰 3000인 후보를
+8개 시나리오에서 3회씩 총 24건 실행했다. 아래 표는 이 **평가 후보의 과거 측정값**이다.
 
 | 지표 | 개선 전 | 개선 후 |
 |---|---:|---:|
@@ -300,9 +299,16 @@ fallback되었다. 정책 조치 코드는 모든 결과에서 그대로 유지�
 | 생성시간 P95 | 미측정 | 15,804ms |
 
 평균 생성시간은 약 51.5% 감소했으며, 24건 모두 정책 조치와 출력 계약을 유지했다.
-출력 토큰을 1200으로 제한한 후보는 모든 시나리오에서 구조화 출력 생성에 실패했기
-때문에 채택하지 않았다. 속도만 줄이지 않고 품질 지표를 함께 비교하여 최종 설정을
-선정한 결과이다.
+이 측정에서는 출력 토큰을 1200으로 제한한 후보가 모든 시나리오에서 구조화 출력 생성에
+실패했다.
+
+현재 운영 코드의 기본값은 이 측정 조건과 다르다.
+[response_plan_generator.py](../../app/services/agent/response_plan_generator.py)는
+모델을 `AGENT_RESPONSE_PLAN_MODEL` → `OPENAI_MODEL` → `gpt-5` 순서로 선택하고,
+`OPENAI_TIMEOUT_SECONDS = 15`, `OPENAI_MAX_RETRIES = 0`,
+`RESPONSE_PLAN_REASONING_EFFORT = "low"`, `RESPONSE_PLAN_MAX_COMPLETION_TOKENS = 1200`을
+기본으로 사용한다. [workflow.py](../../app/services/agent/workflow.py)는 검색 `top_k = 3`을 전달한다.
+따라서 3000 토큰 결과를 다시 측정하려면 아래처럼 옵션을 명시해야 한다.
 
 반복 횟수와 검색 문서 수를 변경하여 재측정할 수 있다.
 
