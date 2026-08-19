@@ -43,6 +43,7 @@ class TransactionLabelRepository:
         confirmed_is_fraud: bool,
     ) -> TransactionLabel:
         label = self.get(transaction_id)
+        # 라벨 행이 없다는 것은 아직 담당자가 판정하지 않았다는 뜻이다.
         if label is None:
             label = TransactionLabel(
                 transaction_id=transaction_id,
@@ -50,6 +51,7 @@ class TransactionLabelRepository:
             )
             self.session.add(label)
         elif label.confirmed_is_fraud != confirmed_is_fraud:
+            # 판정 값이 실제로 바뀐 경우에만 라벨 시각도 새로 기록한다.
             label.confirmed_is_fraud = confirmed_is_fraud
             label.labeled_at = datetime.now(UTC)
             self.session.add(label)
@@ -78,6 +80,8 @@ class TransactionLabelRepository:
     ]:
         """전체 거래를 최신 ML 예측과 담당자 라벨에 맞춰 조회한다."""
 
+        # 같은 거래를 여러 번 추론할 수 있으므로 거래별 최신 결과에 1등을 매긴다.
+        # 생성 시각이 같을 때는 더 나중에 저장된 ID가 최신 결과다.
         ranked_predictions = select(
             MLPredictionResult.transaction_id.label("transaction_id"),
             MLPredictionResult.id.label("prediction_result_id"),
@@ -92,6 +96,7 @@ class TransactionLabelRepository:
             .label("prediction_rank"),
         ).subquery()
 
+        # 예측이나 라벨이 없는 거래도 사람이 검토해야 하므로 outer join을 사용한다.
         statement = (
             select(Transaction, MLPredictionResult, TransactionLabel)
             .select_from(Transaction)
@@ -112,6 +117,7 @@ class TransactionLabelRepository:
             )
         )
 
+        # 라벨 행이 없으면 미판정, 값이 False/True이면 정상/사기 확정이다.
         if label_status == "UNLABELED":
             statement = statement.where(TransactionLabel.transaction_id.is_(None))
         elif label_status == "NORMAL":
@@ -131,6 +137,7 @@ class TransactionLabelRepository:
         if transaction_id is not None:
             statement = statement.where(Transaction.id == transaction_id)
 
+        # 화면의 페이지 수 계산에 쓰도록 offset/limit 적용 전 건수를 센다.
         total_count = self.session.exec(
             select(func.count()).select_from(statement.subquery())
         ).one()
@@ -159,6 +166,7 @@ class TransactionLabelRepository:
         counts = {bool(value): count for value, count in label_counts}
         normal_count = counts.get(False, 0)
         fraud_count = counts.get(True, 0)
+        # 미판정 거래는 라벨 테이블에 행 자체가 없으므로 전체에서 확정 건수를 뺀다.
         unlabeled_count = total_count - normal_count - fraud_count
         return total_count, unlabeled_count, normal_count, fraud_count
 

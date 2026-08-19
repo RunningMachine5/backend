@@ -201,8 +201,10 @@ def list_transaction_label_queue(
         offset=(page - 1) * page_size,
         limit=page_size,
     )
+    # 상단 현황은 현재 필터와 무관한 전체 라벨 건수를 보여준다.
     all_count, unlabeled_count, normal_count, fraud_count = repository.summary()
 
+    # Repository의 세 모델을 프론트가 바로 그릴 수 있는 한 행으로 합친다.
     items = [
         TransactionLabelQueueItemDTO(
             transaction_id=transaction.id,
@@ -233,6 +235,7 @@ def list_transaction_label_queue(
             rooting_jailbreak_indicator=transaction.rooting_jailbreak_indicator,
             mobile_roaming_indicator=transaction.mobile_roaming_indicator,
             vpn_indicator=transaction.vpn_indicator,
+            # DB의 세부 악성행위 플래그 5개는 화면에서는 하나의 위험 신호로 표시한다.
             terminal_malicious_behavior_detected=any(
                 (
                     transaction.flag_terminal_malicious_behavior_1,
@@ -310,6 +313,7 @@ def delete_transaction_label(
             detail="거래를 찾을 수 없습니다.",
         )
 
+    # 라벨이 이미 없어도 미판정 상태라는 결과는 같으므로 204로 처리한다.
     TransactionLabelRepository(session).delete(transaction_id)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
