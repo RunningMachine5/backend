@@ -253,7 +253,8 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 1. 이미 준비된 GCS CSV는 `POST /mlops/datasets`로 등록합니다. DB 확정 라벨을
    반영할 때는 `POST /mlops/datasets/build`로 고정 원본
    `gs://fdshield-ml-data-801817539291/base/train1.csv`에서 새 불변 CSV와
-   데이터셋 버전을 함께 만듭니다.
+   데이터셋 버전을 함께 만듭니다. 버전명과 GCS 객체 위치는 원본명과 서버의 UTC
+   생성 시각을 기준으로 자동 결정합니다.
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
    `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
 3. Training Job은 후보와 현재 champion을 평가하고 성공 시 `status`, `mlflow_run_id`,
@@ -285,8 +286,7 @@ POST /mlops/datasets
  "row_count": 210000}
 
 POST /mlops/datasets/build
-{"version": "generated-v2",
- "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv"}
+요청 본문 없음
 
 POST /mlops/training/runs
 {"dataset_version_id": 2, "min_pr_auc": 0.75, "min_recall": 0.8}
@@ -333,7 +333,9 @@ champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않�
 학습 메타데이터를 재조립한 raw64 행입니다. 학습에서 `transaction_id`를 피처로 쓰지
 않으므로 원본 ID와 DB ID를 비교하거나 변환하지 않습니다. 기준 객체는 수정하지 않으며
 GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다. 병합 결과의 원본 행 수와
-추가 라벨 수는 API 응답에 포함됩니다.
+추가 라벨 수는 API 응답에 포함됩니다. 생성 결과는
+`train1-labeled-YYYYMMDDTHHMMSSZ` 버전명과
+`gs://fdshield-ml-data-801817539291/versions/<버전명>.csv` 경로를 사용합니다.
 
 Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
 Secret Manager로 주입합니다.

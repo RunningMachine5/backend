@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -43,6 +43,7 @@ class TransactionLabelRepository:
         confirmed_is_fraud: bool,
     ) -> TransactionLabel:
         label = self.get(transaction_id)
+        # 라벨 행이 없다는 것은 아직 담당자가 판정하지 않았다는 뜻이다.
         if label is None:
             label = TransactionLabel(
                 transaction_id=transaction_id,
@@ -50,10 +51,124 @@ class TransactionLabelRepository:
             )
             self.session.add(label)
         elif label.confirmed_is_fraud != confirmed_is_fraud:
+            # 판정 값이 실제로 바뀐 경우에만 라벨 시각도 새로 기록한다.
             label.confirmed_is_fraud = confirmed_is_fraud
             label.labeled_at = datetime.now(UTC)
             self.session.add(label)
         return label
+
+    def delete(self, transaction_id: int) -> bool:
+        """확정한 라벨을 삭제해 거래를 다시 미판정으로 표시한다."""
+
+        label = self.get(transaction_id)
+        if label is None:
+            return False
+        self.session.delete(label)
+        return True
+
+    def list_for_labeling(
+        self,
+        *,
+        label_status: str,
+        prediction: str,
+        transaction_id: int | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[
+        list[tuple[Transaction, MLPredictionResult | None, TransactionLabel | None]],
+        int,
+    ]:
+        """전체 거래를 최신 ML 예측과 담당자 라벨에 맞춰 조회한다."""
+
+        # 같은 거래를 여러 번 추론할 수 있으므로 거래별 최신 결과에 1등을 매긴다.
+        # 생성 시각이 같을 때는 더 나중에 저장된 ID가 최신 결과다.
+        ranked_predictions = select(
+            MLPredictionResult.transaction_id.label("transaction_id"),
+            MLPredictionResult.id.label("prediction_result_id"),
+            func.row_number()
+            .over(
+                partition_by=MLPredictionResult.transaction_id,
+                order_by=(
+                    MLPredictionResult.created_at.desc(),
+                    MLPredictionResult.id.desc(),
+                ),
+            )
+            .label("prediction_rank"),
+        ).subquery()
+
+        # 예측이나 라벨이 없는 거래도 사람이 검토해야 하므로 outer join을 사용한다.
+        statement = (
+            select(Transaction, MLPredictionResult, TransactionLabel)
+            .select_from(Transaction)
+            .outerjoin(
+                ranked_predictions,
+                and_(
+                    ranked_predictions.c.transaction_id == Transaction.id,
+                    ranked_predictions.c.prediction_rank == 1,
+                ),
+            )
+            .outerjoin(
+                MLPredictionResult,
+                MLPredictionResult.id == ranked_predictions.c.prediction_result_id,
+            )
+            .outerjoin(
+                TransactionLabel,
+                TransactionLabel.transaction_id == Transaction.id,
+            )
+        )
+
+        # 라벨 행이 없으면 미판정, 값이 False/True이면 정상/사기 확정이다.
+        if label_status == "UNLABELED":
+            statement = statement.where(TransactionLabel.transaction_id.is_(None))
+        elif label_status == "NORMAL":
+            statement = statement.where(
+                TransactionLabel.confirmed_is_fraud.is_(False)
+            )
+        elif label_status == "FRAUD":
+            statement = statement.where(
+                TransactionLabel.confirmed_is_fraud.is_(True)
+            )
+
+        if prediction == "NORMAL":
+            statement = statement.where(MLPredictionResult.predict_result.is_(False))
+        elif prediction == "FRAUD":
+            statement = statement.where(MLPredictionResult.predict_result.is_(True))
+
+        if transaction_id is not None:
+            statement = statement.where(Transaction.id == transaction_id)
+
+        # 화면의 페이지 수 계산에 쓰도록 offset/limit 적용 전 건수를 센다.
+        total_count = self.session.exec(
+            select(func.count()).select_from(statement.subquery())
+        ).one()
+        rows = self.session.exec(
+            statement.order_by(
+                Transaction.transaction_datetime.desc(),
+                Transaction.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return list(rows), total_count
+
+    def summary(self) -> tuple[int, int, int, int]:
+        """전체·미판정·정상·사기 라벨 건수를 반환한다."""
+
+        total_count = self.session.exec(
+            select(func.count()).select_from(Transaction)
+        ).one()
+        label_counts = self.session.exec(
+            select(
+                TransactionLabel.confirmed_is_fraud,
+                func.count(),
+            ).group_by(TransactionLabel.confirmed_is_fraud)
+        ).all()
+        counts = {bool(value): count for value, count in label_counts}
+        normal_count = counts.get(False, 0)
+        fraud_count = counts.get(True, 0)
+        # 미판정 거래는 라벨 테이블에 행 자체가 없으므로 전체에서 확정 건수를 뺀다.
+        unlabeled_count = total_count - normal_count - fraud_count
+        return total_count, unlabeled_count, normal_count, fraud_count
 
 
 class PredictionResultRepository:

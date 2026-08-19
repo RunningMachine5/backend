@@ -33,16 +33,6 @@ class DatasetVersionRequest(StrictMLOpsDTO):
         return _validated_gcs_uri(value)
 
 
-class LabeledDatasetBuildRequest(StrictMLOpsDTO):
-    version: str = Field(min_length=1, max_length=64)
-    gcs_uri: str = Field(min_length=1, max_length=2048)
-
-    @field_validator("gcs_uri")
-    @classmethod
-    def validate_gcs_uri(cls, value: str) -> str:
-        return _validated_gcs_uri(value)
-
-
 def _validated_gcs_uri(value: str) -> str:
     parsed = urlsplit(value)
     if (
@@ -247,7 +237,6 @@ __all__ = [
     "DatasetVersionResponse",
     "DeploymentCompleteRequest",
     "InferencePerformanceResponse",
-    "LabeledDatasetBuildRequest",
     "LabeledDatasetBuildResponse",
     "MLflowDetailsPointer",
     "MLflowModelDetails",
