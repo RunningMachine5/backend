@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response, status
 from sqlmodel import select
 
 from app.api.dependencies import DFraudDetectionPipelineDep
@@ -11,8 +11,13 @@ from app.domain.agent_status import RuleFilterStatus
 from app.dto.agent import AgentInputDTO
 from app.dto.fraud_detection import FraudDetectionResponseDTO
 from app.dto.transaction import (
+    TransactionLabelQueueItemDTO,
+    TransactionLabelQueueResponseDTO,
+    TransactionLabelQueueSummaryDTO,
     TransactionLabelResponseDTO,
+    TransactionLabelStatus,
     TransactionLabelUpdateDTO,
+    TransactionPredictionFilter,
     TransactionRequestDTO,
 )
 from app.pipelines.d_fraud_detection_pipline import (
@@ -170,6 +175,99 @@ def list_transactions(session: SessionDep) -> list[FraudDetectionResponseDTO]:
     ]
 
 
+@router.get(
+    "/label-queue",
+    response_model=TransactionLabelQueueResponseDTO,
+)
+def list_transaction_label_queue(
+    session: SessionDep,
+    label_status: TransactionLabelStatus = Query(
+        default=TransactionLabelStatus.UNLABELED
+    ),
+    prediction: TransactionPredictionFilter = Query(
+        default=TransactionPredictionFilter.ALL
+    ),
+    transaction_id: int | None = Query(default=None, ge=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30, ge=1, le=100),
+) -> TransactionLabelQueueResponseDTO:
+    """전체 거래에서 담당자가 확정할 라벨링 대상을 조회한다."""
+
+    repository = TransactionLabelRepository(session)
+    rows, total_count = repository.list_for_labeling(
+        label_status=label_status.value,
+        prediction=prediction.value,
+        transaction_id=transaction_id,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    all_count, unlabeled_count, normal_count, fraud_count = repository.summary()
+
+    items = [
+        TransactionLabelQueueItemDTO(
+            transaction_id=transaction.id,
+            customer_id=transaction.customer_id,
+            transaction_datetime=transaction.transaction_datetime,
+            transaction_amount=transaction.transaction_amount,
+            channel=transaction.channel,
+            transaction_status=transaction.transaction_status,
+            source_account_number=transaction.source_account_number,
+            recipient_account_number=transaction.recipient_account_number,
+            initial_balance=transaction.initial_balance,
+            balance=transaction.balance,
+            access_medium=transaction.access_medium,
+            operating_system=transaction.operating_system,
+            ip_address=(
+                str(transaction.ip_address)
+                if transaction.ip_address is not None
+                else None
+            ),
+            mac_address=(
+                str(transaction.mac_address)
+                if transaction.mac_address is not None
+                else None
+            ),
+            location_lat=transaction.location_lat,
+            location_lon=transaction.location_lon,
+            num_connection_failure=transaction.num_connection_failure,
+            rooting_jailbreak_indicator=transaction.rooting_jailbreak_indicator,
+            mobile_roaming_indicator=transaction.mobile_roaming_indicator,
+            vpn_indicator=transaction.vpn_indicator,
+            terminal_malicious_behavior_detected=any(
+                (
+                    transaction.flag_terminal_malicious_behavior_1,
+                    transaction.flag_terminal_malicious_behavior_2,
+                    transaction.flag_terminal_malicious_behavior_3,
+                    transaction.flag_terminal_malicious_behavior_5,
+                    transaction.flag_terminal_malicious_behavior_6,
+                )
+            ),
+            predict_result=(prediction_result.predict_result if prediction_result else None),
+            predict_proba=(prediction_result.predict_proba if prediction_result else None),
+            model_name=(prediction_result.model_name if prediction_result else None),
+            model_version=(
+                prediction_result.model_version if prediction_result else None
+            ),
+            predicted_at=(prediction_result.created_at if prediction_result else None),
+            confirmed_is_fraud=(label.confirmed_is_fraud if label else None),
+            labeled_at=(label.labeled_at if label else None),
+        )
+        for transaction, prediction_result, label in rows
+    ]
+    return TransactionLabelQueueResponseDTO(
+        items=items,
+        summary=TransactionLabelQueueSummaryDTO(
+            total_count=all_count,
+            unlabeled_count=unlabeled_count,
+            normal_count=normal_count,
+            fraud_count=fraud_count,
+        ),
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+    )
+
+
 @router.put(
     "/{transaction_id}/label",
     response_model=TransactionLabelResponseDTO,
@@ -194,6 +292,27 @@ def upsert_transaction_label(
     session.commit()
     session.refresh(label)
     return label
+
+
+@router.delete(
+    "/{transaction_id}/label",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_transaction_label(
+    transaction_id: int,
+    session: SessionDep,
+) -> Response:
+    """담당자 판정을 지우고 거래를 미판정 상태로 되돌린다."""
+
+    if session.get(Transaction, transaction_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="거래를 찾을 수 없습니다.",
+        )
+
+    TransactionLabelRepository(session).delete(transaction_id)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{transaction_id}", response_model=FraudDetectionResponseDTO)

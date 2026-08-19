@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -54,6 +54,113 @@ class TransactionLabelRepository:
             label.labeled_at = datetime.now(UTC)
             self.session.add(label)
         return label
+
+    def delete(self, transaction_id: int) -> bool:
+        """확정 판정을 보류 상태로 되돌린다."""
+
+        label = self.get(transaction_id)
+        if label is None:
+            return False
+        self.session.delete(label)
+        return True
+
+    def list_for_labeling(
+        self,
+        *,
+        label_status: str,
+        prediction: str,
+        transaction_id: int | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[
+        list[tuple[Transaction, MLPredictionResult | None, TransactionLabel | None]],
+        int,
+    ]:
+        """전체 거래를 최신 ML 예측과 담당자 라벨에 맞춰 조회한다."""
+
+        ranked_predictions = select(
+            MLPredictionResult.transaction_id.label("transaction_id"),
+            MLPredictionResult.id.label("prediction_result_id"),
+            func.row_number()
+            .over(
+                partition_by=MLPredictionResult.transaction_id,
+                order_by=(
+                    MLPredictionResult.created_at.desc(),
+                    MLPredictionResult.id.desc(),
+                ),
+            )
+            .label("prediction_rank"),
+        ).subquery()
+
+        statement = (
+            select(Transaction, MLPredictionResult, TransactionLabel)
+            .select_from(Transaction)
+            .outerjoin(
+                ranked_predictions,
+                and_(
+                    ranked_predictions.c.transaction_id == Transaction.id,
+                    ranked_predictions.c.prediction_rank == 1,
+                ),
+            )
+            .outerjoin(
+                MLPredictionResult,
+                MLPredictionResult.id == ranked_predictions.c.prediction_result_id,
+            )
+            .outerjoin(
+                TransactionLabel,
+                TransactionLabel.transaction_id == Transaction.id,
+            )
+        )
+
+        if label_status == "UNLABELED":
+            statement = statement.where(TransactionLabel.transaction_id.is_(None))
+        elif label_status == "NORMAL":
+            statement = statement.where(
+                TransactionLabel.confirmed_is_fraud.is_(False)
+            )
+        elif label_status == "FRAUD":
+            statement = statement.where(
+                TransactionLabel.confirmed_is_fraud.is_(True)
+            )
+
+        if prediction == "NORMAL":
+            statement = statement.where(MLPredictionResult.predict_result.is_(False))
+        elif prediction == "FRAUD":
+            statement = statement.where(MLPredictionResult.predict_result.is_(True))
+
+        if transaction_id is not None:
+            statement = statement.where(Transaction.id == transaction_id)
+
+        total_count = self.session.exec(
+            select(func.count()).select_from(statement.subquery())
+        ).one()
+        rows = self.session.exec(
+            statement.order_by(
+                Transaction.transaction_datetime.desc(),
+                Transaction.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return list(rows), total_count
+
+    def summary(self) -> tuple[int, int, int, int]:
+        """전체·미판정·정상·사기 라벨 건수를 반환한다."""
+
+        total_count = self.session.exec(
+            select(func.count()).select_from(Transaction)
+        ).one()
+        label_counts = self.session.exec(
+            select(
+                TransactionLabel.confirmed_is_fraud,
+                func.count(),
+            ).group_by(TransactionLabel.confirmed_is_fraud)
+        ).all()
+        counts = {bool(value): count for value, count in label_counts}
+        normal_count = counts.get(False, 0)
+        fraud_count = counts.get(True, 0)
+        unlabeled_count = total_count - normal_count - fraud_count
+        return total_count, unlabeled_count, normal_count, fraud_count
 
 
 class PredictionResultRepository:

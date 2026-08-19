@@ -398,6 +398,98 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(detail.json()["transaction_id"], transaction_id)
         self.assertIs(detail.json()["confirmed_is_fraud"], True)
 
+    def test_label_queue_lists_all_transactions_with_latest_prediction(self) -> None:
+        first = self.client.post(
+            "/transactions",
+            json=valid_transaction_request(),
+        ).json()
+        self.ml_client.predict_result = 1
+        self.ml_client.predict_proba = 0.88
+        second = self.client.post(
+            "/transactions",
+            json=valid_transaction_request(
+                transaction_datetime="2026-08-14T12:01:00",
+                transaction_amount=180_000,
+            ),
+        ).json()
+        self.client.put(
+            f"/transactions/{first['transaction_id']}/label",
+            json={"confirmed_is_fraud": False},
+        )
+
+        default_queue = self.client.get("/transactions/label-queue")
+        fraud_prediction = self.client.get(
+            "/transactions/label-queue",
+            params={"prediction": "FRAUD"},
+        )
+        normal_labels = self.client.get(
+            "/transactions/label-queue",
+            params={"label_status": "NORMAL"},
+        )
+
+        self.assertEqual(default_queue.status_code, 200, default_queue.text)
+        self.assertEqual(
+            [item["transaction_id"] for item in default_queue.json()["items"]],
+            [second["transaction_id"]],
+        )
+        self.assertEqual(
+            default_queue.json()["summary"],
+            {
+                "total_count": 2,
+                "unlabeled_count": 1,
+                "normal_count": 1,
+                "fraud_count": 0,
+            },
+        )
+        self.assertEqual(
+            fraud_prediction.json()["items"][0]["transaction_id"],
+            second["transaction_id"],
+        )
+        self.assertEqual(fraud_prediction.json()["items"][0]["predict_proba"], 0.88)
+        self.assertEqual(
+            normal_labels.json()["items"][0]["transaction_id"],
+            first["transaction_id"],
+        )
+        self.assertIs(normal_labels.json()["items"][0]["confirmed_is_fraud"], False)
+
+    def test_label_queue_uses_latest_prediction_and_can_clear_label(self) -> None:
+        created = self.client.post(
+            "/transactions",
+            json=valid_transaction_request(),
+        ).json()
+        transaction_id = created["transaction_id"]
+        with Session(self.engine) as session:
+            session.add(
+                MLPredictionResult(
+                    transaction_id=transaction_id,
+                    predict_result=True,
+                    predict_proba=0.93,
+                    model_name="fdshield-fraud-detector-v2",
+                    model_version="newer",
+                    latency_ms=12,
+                    created_at=datetime(2099, 8, 14, 13, 0, tzinfo=UTC),
+                )
+            )
+            session.commit()
+
+        latest = self.client.get(
+            "/transactions/label-queue",
+            params={"prediction": "FRAUD"},
+        )
+        self.assertEqual(latest.status_code, 200, latest.text)
+        self.assertEqual(latest.json()["items"][0]["model_version"], "newer")
+
+        self.client.put(
+            f"/transactions/{transaction_id}/label",
+            json={"confirmed_is_fraud": True},
+        )
+        cleared = self.client.delete(f"/transactions/{transaction_id}/label")
+        queue = self.client.get("/transactions/label-queue")
+
+        self.assertEqual(cleared.status_code, 204, cleared.text)
+        self.assertEqual(queue.json()["summary"]["unlabeled_count"], 1)
+        self.assertEqual(queue.json()["items"][0]["transaction_id"], transaction_id)
+
     def test_invalid_location_and_connection_values_return_422(self) -> None:
         cases = (
             {"location_lat": 91},
