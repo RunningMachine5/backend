@@ -56,7 +56,7 @@ class TransactionLabelRepository:
         return label
 
     def delete(self, transaction_id: int) -> bool:
-        """확정 판정을 보류 상태로 되돌린다."""
+        """확정한 라벨을 삭제해 거래를 다시 미판정으로 표시한다."""
 
         label = self.get(transaction_id)
         if label is None:

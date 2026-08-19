@@ -398,6 +398,27 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.assertEqual(detail.json()["transaction_id"], transaction_id)
         self.assertIs(detail.json()["confirmed_is_fraud"], True)
 
+    def test_new_transaction_stays_unlabeled_until_operator_decides(self) -> None:
+        created = self.client.post(
+            "/transactions",
+            json=valid_transaction_request(),
+        ).json()
+        transaction_id = created["transaction_id"]
+
+        with Session(self.engine) as session:
+            self.assertIsNone(session.get(TransactionLabel, transaction_id))
+
+        self.client.put(
+            f"/transactions/{transaction_id}/label",
+            json={"confirmed_is_fraud": False},
+        )
+
+        with Session(self.engine) as session:
+            label = session.get(TransactionLabel, transaction_id)
+            self.assertIsNotNone(label)
+            assert label is not None
+            self.assertIs(label.confirmed_is_fraud, False)
+
     def test_label_queue_lists_all_transactions_with_latest_prediction(self) -> None:
         first = self.client.post(
             "/transactions",
