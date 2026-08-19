@@ -23,3 +23,12 @@ dependencies = [
     "sqlmodel>=0.0.39",
     "uvicorn>=0.52.0",
 ]
+
+[dependency-groups]
+# RAG 평가 전용. ragas 가 datasets 등 무거운 의존성을 끌어오므로 런타임
+# dependencies 와 분리한다. CI/Docker 이미지는 이 그룹을 설치하지 않는다.
+#   uv sync --group eval
+eval = [
+    "ragas>=0.4.3",
+    "langchain-community<0.4",
+]

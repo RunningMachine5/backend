@@ -29,6 +29,11 @@ CHAT_RESPONSE_LLM_MODEL = os.getenv("CHAT_RESPONSE_LLM_MODEL", "gpt-5.6-luna").s
 # 추론 모델의 노력을 low 로 설정해 응답속도를 빠르게 한다
 CHAT_LLM_REASONING_EFFORT = os.getenv("CHAT_LLM_REASONING_EFFORT", "low").strip()
 
+# RAGAS 평가에서 심판(judge) 역할을 하는 LLM (luna는 temperature 지정이 불가해서 4mini씀)
+RAGAS_JUDGE_MODEL = os.getenv("RAGAS_JUDGE_MODEL", "gpt-4.1-mini").strip()
+# 심판 LLM 의 temperature
+RAGAS_JUDGE_TEMPERATURE = os.getenv("RAGAS_JUDGE_TEMPERATURE", "0").strip()
+
 # 챗봇 접속 URL 안내 메일은 Agent 이상거래 안내 메일과 같은 SMTP 계정을 쓴다.
 # 접속 정보(SMTP_HOST/PORT/PASSWORD/TIMEOUT)는 SmtpEmailMessageSender.from_env가 읽는다.
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()

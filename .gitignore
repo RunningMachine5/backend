@@ -36,3 +36,5 @@ dist/
 
 # PDF embedding targets
 docs/embed_target_pdfs/
+# 코퍼스에서 뺀 pdf 보관용 (적재 대상 아님)
+docs/excluded_pdfs/
