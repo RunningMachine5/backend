@@ -9,7 +9,6 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.data.model.fraud_rule import FraudRuleSetStatus
-from app.dto.ml_features import MLTransactionFeatures
 
 
 class RuleExpressionOperator(str, Enum):
@@ -198,24 +197,6 @@ class FraudRuleValidationResponse(BaseModel):
     issues: list[FraudRuleValidationIssue] = Field(default_factory=list)
 
 
-class FraudRuleTestRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    raw_data: MLTransactionFeatures
-
-
-class FraudRuleTypeScoreResponse(BaseModel):
-    type_code: str
-    display_name: str
-    score: float
-    matched_components: list[str] = Field(default_factory=list)
-
-
-class FraudRuleTestResponse(BaseModel):
-    rule_set_version: int
-    type_scores: list[FraudRuleTypeScoreResponse]
-
-
 class FraudRuleReplayRequest(BaseModel):
     """최신 ML 양성 거래 표본과 상세 응답 크기."""
 
@@ -342,9 +323,6 @@ __all__ = [
     "FraudRuleSetDraftCreate",
     "FraudRuleSetResponse",
     "FraudRuleSetSummaryResponse",
-    "FraudRuleTestRequest",
-    "FraudRuleTestResponse",
-    "FraudRuleTypeScoreResponse",
     "FraudRuleUpdate",
     "FraudRuleValidationIssue",
     "FraudRuleValidationResponse",

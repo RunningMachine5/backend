@@ -1,7 +1,7 @@
 """버전이 있는 사기유형 룰을 관리하는 관리자 API.
 
 ACTIVE 룰셋은 실시간 거래 평가에 사용되므로 직접 수정하지 않는다. 관리자는
-ACTIVE를 복제한 DRAFT에서 룰을 편집하고, validate·test·replay로 영향을 확인한
+ACTIVE를 복제한 DRAFT에서 룰을 편집하고, validate·replay로 영향을 확인한
 뒤 activate한다. 활성화 시 기존 ACTIVE는 ARCHIVED가 된다.
 """
 
@@ -36,9 +36,6 @@ from app.dto.fraud_rule import (
     FraudRuleSetDraftCreate,
     FraudRuleSetResponse,
     FraudRuleSetSummaryResponse,
-    FraudRuleTestRequest,
-    FraudRuleTestResponse,
-    FraudRuleTypeScoreResponse,
     FraudRuleUpdate,
     FraudRuleValidationIssue,
     FraudRuleValidationResponse,
@@ -1065,52 +1062,6 @@ def validate_rule_set(
         rule_set_id=rule_set.id,
         valid=not issues,
         issues=issues,
-    )
-
-
-@router.post(
-    "/rule-sets/{rule_set_id}/test",
-    response_model=FraudRuleTestResponse,
-)
-def test_rule_set(
-    rule_set_id: int,
-    payload: FraudRuleTestRequest,
-    session: SessionDep,
-) -> FraudRuleTestResponse:
-    rule_set = _get_rule_set(session, rule_set_id)
-    definition = rule_set_definition_from_database(session, rule_set)
-    issues = _definition_validation_issues(definition)
-    if issues:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "message": "유효하지 않은 룰셋은 테스트할 수 없습니다.",
-                "issues": [issue.model_dump() for issue in issues],
-            },
-        )
-
-    try:
-        result = RuleEngine().score_validated(payload.raw_data, definition)
-    except RuleExpressionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-
-    display_names = {
-        rule.type_code: rule.display_name for rule in definition.rules if rule.enabled
-    }
-    return FraudRuleTestResponse(
-        rule_set_version=rule_set.version,
-        type_scores=[
-            FraudRuleTypeScoreResponse(
-                type_code=type_code,
-                display_name=display_names[type_code],
-                score=score,
-                matched_components=result.matched_components[type_code],
-            )
-            for type_code, score in result.type_scores.items()
-        ],
     )
 
 
