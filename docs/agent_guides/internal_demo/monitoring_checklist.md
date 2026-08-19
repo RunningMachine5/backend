@@ -26,7 +26,7 @@ risk_grades:
 action_codes:
   - ESCALATE_MONITORING_REVIEW
   - REQUEST_EMERGENCY_REVIEW
-version: "1.2"
+version: "1.3"
 published_at: 2026-08-09
 accessed_at: 2026-08-09
 ---
@@ -39,7 +39,7 @@ accessed_at: 2026-08-09
 ## 판정 결과 확인
 
 - [ ] 원본 거래 식별자와 탐지 시각을 확인한다.
-- [ ] Rule 대표 유형과 전체 유형별 점수를 확인한다.
+- [ ] 전체 유형별 Rule 점수와 Agent가 판단한 적용 유형을 확인한다.
 - [ ] 실제 적중한 Rule 근거를 확인한다.
 - [ ] 위험점수와 위험등급을 확인한다.
 - [ ] 유형이 애매한 경우 Agent의 유사 사건 조사 근거를 확인한다.

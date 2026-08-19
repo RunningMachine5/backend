@@ -27,7 +27,7 @@ action_codes:
   - URGENT_CUSTOMER_CONFIRMATION
   - REQUEST_EMERGENCY_REVIEW
   - GUIDE_VOICE_PHISHING_RESPONSE
-version: "1.1"
+version: "1.2"
 published_at: 2026-08-11
 accessed_at: 2026-08-11
 ---
@@ -38,7 +38,7 @@ accessed_at: 2026-08-11
 
 ## 판정 근거 확인
 
-Rule 대표 유형과 유형별 점수를 확인하고 기관·대출 사칭, 고액 송금, 신규 수취계좌 등
+유형별 Rule 점수와 Agent 적용 유형을 확인하고 기관·대출 사칭, 고액 송금, 신규 수취계좌 등
 실제로 적중한 근거만 사건 요약에 사용한다. 고객의 의도나 범죄 피해 여부를 Rule 결과만으로
 확정하지 않는다.
 

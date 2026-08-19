@@ -98,18 +98,18 @@ VERY_HIGH
 
 ## 내부 정책과 검색 주제 연결
 
-| 정책 `action_code` | 검색 `topic` |
-|---|---|
-| `VERIFY_CUSTOMER_TRANSACTION` | `CUSTOMER_CONFIRMATION` |
+| 정책 `action_code`             | 검색 `topic`                                  |
+| ------------------------------ | --------------------------------------------- |
+| `VERIFY_CUSTOMER_TRANSACTION`  | `CUSTOMER_CONFIRMATION`                       |
 | `URGENT_CUSTOMER_CONFIRMATION` | `CUSTOMER_CONFIRMATION`, `EMERGENCY_RESPONSE` |
-| `GUIDE_SECURITY_CHECK` | `SECURITY_CHECK` |
-| `REVIEW_RECIPIENT_ACCOUNT` | `RECIPIENT_ACCOUNT_REVIEW` |
-| `REVIEW_NEW_RECIPIENT` | `RECIPIENT_ACCOUNT_REVIEW` |
-| `REVIEW_ACCOUNT_FLOW` | `ACCOUNT_FLOW_REVIEW` |
-| `PRIORITY_ACCOUNT_FLOW_REVIEW` | `ACCOUNT_FLOW_REVIEW` |
-| `URGENT_ACCOUNT_FLOW_REVIEW` | `ACCOUNT_FLOW_REVIEW`, `EMERGENCY_RESPONSE` |
-| `ESCALATE_MONITORING_REVIEW` | `MANUAL_REVIEW` |
-| `REQUEST_EMERGENCY_REVIEW` | `MANUAL_REVIEW`, `EMERGENCY_RESPONSE` |
+| `GUIDE_SECURITY_CHECK`         | `SECURITY_CHECK`                              |
+| `REVIEW_RECIPIENT_ACCOUNT`     | `RECIPIENT_ACCOUNT_REVIEW`                    |
+| `REVIEW_NEW_RECIPIENT`         | `RECIPIENT_ACCOUNT_REVIEW`                    |
+| `REVIEW_ACCOUNT_FLOW`          | `ACCOUNT_FLOW_REVIEW`                         |
+| `PRIORITY_ACCOUNT_FLOW_REVIEW` | `ACCOUNT_FLOW_REVIEW`                         |
+| `URGENT_ACCOUNT_FLOW_REVIEW`   | `ACCOUNT_FLOW_REVIEW`, `EMERGENCY_RESPONSE`   |
+| `ESCALATE_MONITORING_REVIEW`   | `MANUAL_REVIEW`                               |
+| `REQUEST_EMERGENCY_REVIEW`     | `MANUAL_REVIEW`, `EMERGENCY_RESPONSE`         |
 
 정책 ID에 특정 문서 ID를 고정하지 않는다. Agent는 사기 유형, 대상 사용자, 대응 주제로
 후보 문서를 제한한 뒤 의미 기반 검색을 수행한다.
@@ -194,7 +194,7 @@ uv run python -m unittest tests.test_agent_guide_evaluation -v
 메타데이터가 바뀌면 해당 문서의 Chunk만 교체하며, 변경이 없으면 재임베딩하지 않는다.
 
 ```powershell
-python -m app.scripts.index_agent_guides
+uv run --env-file .env python -m app.scripts.index_agent_guides
 ```
 
 검색은 사기 유형, 대상, 위험등급, 조치 코드로 후보 문서를 먼저 제한한 후 pgvector
@@ -213,12 +213,12 @@ uv run --env-file .env python -m app.scripts.evaluate_agent_guide_search `
 보이스피싱·메신저피싱·사기이용계좌 전문 문서의 절차를 보강했다. 검색 로직과 20개
 평가 질의·기대 문서는 변경하지 않고 동일한 기준으로 다시 측정했다.
 
-| 지표 | 개선 전 | 개선 후 |
-|---|---:|---:|
-| Precision@1 | 0.70 | 0.85 |
-| Hit Rate@3 | 0.95 | 1.00 |
-| Hit Rate@5 | 1.00 | 1.00 |
-| MRR | 0.8292 | 0.9250 |
+| 지표        | 개선 전 | 개선 후 |
+| ----------- | ------: | ------: |
+| Precision@1 |    0.70 |    0.85 |
+| Hit Rate@3  |    0.95 |    1.00 |
+| Hit Rate@5  |    1.00 |    1.00 |
+| MRR         |  0.8292 |  0.9250 |
 
 정책 조치 문서 커버리지는 개선 전후 모두 32/32, 100%를 유지했다. 변경된 문서
 7개만 다시 임베딩했으며 기존 문서 9개는 저장된 임베딩을 재사용했다.
@@ -226,7 +226,7 @@ uv run --env-file .env python -m app.scripts.evaluate_agent_guide_search `
 외부 API와 PostgreSQL 없이 실행하는 단위 테스트는 다음과 같다.
 
 ```powershell
-python -m unittest tests.test_agent_guide_vector_search -v
+uv run python -m unittest tests.test_agent_guide_vector_search -v
 ```
 
 ## RAG·LLM 대응 계획 품질 평가
@@ -282,16 +282,16 @@ uv run --env-file .env python -m app.scripts.evaluate_agent_response_plans `
 8개 시나리오로 1회 측정한 확장 전 기준 결과이다. 이후에는 16개 Golden Set과
 캐시 미사용 조건에서 반복 측정하여 최종 발표 지표를 확정한다.
 
-| 지표 | 정책-only | RAG·LLM |
-|---|---:|---:|
-| 필수 조치 포함률 | 1.000 | 1.000 |
-| 허용 조치 코드 정확도 | 1.000 | 1.000 |
-| 수행 절차 생성률 | 0.000 | 0.875 |
-| 주의사항 생성률 | 0.000 | 0.875 |
-| 출력 계약 준수율 | 1.000 | 1.000 |
-| fallback률 | 0.000 | 0.125 |
-| 평균 검색시간 | 0ms | 682.62ms |
-| 평균 생성시간 | 0ms | 26,484.38ms |
+| 지표                  | 정책-only |     RAG·LLM |
+| --------------------- | --------: | ----------: |
+| 필수 조치 포함률      |     1.000 |       1.000 |
+| 허용 조치 코드 정확도 |     1.000 |       1.000 |
+| 수행 절차 생성률      |     0.000 |       0.875 |
+| 주의사항 생성률       |     0.000 |       0.875 |
+| 출력 계약 준수율      |     1.000 |       1.000 |
+| fallback률            |     0.000 |       0.125 |
+| 평균 검색시간         |       0ms |    682.62ms |
+| 평균 생성시간         |       0ms | 26,484.38ms |
 
 RAG·LLM 8건 중 7건은 모든 정책 조치의 수행 절차와 주의사항을 생성했다. 보이스피싱
 `VERY_HIGH` 1건은 30초 제한시간에 도달하여 정책-only 계획으로 안전하게
@@ -300,29 +300,35 @@ fallback되었다. 정책 조치 코드는 모든 결과에서 그대로 유지�
 
 ### 생성 지연시간 개선 결과
 
-1차 평가에서 확인된 평균 26.48초의 생성 지연과 12.5% fallback을 개선하기 위해
-검색 문맥을 Top-5에서 Top-3으로 줄이고, `gpt-5-mini`의 reasoning effort를
-`low`로 설정했다. 구조화 출력이 중간에 종료되지 않도록 최대 생성 토큰은 3000으로
-설정했다. 최종 후보는 8개 시나리오를 3회씩 총 24건 실행하여 검증했다.
+1차 평가에서 확인된 평균 26.48초의 생성 지연과 12.5% fallback을 비교하기 위해
+검색 문맥 Top-3, `gpt-5-mini` reasoning effort `low`, 최대 생성 토큰 3000인 후보를
+8개 시나리오에서 3회씩 총 24건 실행했다. 아래 표는 이 **평가 후보의 과거 측정값**이다.
 
-| 지표 | 개선 전 | 개선 후 |
-|---|---:|---:|
-| 평가 건수 | 8건 | 24건 |
-| 필수 조치 포함률 | 1.000 | 1.000 |
-| 허용 조치 코드 정확도 | 1.000 | 1.000 |
-| 수행 절차 생성률 | 0.875 | 1.000 |
-| 주의사항 생성률 | 0.875 | 1.000 |
-| 출력 계약 준수율 | 1.000 | 1.000 |
-| fallback률 | 0.125 | 0.000 |
-| 평균 검색시간 | 682.62ms | 558.00ms |
-| 평균 생성시간 | 26,484.38ms | 12,844.42ms |
-| 생성시간 P50 | 미측정 | 12,419ms |
-| 생성시간 P95 | 미측정 | 15,804ms |
+| 지표                  |     개선 전 |     개선 후 |
+| --------------------- | ----------: | ----------: |
+| 평가 건수             |         8건 |        24건 |
+| 필수 조치 포함률      |       1.000 |       1.000 |
+| 허용 조치 코드 정확도 |       1.000 |       1.000 |
+| 수행 절차 생성률      |       0.875 |       1.000 |
+| 주의사항 생성률       |       0.875 |       1.000 |
+| 출력 계약 준수율      |       1.000 |       1.000 |
+| fallback률            |       0.125 |       0.000 |
+| 평균 검색시간         |    682.62ms |    558.00ms |
+| 평균 생성시간         | 26,484.38ms | 12,844.42ms |
+| 생성시간 P50          |      미측정 |    12,419ms |
+| 생성시간 P95          |      미측정 |    15,804ms |
 
 평균 생성시간은 약 51.5% 감소했으며, 24건 모두 정책 조치와 출력 계약을 유지했다.
-출력 토큰을 1200으로 제한한 후보는 모든 시나리오에서 구조화 출력 생성에 실패했기
-때문에 채택하지 않았다. 속도만 줄이지 않고 품질 지표를 함께 비교하여 최종 설정을
-선정한 결과이다.
+이 측정에서는 출력 토큰을 1200으로 제한한 후보가 모든 시나리오에서 구조화 출력 생성에
+실패했다.
+
+현재 운영 코드의 기본값은 이 측정 조건과 다르다.
+[response_plan_generator.py](../../app/services/agent/response_plan_generator.py)는
+모델을 `AGENT_RESPONSE_PLAN_MODEL` → `OPENAI_MODEL` → `gpt-5` 순서로 선택하고,
+`OPENAI_TIMEOUT_SECONDS = 15`, `OPENAI_MAX_RETRIES = 0`,
+`RESPONSE_PLAN_REASONING_EFFORT = "low"`, `RESPONSE_PLAN_MAX_COMPLETION_TOKENS = 1200`을
+기본으로 사용한다. [workflow.py](../../app/services/agent/workflow.py)는 검색 `top_k = 3`을 전달한다.
+따라서 3000 토큰 결과를 다시 측정하려면 아래처럼 옵션을 명시해야 한다.
 
 반복 횟수와 검색 문서 수를 변경하여 재측정할 수 있다.
 

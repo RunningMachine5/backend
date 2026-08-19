@@ -1,8 +1,8 @@
 # AI 기반 금융 이상거래 탐지 및 대응 파이프라인
 
 FastAPI가 거래 한 건을 받아 PostgreSQL에 저장하고, ML Serving의 실제 모델 예측과
-동적 사기유형 룰 점수를 함께 기록하는 Backend입니다. Agent와 고객 챗봇 영역은
-각 담당자가 교체할 수 있도록 기존 스켈레톤을 별도로 유지합니다.
+동적 사기유형 룰 점수를 함께 기록하는 Backend입니다. 저장된 탐지 결과는 Agent 조사,
+대시보드, 고객 챗봇 흐름에서 이어서 사용합니다.
 
 ## 실행
 
@@ -65,9 +65,10 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ML 저장소의 서빙 서버를 먼저 `localhost:8001`에 실행한 뒤 거래를 한 건씩 요청합니다.
 거래 API는 계좌번호, 거래 시각·금액, 채널과 단말 위험 신호만 담은 Slim JSON을
-받습니다. Backend는 거래와 계좌를 저장하고, 아직 준비되지 않은 고객·계좌 상세와
-파생 Feature에는 임시 기본값을 붙여 ML 추론용 raw59를 조립합니다. 별도의
-`transactions.raw_features` JSON 스냅샷 컬럼은 사용하지 않습니다.
+받습니다. 고객과 출금·수취 계좌는 요청 전에 DB에 있어야 합니다. Backend는 출금
+계좌에 연결된 고객, 두 계좌의 현재 상태, 고객 이벤트와 과거 거래를 조회해 ML 입력
+51개와 저장용 파생 Feature를 조립합니다. 별도의 `transactions.raw_features` JSON
+스냅샷 컬럼은 사용하지 않습니다.
 
 ```bash
 curl -X POST http://localhost:8000/transactions \
@@ -77,28 +78,29 @@ curl -X POST http://localhost:8000/transactions \
 
 요청 예시는 [`examples/transaction-request.json`](examples/transaction-request.json)에
 있습니다. `transaction_id`는 Backend DB가 생성하므로 요청에서 보내지 않습니다.
-개인정보 원장이 아직 없으면 `customer_id`를 `null`로 보낼 수 있고, Backend는 가짜 고객
-행을 저장하지 않은 채 ML 조립 시에만 임시 고객 프로필을 사용합니다. 수취 계좌가 없는
-ATM 거래는 `recipient_account_number`도 `null`로 보낼 수 있습니다. 거래금액의 부호는
-요청과 ML 입력에서 유지하고, 룰의 금액 임계값은 거래 규모를 보도록 절댓값을 사용합니다.
+`customer_id`는 `null`로 보낼 수 있지만 저장할 때는 출금 계좌에 연결된 실제 고객 ID를
+사용합니다. `source_account_number`와 `recipient_account_number`는 모두 필수이며 DB에
+존재해야 합니다. 거래금액의 부호는 요청과 ML 입력에서 유지하고, 룰의 금액 임계값은
+거래 규모를 보도록 절댓값을 사용합니다.
 
-ML 응답이 정상 저장되면 `prediction_status`는 `COMPLETED`가 됩니다. ML 서버가
-꺼져 있거나 응답 계약이 다르면 거래 원본은 유지되고 POST 응답은 `FAILED`가 됩니다.
-현재 ERD에는 실패 이력 컬럼이 없으므로 ML 실패 자체는 별도 결과 행으로 저장하지 않습니다.
+ML 확률이 `0.5` 이상이면 거래를 `DECLINED`, 미만이면 `APPROVED`로 저장합니다. API의
+`prediction_status`는 각각 `DECLINED`, `COMPLETED`입니다. ML 서버가 꺼져 있거나 응답
+계약이 다르면 현재 파이프라인은 거래를 저장하기 전에 실패하며 공통 `500` 오류 응답을
+반환합니다. ML 실패 이력 행은 따로 저장하지 않습니다.
 Timeout·네트워크 오류와 `429`, `5xx` 응답은 scale-to-zero 재기동 같은 일시 오류로
 보고 기본 2회까지 호출하며, `4xx` 입력 오류와 응답 계약 오류는 재시도하지 않습니다.
 횟수와 간격은 `ML_SERVING_MAX_ATTEMPTS`, `ML_SERVING_RETRY_DELAY_SECONDS`로
 조절합니다.
 
 ML이 사기로 예측한 거래는 활성 룰셋으로 모든 사기유형 점수를 계산합니다.
-Backend는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 유형별 점수를 전부
-저장하고 응답합니다. 화면에서 필요한 상위 N개 선택과 정렬은 이 값을 사용하는
-클라이언트가 담당합니다. 정상 거래이거나 점수를 계산하지 못한 경우에는
-`rule_scores`가 `null`입니다.
+룰 엔진과 거래 API는 하나의 대표 유형을 확정하지 않으며 `rule_scores`에 유형별 점수를
+전부 저장하고 응답합니다. 화면의 상위 N개 선택과 정렬은 클라이언트가 담당하고, 후속
+Agent는 별도로 1·2위 점수와 차이를 계산해 적용 유형을 정합니다. 정상 거래이거나 점수를
+계산하지 못한 경우에는 `rule_scores`가 `null`입니다.
 
-ML 추론, 실시간 룰 점수, 룰셋 테스트, 과거 거래 재현은 모두 동일한 raw60
-계약(`transaction_id` + snake_case Feature 59개)을 사용합니다. 룰 관리 화면에는
-이 중 이름·계좌번호·IP·MAC·위치·생년월일 같은 식별 원본을 노출하지 않고,
+실시간 ML 추론은 Backend가 조립한 snake_case Feature 51개를 사용합니다. 룰셋 테스트와
+과거 거래 재현도 같은 Feature 이름을 기준으로 하되, 룰 관리 화면에는 이름·계좌번호·
+IP·MAC·위치·생년월일 같은 식별 원본을 노출하지 않고,
 생년월일은 거래 시점 연령인 `transaction_age`로만 제공합니다. 이전 대문자 표기
 Feature 이름은 신규 룰 조건식에서 지원하지 않습니다. 다만 운영 DB의 기존
 ACTIVE 룰셋을 새 기본 룰셋으로 교체하기 전까지 엔진 내부에서만 기존 이름을 한시
@@ -113,15 +115,21 @@ ACTIVE 룰셋을 새 기본 룰셋으로 교체하기 전까지 엔진 내부에
 
 ```json
 {
-  "prediction_status": "COMPLETED",
-  "ml_is_fraud": true,
-  "fraud_probability": 0.9959,
+  "transaction_id": 123,
+  "prediction_status": "DECLINED",
+  "predict_proba": 0.9959,
+  "message": "이상거래 의심으로 거래가 거절되었습니다.",
+  "predict_result": true,
+  "rule_set_id": 1,
   "rule_scores": {
     "VOICE_PHISHING": 0.70,
     "FRAUD_USED_ACCOUNT": 0.20,
     "ACCOUNT_TAKEOVER": 0.10,
     "MESSENGER_PHISHING": 0.05
-  }
+  },
+  "confirmed_is_fraud": null,
+  "labeled_at": null,
+  "created_at": "2026-08-19T10:00:00+09:00"
 }
 ```
 
@@ -129,7 +137,7 @@ ACTIVE 룰셋을 새 기본 룰셋으로 교체하기 전까지 엔진 내부에
 담당자가 거래의 사기 여부를 확정하면 다음 API로 재학습용 이진 라벨을 저장합니다.
 
 ```bash
-curl -X PUT http://localhost:8000/transactions/TX-001/label \
+curl -X PUT http://localhost:8000/transactions/123/label \
   -H "Content-Type: application/json" \
   -d '{"confirmed_is_fraud":true}'
 ```
@@ -236,16 +244,17 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 
 ## MLOps 관리자 API
 
-`MLOPS_ADMIN_TOKEN`이 비어 있으면 `/mlops` 전체가 `503`으로 비활성화됩니다. 운영
-토큰은 저장소가 아니라 VM의 `/opt/fdshield/.env.dev` 또는 Secret Manager에 저장하고
-모든 요청의 `X-MLOps-Admin-Token` 헤더로 전달합니다.
+`MLOPS_ADMIN_TOKEN`이 비어 있으면 `/mlops`와 룰 관리 API가 `503`으로 비활성화됩니다.
+운영 토큰은 저장소가 아니라 VM의 `/opt/fdshield/.env.dev` 또는 Secret Manager에 저장하고
+모든 관리자 요청의 `X-MLOps-Admin-Token` 헤더로 전달합니다.
 
 권장 실행 순서는 다음과 같습니다.
 
 1. 이미 준비된 GCS CSV는 `POST /mlops/datasets`로 등록합니다. DB 확정 라벨을
    반영할 때는 `POST /mlops/datasets/build`로 고정 원본
    `gs://fdshield-ml-data-801817539291/base/train1.csv`에서 새 불변 CSV와
-   데이터셋 버전을 함께 만듭니다.
+   데이터셋 버전을 함께 만듭니다. 버전명과 GCS 객체 위치는 원본명과 서버의 UTC
+   생성 시각을 기준으로 자동 결정합니다.
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
    `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
 3. Training Job은 후보와 현재 champion을 평가하고 성공 시 `status`, `mlflow_run_id`,
@@ -268,8 +277,7 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
    바꾸고 학습 이력을 `PRODUCTION`으로 확정합니다.
 
 핵심 요청 형태는 다음과 같습니다. 아래 `features`의 말줄임은 설명용 축약이며 실제
-승격 스모크 요청에는 [`examples/transaction-request.json`](examples/transaction-request.json)
-에서 `transaction_id`와 학습 메타데이터 4개를 제외한 raw59를 넣습니다.
+승격 스모크 요청에는 `MLTransactionFeatures`의 51개 필드를 넣습니다.
 
 ```text
 POST /mlops/datasets
@@ -278,8 +286,7 @@ POST /mlops/datasets
  "row_count": 210000}
 
 POST /mlops/datasets/build
-{"version": "generated-v2",
- "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv"}
+요청 본문 없음
 
 POST /mlops/training/runs
 {"dataset_version_id": 2, "min_pr_auc": 0.75, "min_recall": 0.8}
@@ -294,8 +301,8 @@ POST /mlops/training/runs/12/decision
 {"decision": "APPROVE", "reason": "동일 검증셋에서 Recall 상승, FPR 감소"}
 
 POST /mlops/serving/promotions
-{"training_run_id": 12, "transaction_id": "TX-SMOKE",
- "features": {...raw59 전체 필드...}}
+{"training_run_id": 12, "transaction_id": 123,
+ "features": {...ML Feature 51개...}}
 
 POST /mlops/training/runs/12/deployment/complete
 {"operation_id": "<serving promotion 응답의 operation_id>"}
@@ -306,10 +313,10 @@ POST /mlops/training/runs/12/deployment/complete
 학습 결과 callback이 유실됐다면 `POST /mlops/training/runs/{id}/reconcile`로 저장된
 Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution 실패는 `FAILED`로
 정리하지만, 성공한 실행의 `mlflow_run_id`는 추측하지 않으므로 callback 설정을 고쳐야
-   합니다. CD 후보 리비전이 교체되었거나 검증이 필요해진 `STAGED` 실행은 ML Serving
-   CD를 정상 완료한 뒤 `{"decision":"APPROVE","restage":true}`로 다시 검증합니다.
-   동일 모델 태그가 존재하지만 아직 reconciling 중이거나 Ready·환경변수·digest·트래픽
-   검증을 통과하지 못하면 Backend는 중복 리비전을 만들지 않고 staging 요청을 거절합니다.
+합니다. CD 후보 리비전이 교체되었거나 검증이 필요해진 `STAGED` 실행은 ML Serving
+CD를 정상 완료한 뒤 `{"decision":"APPROVE","restage":true}`로 다시 검증합니다.
+동일 모델 태그가 존재하지만 아직 reconciling 중이거나 Ready·환경변수·digest·트래픽
+검증을 통과하지 못하면 Backend는 중복 리비전을 만들지 않고 staging 요청을 거절합니다.
 
 운영 재학습 데이터는 ML 담당자의 raw64 CSV 하나로 고정합니다. 데이터셋 버전의
 `gcs_uri`를 `TRAINING_DATA_URI`로 전달하고 ML이 내부에서 raw59→model80 공용 전처리를
@@ -326,7 +333,9 @@ champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않�
 학습 메타데이터를 재조립한 raw64 행입니다. 학습에서 `transaction_id`를 피처로 쓰지
 않으므로 원본 ID와 DB ID를 비교하거나 변환하지 않습니다. 기준 객체는 수정하지 않으며
 GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다. 병합 결과의 원본 행 수와
-추가 라벨 수는 API 응답에 포함됩니다.
+추가 라벨 수는 API 응답에 포함됩니다. 생성 결과는
+`train1-labeled-YYYYMMDDTHHMMSSZ` 버전명과
+`gs://fdshield-ml-data-801817539291/versions/<버전명>.csv` 경로를 사용합니다.
 
 Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
 Secret Manager로 주입합니다.
@@ -360,19 +369,19 @@ Cloud Run Service는 요청이 없으면 자동 scale-to-zero 되므로 별도�
 
 ```text
 POST /transactions
-  -> raw59를 고객·계좌·거래·파생 피처 네 테이블에 정규화 저장
-  -> 네 테이블에서 동일한 raw59 재조립
-  -> ML Serving /ml/predict에 flat raw60 호출
-  -> ML 공용 전처리로 model80 생성·추론
-  -> 사기 판정·확률·모델 이름·버전·지연시간 저장
-  -> 사기 예측이면 활성 룰셋으로 최종 4개 유형 점수 계산·저장
-  -> 거래와 최신 ML·룰 결과 응답
+  -> 기존 고객·출금계좌·수취계좌와 이벤트·거래 이력 조회
+  -> ML 입력 51개와 거래·파생 피처 저장값 조립
+  -> ML Serving /ml/predict 호출
+  -> 확률 0.5 기준으로 거래 승인·거절 결정
+  -> 거래·파생 피처·ML 결과 저장
+  -> 거절 거래면 활성 룰셋으로 4개 유형 점수 계산·저장
+  -> 한 트랜잭션으로 커밋한 뒤 통합 응답 반환
+  -> 룰 결과가 있는 거절 거래는 Agent 백그라운드 조사 시작
 
-Agent / 고객 질문 스켈레톤
-  -> 저장된 탐지 결과를 각 담당 영역에서 사용
-  -> Fake 임베딩
-  -> Fake VectorDB / 가이드 검색
-  -> Fake LLM / 알림
+Agent / 고객 챗봇
+  -> Agent가 룰 점수, 유사 사건, 대응 가이드를 조사
+  -> 고객 안내 노드가 챗봇 세션 URL을 포함한 이메일 발송
+  -> 고객 답변 평가·정황 추출·가이드 검색·대화 후 유형 점수 저장
 ```
 
 ## 프로젝트 구조
@@ -387,7 +396,8 @@ Agent / 고객 질문 스켈레톤
 │   │   └── mlops.py
 │   ├── dto
 │   │   ├── transaction.py
-│   │   ├── ml_prediction.py
+│   │   ├── fraud_detection.py
+│   │   ├── ml_features.py
 │   │   └── fraud_rule.py
 │   ├── data
 │   │   └── model
@@ -401,7 +411,8 @@ Agent / 고객 질문 스켈레톤
 │   ├── repositories
 │   │   └── transaction.py
 │   ├── pipelines
-│   │   └── fraud_detection_pipeline.py
+│   │   ├── d_fraud_detection_pipline.py
+│   │   └── customer_chatbot_pipeline.py
 │   ├── services
 │   │   ├── ml_serving
 │   │   │   └── client.py
@@ -409,7 +420,7 @@ Agent / 고객 질문 스켈레톤
 │   │       ├── engine.py
 │   │       ├── feature_builder.py
 │   │       └── scoring.py
-│   └── ... Agent·챗봇 스켈레톤
+│   └── ... Agent·챗봇·대시보드 구현
 ├── migrations
 ├── examples
 │   └── transaction-request.json
@@ -420,27 +431,20 @@ Agent / 고객 질문 스켈레톤
 
 | DTO | 생산자 | 소비자 |
 |---|---|---|
-| `TransactionCreateDTO` | 거래 API 클라이언트 | 사기 탐지 파이프라인 |
-| `MLTransactionFeatures` | 거래 API 클라이언트 | ML Serving |
+| `TransactionRequestDTO` | 거래 API 클라이언트 | 사기 탐지 파이프라인 |
+| `TransactionCreateDTO` | 파생 Feature 서비스 | 거래 저장 서비스 |
+| `MLTransactionFeatures` | 파생 Feature 서비스 | ML Serving·룰 엔진 |
 | `MLPredictionResponse` | ML Serving | 사기 탐지 파이프라인 |
-| `TransactionResponseDTO` | 사기 탐지 파이프라인 | 거래 API 클라이언트 |
-| `TransactionDTO` | 구형 Agent 스켈레톤 | 구형 Agent 스켈레톤 |
-| `FraudAssessmentDTO` | 구형 Agent 스켈레톤 | Agent, 대시보드 |
-| `RagQueryDTO` | Agent/RAG 쿼리 담당 | VectorDB 검색 담당 |
-| `RetrievedContextDTO` | VectorDB 검색 담당 | LLM 답변 담당 |
+| `TransactionResponseDTO` | 거래 저장 서비스 | 탐지 결과 서비스 |
+| `FraudDetectionResponseDTO` | 탐지 결과 서비스 | 거래 API 클라이언트 |
+| `AgentInputDTO` | 거래 API | Agent 백그라운드 작업 |
+| `ChatTurnResponse` | 고객 챗봇 파이프라인 | 챗봇 API 클라이언트 |
 
-실제 거래 탐지는 `TransactionCreateDTO`를 받아 ML Serving과 룰 점수를 차례로 실행합니다.
-구형 Agent DTO는 실제 거래 탐지 결과에 맞춘 Agent 계약을 확정한 뒤 제거합니다.
+외부 거래 요청은 `TransactionRequestDTO`가 받고, 내부 저장용 `TransactionCreateDTO`와
+ML용 `MLTransactionFeatures`는 파생 Feature 서비스가 조립합니다.
 
-## Agent Fake 구현 범위
+## Agent·챗봇 구현 문서
 
-- VectorDB: 어떤 쿼리에도 동일한 모니터링 문맥 반환
-- LLM: 입력 DTO의 문맥을 문자열 템플릿으로 조합
-- 이메일/대시보드: `print()`로 출력
-
-거래 수신, ML Serving 호출, PostgreSQL 저장, 동적 룰 점수 계산은 Fake 범위가 아닙니다.
-
-고객 대응 챗봇의 Fake 구현(`customer_chatbot_pipeline.py`, `FakeEmbedder`,
-`FakeGuideRetriever`, `build_chatbot_chain`)은 제거했습니다. 이 영역은
-[docs/customer-chatbot/](docs/customer-chatbot/) 설계에 따라 실제 구현으로 다시 만드는 중입니다.
+Agent 대응 가이드와 평가 방법은 [docs/agent_guides/](docs/agent_guides/)에, 고객 챗봇의
+현재 흐름과 스키마는 [docs/customer-chatbot/](docs/customer-chatbot/)에 정리되어 있습니다.
 

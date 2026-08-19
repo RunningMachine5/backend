@@ -6,6 +6,7 @@
 
 작성일: 2026-08-14. 전체 9단계 구현 완료일: 2026-08-16.
 완료된 구현의 의사결정과 작업 순서를 추적할 수 있도록 이 문서는 기록으로 보관한다.
+당시의 개별 migration revision은 이후 초기 스키마 `6040d304df8d`로 합쳐졌다.
 
 ---
 
@@ -17,7 +18,7 @@
 | --- | --- |
 | 도메인 상수: `fraud_circumstance` 20종과 채점표 | [fraud_circumstance_codes.py](../../app/domain/fraud_circumstance_codes.py) |
 | 테이블 6종 모델 + 등록 | [chatbot.py](../../app/data/model/chatbot.py), [\_\_init\_\_.py](../../app/data/model/__init__.py) |
-| 마이그레이션 (대화 스키마, `top_fraud_types`, 가이드 검색 질의 저장 구조) | `migrations/versions/…c4f7a2b9d810…`, `…d94b7e31a5c2…`, `…f8a1b2c3d4e5…` |
+| 마이그레이션 (현재 전체 대화 스키마) | `migrations/versions/2026_08_18_1709-6040d304df8d_init_schema.py` |
 | 프롬프트 A.1~A.3 렌더링 함수 (도메인 상수에서 조립) | [prompts.py](../../app/services/chatbot/prompts.py) |
 | pgvector 코사인 검색 + `MAX_DISTANCE = 0.6` | [chatbot_retriever.py](../../app/services/rag/chatbot_retriever.py) |
 | 의존성: `langgraph`, `langchain`, `langchain-openai` | `pyproject.toml` |
@@ -82,12 +83,12 @@ FDS·Agent 결합.
   settings 클래스 없음) + `.env.example` 갱신
   - `CHAT_BASE_URL` (기본 `http://localhost:8000`)
   - `CHAT_FALLBACK_EMAIL` (기본 `abcd@kosa.com`)
-  - `CHAT_LLM_TIMEOUT_SECONDS` (기본 `30`), `CHAT_LLM_MAX_ATTEMPTS` — 평가·추출 LLM 호출 공용.
+  - `CHAT_LLM_TIMEOUT_SECONDS` (기본 `30`), `CHAT_LLM_MAX_ATTEMPTS` (기본 `2`) — 평가·추출 LLM 호출 공용.
     가장 느린 가이드 검색 질의 분해(A.2)가 최악 4.9초라 그 아래로 잡으면 모든 턴이
     타임아웃으로 실패한다(PRD 2.4 「모델·reasoning effort와 타임아웃 예산」)
-  - `CHAT_LLM_MODEL` (기본 `gpt-5.6-luna`) — 네 LLM 호출 공용 모델
-  - `CHAT_RESPONSE_LLM_MODEL` (기본 `gpt-5.6-luna`) — 기본값은 위와 같다. 고객에게 나가는
-    대응 가이드 생성(A.4)만 따로 갈아끼울 여지를 두려고 변수를 남겨뒀다
+  - `CHAT_LLM_MODEL` (기본 `gpt-5.6-luna`) — A.1~A.3 공용 모델
+  - `CHAT_RESPONSE_LLM_MODEL` (기본 `gpt-5.6-luna`) — 고객에게 나가는 대응 가이드
+    생성(A.4) 모델. 기본값은 위와 같고 A.4만 따로 갈아끼울 수 있다
   - `CHAT_LLM_REASONING_EFFORT` (기본 `low`) — 네 LLM 호출 공용. 추론 토큰이 지연을
     지배하므로 모델 크기보다 이 값이 응답 시간을 좌우한다. `minimal`은 평가 LLM이
     오판해 쓰지 않는다
@@ -118,7 +119,7 @@ FDS·Agent 결합.
 
 ## 3단계 — 챗봇 리포지토리
 
-**참조**: [스키마 3.4~3.7](schema.md#34-chat_sessions--테이블명-변경-및-컬럼-추가), [PRD 2.6 중복 방지](README.md#채점-시점과-중복-방지)
+**참조**: [스키마 3.4~3.7](schema.md#34-chat_sessions--현재-컬럼), [PRD 2.6 중복 방지](README.md#채점-시점과-중복-방지)
 
 `app/repositories/chat_session.py` 신규 (필요시 `chat_message.py` 등 분리).
 **commit 하지 않는다** — 트랜잭션은 파이프라인 소유 (`get_session` 패턴).
@@ -128,8 +129,8 @@ FDS·Agent 결합.
 - [x] 상태 전이, `question_step` 갱신(턴 종료 시), `email_sent_at`/`notified_email`/
   `completed_at` 기록
 - [x] 메시지 저장(순수 로그) + `chat_answers` 기록 — `attempt_no` 1~3,
-  `quality_verdict`/`verdict_skip_reason`, 질문당 `is_adopted = true` 정확히 하나
-  (부분 유니크 인덱스 준수)
+  `quality_verdict`/`verdict_skip_reason`, 질문당 `is_adopted = true` 최대 하나
+  (부분 유니크 인덱스 준수). `WANT_END`, 재질문 중인 응답, 평가 LLM 실패는 채택하지 않는다
 - [x] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
   `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러냄)
 - [x] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
@@ -140,7 +141,7 @@ FDS·Agent 결합.
 ## 4단계 — 평가·추출 LLM 서비스
 
 **참조**: [prompts.md A.1~A.3](prompts.md), [PRD 2.4 조건 2](README.md#조건-2-고객응답-평가-llm),
-[PRD 3.1](README.md#31-흐름), [스키마 3.6](schema.md#36-추출-결과-테이블--신규)
+[PRD 3.1](README.md#31-흐름), [스키마 3.6](schema.md#36-추출-결과-테이블)
 
 프롬프트 렌더링은 [prompts.py](../../app/services/chatbot/prompts.py)에 이미 있으므로
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
@@ -152,8 +153,8 @@ FDS·Agent 결합.
     상한 소진 시 고객 판정과 분리된 경로로 다음 질문에 진행하고
     `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
 - [x] `app/services/chatbot/extractors.py` — A.2 가이드 검색 질의 분해 / A.3 사기 정황 추출 호출.
-  structured output 스키마는 1단계 DTO. `evidence`가 답변 원문에 연속 문자열로 존재하는지
-  저장 전 대조하고, 불일치 항목은 로그를 남긴 뒤 저장하지 않음
+  structured output 스키마는 1단계 DTO. A.2는 원문과 다른 `evidence`도 RAG 질의로 유지하되
+  리포지토리가 해당 감사 행을 저장하지 않고, A.3는 원문과 다른 정황을 추출 단계에서 버린다
 - [x] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 3종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
@@ -161,7 +162,7 @@ FDS·Agent 결합.
 ## 5단계 — RAG 응답 조립 + 채점 집계
 
 **참조**: [PRD 2.5](README.md#25-정보-응답--rag-대응-가이드-4-1), [PRD 2.6](README.md#26-사기-정황-추출과-채점-4-2),
-[messages.md B.5](messages.md#b5-안내를-만들지-못한-정보-요구-안내), [scoring.md](scoring.md)
+[messages.md B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내), [scoring.md](scoring.md)
 
 - [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) 신설 — Generate 프롬프트가
   설계 문서에 없었다. 소제목·목록 조립은 LLM이 하지 않고 코드가 한다는 것을 문서에 못박고,
@@ -192,7 +193,7 @@ FDS·Agent 결합.
 
 ## 6단계 — LangGraph 파이프라인
 
-**참조**: [PRD 2.3~2.6](README.md#23-최초-알림-메시지와-버튼), [스키마 3.4 대화 진행 상태](schema.md#34-chat_sessions--테이블명-변경-및-컬럼-추가),
+**참조**: [PRD 2.3~2.6](README.md#23-최초-알림-메시지와-버튼), [스키마 3.4 대화 진행 상태](schema.md#34-chat_sessions--현재-컬럼),
 [messages.md B.1~B.4](messages.md)
 
 `app/pipelines/customer_chatbot_pipeline.py`를 새로 만든다(Fake 껍데기는 삭제됨).
@@ -254,11 +255,13 @@ FDS·Agent 결합.
     쓴다(PRD 2.1 테스트용 세션 생성)
   - `POST /chat/{chat_session_id}/verify` — 출생연도 4자리 간이 본인인증
     (실패 횟수 제한·토큰·TTL 없음 — PRD 3.3의 MVP 제외 그대로)
-  - `GET /chat/{chat_session_id}` — 세션 상태 + 메시지 이력 (접속, `is_older` 포함)
+  - `GET /chat/{chat_session_id}` — 인증 뒤 새로고침·재접속용 세션 상태 + 메시지 이력
+    (`is_older` 포함, 최초 알림은 만들지 않음)
   - `POST /chat/{chat_session_id}/actions` — 버튼 3종
   - `POST /chat/{chat_session_id}/messages` — 고객 답변 → 파이프라인 실행 → 챗봇 응답
   - (기존 `POST /chat/ask`는 6단계 정리에서 이미 제거했다)
-  - 확정된 엔드포인트 5종은 [README 2.8](README.md#28-api-엔드포인트)에 표로 남겼고,
+  - 고객 경로 4종과 아래 담당자 경로 2종, 총 6개 엔드포인트를
+    [README 2.8](README.md#28-api-엔드포인트)에 표로 남겼고,
     Swagger(`/docs`)에 한국어 summary·description·오류 예시를 달았다
 - [x] `GET /transactions/{transaction_id}/chat-session` — 담당자 거래 목록에서 각
   `transaction_id`에 연결된 채팅 세션 상태 조회. 담당자 화면이 **폴링**하는 경로다
@@ -339,8 +342,8 @@ README 3장의 미해결 문제와 이번 범위 제외 항목을 새 작업의 
 - 고령자 전용 UI (프론트 영역, `is_older` 값 반환까지만)
 - 담당자 접수·처리 중 상태 (`HANDOFF_REQUESTED` 이후 확장, PRD 3.3)
 - history-aware retriever, 청킹 개선, `MAX_DISTANCE` 튜닝 (PRD 3.1~3.2)
-- `customers.email` 실주소 확보 경로(스키마 3.9의 `customer_email` DTO 필드) — 거래 수집
-  영역 변경이라 챗봇 단계와 분리해 별도 작업으로 진행 가능. 폴백만으로 데모는 동작한다
+- `customers.email` 실주소 확보 경로 — 현재 거래 DTO에는 이메일 필드가 없으므로 거래 수집
+  영역과 분리한 별도 적재 경로가 필요하다. 폴백만으로 데모는 동작한다
 
 ## 테스트 실행
 

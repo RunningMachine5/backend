@@ -33,16 +33,6 @@ class DatasetVersionRequest(StrictMLOpsDTO):
         return _validated_gcs_uri(value)
 
 
-class LabeledDatasetBuildRequest(StrictMLOpsDTO):
-    version: str = Field(min_length=1, max_length=64)
-    gcs_uri: str = Field(min_length=1, max_length=2048)
-
-    @field_validator("gcs_uri")
-    @classmethod
-    def validate_gcs_uri(cls, value: str) -> str:
-        return _validated_gcs_uri(value)
-
-
 def _validated_gcs_uri(value: str) -> str:
     parsed = urlsplit(value)
     if (
@@ -161,6 +151,53 @@ class TrainingRunResponse(StrictMLOpsDTO):
     model_details: MLflowDetailsPointer
 
 
+class InferencePerformanceResponse(StrictMLOpsDTO):
+    """모델 관리 화면에 표시할 최근 온라인 추론 성능."""
+
+    window_minutes: int
+    inference_count: int
+    p95_latency_ms: int | None
+    latest_inference_at: datetime | None
+
+
+class MonitoringPointResponse(StrictMLOpsDTO):
+    timestamp: datetime
+    value: float
+
+
+class ServingMonitoringSummaryResponse(StrictMLOpsDTO):
+    request_count: int
+    error_rate_percent: float
+    p95_latency_ms: float | None
+    active_instances: float | None
+    idle_instances: float | None
+    cpu_utilization_percent: float | None
+    memory_utilization_percent: float | None
+
+
+class ServingMonitoringSeriesResponse(StrictMLOpsDTO):
+    requests_per_minute: list[MonitoringPointResponse]
+    error_rate_percent: list[MonitoringPointResponse]
+    p95_latency_ms: list[MonitoringPointResponse]
+    active_instances: list[MonitoringPointResponse]
+    cpu_utilization_percent: list[MonitoringPointResponse]
+    memory_utilization_percent: list[MonitoringPointResponse]
+
+
+class ServingMonitoringResponse(StrictMLOpsDTO):
+    """Cloud Monitoring에서 조회한 Cloud Run 준실시간 운영 지표."""
+
+    window_minutes: int
+    alignment_seconds: int
+    data_delay_seconds: int
+    service_name: str
+    region: str
+    queried_at: datetime
+    latest_sample_at: datetime | None
+    summary: ServingMonitoringSummaryResponse
+    series: ServingMonitoringSeriesResponse
+
+
 class CloudRunOperationResponse(BaseModel):
     """Cloud Run 장기 실행 operation의 공통 필드와 확장 필드."""
 
@@ -199,11 +236,15 @@ __all__ = [
     "DatasetVersionRequest",
     "DatasetVersionResponse",
     "DeploymentCompleteRequest",
-    "LabeledDatasetBuildRequest",
+    "InferencePerformanceResponse",
     "LabeledDatasetBuildResponse",
     "MLflowDetailsPointer",
     "MLflowModelDetails",
     "ModelPromotionRequest",
+    "MonitoringPointResponse",
+    "ServingMonitoringResponse",
+    "ServingMonitoringSeriesResponse",
+    "ServingMonitoringSummaryResponse",
     "TrainingDecision",
     "TrainingDecisionRequest",
     "TrainingResultRequest",
