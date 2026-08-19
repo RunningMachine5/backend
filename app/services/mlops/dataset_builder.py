@@ -110,6 +110,8 @@ class ObjectStorage(Protocol):
 
     def upload_new(self, source: Path, uri: str) -> None: ...
 
+    def delete(self, uri: str) -> None: ...
+
 
 class GCSObjectStorage:
     """ADC와 GCS JSON API를 사용하며 목적 객체 덮어쓰기를 금지한다."""
@@ -173,6 +175,26 @@ class GCSObjectStorage:
         except Exception as exc:
             raise DatasetStorageError(
                 f"새 학습 데이터셋을 업로드하지 못했습니다: {uri}"
+            ) from exc
+        finally:
+            if response is not None:
+                response.close()
+
+    def delete(self, uri: str) -> None:
+        target = parse_gcs_uri(uri)
+        url = (
+            "https://storage.googleapis.com/storage/v1/b/"
+            f"{quote(target.bucket, safe='')}/o/{quote(target.name, safe='')}"
+        )
+        response = None
+        try:
+            response = self._session.delete(url, timeout=(10, 60))
+            if response.status_code == 404:
+                return
+            response.raise_for_status()
+        except Exception as exc:
+            raise DatasetStorageError(
+                f"학습 데이터셋을 GCS에서 삭제하지 못했습니다: {uri}"
             ) from exc
         finally:
             if response is not None:
@@ -505,6 +527,13 @@ class LabeledDatasetBuilder:
             normal_count=len(confirmed) - fraud_count,
             fraud_count=fraud_count,
         )
+
+    def delete_dataset(self, uri: str) -> None:
+        """생성된 데이터셋 객체를 삭제하되 고정 원본은 유지한다."""
+
+        if parse_gcs_uri(uri) == parse_gcs_uri(self._source_uri):
+            raise DatasetBuildError("기본 학습 데이터셋은 삭제할 수 없습니다.")
+        self._storage.delete(uri)
 
 
 @lru_cache

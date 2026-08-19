@@ -48,6 +48,9 @@ class FakeObjectStorage:
             raise AssertionError("test storage does not allow overwrites")
         self.objects[uri] = source.read_bytes()
 
+    def delete(self, uri: str) -> None:
+        self.objects.pop(uri, None)
+
 
 def _csv_bytes(
     rows: list[dict[str, object]],
@@ -337,6 +340,24 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
                 period_start=date(2026, 7, 1),
                 period_end=date(2026, 7, 31),
             )
+
+    def test_deletes_generated_dataset_but_keeps_base_dataset(self) -> None:
+        source_uri = "gs://bucket/base/train1.csv"
+        generated_uri = "gs://bucket/versions/august.csv"
+        storage = FakeObjectStorage(
+            {
+                source_uri: _csv_bytes([]),
+                generated_uri: _csv_bytes([]),
+            }
+        )
+        builder = LabeledDatasetBuilder(storage, source_uri=source_uri)
+
+        builder.delete_dataset(generated_uri)
+
+        self.assertNotIn(generated_uri, storage.objects)
+        self.assertIn(source_uri, storage.objects)
+        with self.assertRaisesRegex(DatasetBuildError, "기본 학습"):
+            builder.delete_dataset(source_uri)
 
     def test_preserves_source_row_and_appends_confirmed_db_row(self) -> None:
         payload = _transaction_payload(

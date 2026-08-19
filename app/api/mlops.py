@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -264,6 +264,40 @@ def preview_labeled_dataset_version(
         normal_count=summary.normal_count,
         fraud_count=summary.fraud_count,
     )
+
+
+@router.delete(
+    "/datasets/{dataset_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_dataset_version(
+    dataset_id: int,
+    builder: LabeledDatasetBuilderDep,
+    session: SessionDep,
+) -> Response:
+    """학습에 사용하지 않은 데이터셋을 GCS와 목록에서 삭제한다."""
+
+    dataset = session.get(DatasetVersion, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="데이터셋을 찾을 수 없습니다.")
+    linked_run = session.exec(
+        select(TrainingRun).where(TrainingRun.dataset_version_id == dataset_id).limit(1)
+    ).first()
+    if linked_run is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="학습 이력이 연결된 데이터셋은 삭제할 수 없습니다.",
+        )
+    try:
+        builder.delete_dataset(dataset.gcs_uri)
+    except DatasetStorageError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except DatasetBuildError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    session.delete(dataset)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

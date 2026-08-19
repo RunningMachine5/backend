@@ -143,6 +143,61 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_dataset_delete_removes_gcs_object_and_database_row(self) -> None:
+        with Session(self.engine) as session:
+            dataset = DatasetVersion(
+                version="deletable-dataset",
+                gcs_uri="gs://bucket/versions/deletable.csv",
+                row_count=100,
+            )
+            session.add(dataset)
+            session.commit()
+            session.refresh(dataset)
+            assert dataset.id is not None
+            dataset_id = dataset.id
+
+        response = self.client.delete(
+            f"/mlops/datasets/{dataset_id}",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 204, response.text)
+        self.dataset_builder.delete_dataset.assert_called_once_with(
+            "gs://bucket/versions/deletable.csv"
+        )
+        with Session(self.engine) as session:
+            self.assertIsNone(session.get(DatasetVersion, dataset_id))
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_dataset_delete_rejects_version_used_by_training(self) -> None:
+        with Session(self.engine) as session:
+            dataset = DatasetVersion(
+                version="used-dataset",
+                gcs_uri="gs://bucket/versions/used.csv",
+                row_count=100,
+            )
+            session.add(dataset)
+            session.commit()
+            session.refresh(dataset)
+            assert dataset.id is not None
+            run = TrainingRun(
+                model_key="fdshield-fraud-detector-v2",
+                dataset_version_id=dataset.id,
+                status="RUNNING",
+            )
+            session.add(run)
+            session.commit()
+            dataset_id = dataset.id
+
+        response = self.client.delete(
+            f"/mlops/datasets/{dataset_id}",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.dataset_builder.delete_dataset.assert_not_called()
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_admin_auth_error_uses_common_response(self) -> None:
         response = self.client.get("/mlops/training/runs")
 
