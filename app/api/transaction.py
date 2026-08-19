@@ -1,23 +1,21 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from sqlmodel import select
 
-from app.api.dependencies import DerivedFeatureServiceDep, DFraudDetectionPipelineDep
-from app.core.common_response import success_response, ApiResponse
+from app.api.dependencies import DFraudDetectionPipelineDep
 from app.core.db import SessionDep
 from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
-from app.data.model.transaction import Transaction
+from app.data.model.transaction import Transaction, TransactionStatus
 from app.data.model.transaction_label import TransactionLabel
 from app.domain.agent_status import RuleFilterStatus
 from app.dto.agent import AgentInputDTO
+from app.dto.fraud_detection import FraudDetectionResponseDTO
 from app.dto.transaction import (
     TransactionLabelResponseDTO,
     TransactionLabelUpdateDTO,
     TransactionRequestDTO,
-    TransactionResponseDTO,
 )
-from app.pipelines.fraud_detection_pipeline import (
-    FraudDetectionPipeline,
+from app.pipelines.d_fraud_detection_pipline import (
     FraudDetectionResult,
 )
 from app.repositories.transaction import (
@@ -27,7 +25,6 @@ from app.repositories.transaction import (
 from app.services.agent.task_runner import AgentTaskRunnerDep
 from app.services.analysis.risk_grader import RiskGrader
 from app.services.dashboard.dashboard_event_broker import dashboard_event_broker
-from app.services.ml_serving.client import MLServingClientDep
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -68,18 +65,25 @@ def _transaction_response(
     prediction_result: MLPredictionResult | None,
     score_result: FraudTypeScoreResult | None,
     label: TransactionLabel | None,
-    *,
-    prediction_status: str | None = None,
-) -> TransactionResponseDTO:
-    return TransactionResponseDTO.model_validate(
+) -> FraudDetectionResponseDTO:
+    """DB에 나뉘어 저장된 거래·ML·룰·라벨을 조회 응답 하나로 합친다."""
+
+    # doo가 저장한 거래 상태가 API의 승인·거절 표시 기준이다.
+    if transaction.transaction_status == TransactionStatus.DECLINED:
+        prediction_status = "DECLINED"
+        message = "이상거래 의심으로 거래가 거절되었습니다."
+    else:
+        prediction_status = "COMPLETED"
+        message = "거래가 승인 되었습니다."
+
+    return FraudDetectionResponseDTO.model_validate(
         {
             # SQLAlchemy가 commit 뒤 객체를 expire하면 SQLModel.model_dump()가
             # 빈 dict를 반환할 수 있다. 응답 계약의 필드를 명시적으로 읽어
             # 세션 상태와 관계없이 같은 응답을 만든다.
             "transaction_id": transaction.id,
             "created_at": transaction.created_at,
-            "prediction_status": prediction_status
-            or ("COMPLETED" if prediction_result else "FAILED"),
+            "prediction_status": prediction_status,
             "predict_result": (
                 prediction_result.predict_result if prediction_result else None
             ),
@@ -90,55 +94,41 @@ def _transaction_response(
             "rule_scores": score_result.type_scores if score_result else None,
             "confirmed_is_fraud": (label.confirmed_is_fraud if label else None),
             "labeled_at": label.labeled_at if label else None,
+            "message": message,
         }
     )
 
 
 @router.post(
     "",
-    response_model=TransactionResponseDTO,
+    response_model=FraudDetectionResponseDTO,
     status_code=status.HTTP_201_CREATED,
 )
-
 def create_transaction(
     payload: TransactionRequestDTO,
     background_tasks: BackgroundTasks,
-    session: SessionDep,
-    derived_features_service: DerivedFeatureServiceDep,
-    ml_client: MLServingClientDep,
+    fraud_detection_pipeline: DFraudDetectionPipelineDep,
     agent_task_runner: AgentTaskRunnerDep,
-) -> TransactionResponseDTO:
+) -> FraudDetectionResponseDTO:
     """HTTP 요청을 실제 사기 탐지 Pipeline에 전달한다."""
 
-    pipeline = FraudDetectionPipeline(
-        session=session,
-        derived_features_service=derived_features_service,
-        ml_client=ml_client,
+    result = fraud_detection_pipeline.run(payload)
+    dashboard_event_broker.publish(
+        event="dashboard_updated",
+        data={"source": "transaction"},
     )
-    result = pipeline.run(payload)
     agent_input = _build_agent_input(result)
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)
 
-    if (
-        result.prediction_result is not None
-        and result.prediction_result.predict_result
-    ):
-        dashboard_event_broker.publish(
-            event="dashboard_updated",
-            data={"source":"ml"}
-        )
-    return _transaction_response(
-        result.transaction,
-        result.prediction_result,
-        result.score_result,
-        TransactionLabelRepository(session).get(result.transaction.id),
-        prediction_status=result.prediction_status,
-    )
+    if result.prediction_result is not None and result.prediction_result.predict_result:
+        dashboard_event_broker.publish(event="dashboard_updated", data={"source": "ml"})
+    # Pipeline이 doo 응답에 ML·룰 결과까지 합쳤으므로 그대로 반환한다.
+    return result.response
 
 
-@router.get("", response_model=list[TransactionResponseDTO])
-def list_transactions(session: SessionDep) -> list[TransactionResponseDTO]:
+@router.get("", response_model=list[FraudDetectionResponseDTO])
+def list_transactions(session: SessionDep) -> list[FraudDetectionResponseDTO]:
     stmt = select(Transaction).order_by(Transaction.created_at.desc()).limit(20)
     transactions = list(session.exec(stmt).all())
     transaction_ids = [item.id for item in transactions]
@@ -206,11 +196,11 @@ def upsert_transaction_label(
     return label
 
 
-@router.get("/{transaction_id}", response_model=TransactionResponseDTO)
+@router.get("/{transaction_id}", response_model=FraudDetectionResponseDTO)
 def get_transaction(
     transaction_id: int,
     session: SessionDep,
-) -> TransactionResponseDTO:
+) -> FraudDetectionResponseDTO:
     transaction = session.exec(
         select(Transaction).where(Transaction.id == transaction_id)
     ).first()
@@ -234,14 +224,3 @@ def get_transaction(
         score_result,
         label,
     )
-
-
-@router.post("/doo", response_model=ApiResponse)
-async def transaction_validation(
-    transaction: TransactionRequestDTO,
-    fraud_detection_pipeline: DFraudDetectionPipelineDep,
-) -> ApiResponse:
-
-    response = await fraud_detection_pipeline.run(transaction)
-
-    return success_response(response)

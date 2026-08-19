@@ -9,9 +9,10 @@ MLflow에서, 실제 리비전과 트래픽의 원본은 Cloud Run에서 다시 
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -23,11 +24,13 @@ from app.dto.mlops import (
     DatasetVersionRequest,
     DatasetVersionResponse,
     DeploymentCompleteRequest,
+    InferencePerformanceResponse,
     LabeledDatasetBuildRequest,
     LabeledDatasetBuildResponse,
     MLflowDetailsPointer,
     MLflowModelDetails,
     ModelPromotionRequest,
+    ServingMonitoringResponse,
     TrainingDecision,
     TrainingDecisionRequest,
     TrainingResultRequest,
@@ -36,6 +39,7 @@ from app.dto.mlops import (
     TrainingRunResponse,
     TrainingRunStartResponse,
 )
+from app.repositories.inference_performance import InferencePerformanceRepository
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
     CloudRunAdminClientDep,
@@ -50,6 +54,10 @@ from app.services.mlops.dataset_builder import (
 from app.services.mlops.mlflow import (
     MLflowRegistryClientDep,
     MLflowRegistryError,
+)
+from app.services.mlops.monitoring import (
+    CloudMonitoringClientDep,
+    CloudMonitoringError,
 )
 
 
@@ -79,6 +87,8 @@ router = APIRouter(
     tags=["mlops-admin"],
     dependencies=[Depends(require_mlops_admin)],
 )
+
+PERFORMANCE_WINDOW_MINUTES = 5
 
 # DatasetVersion은 CSV 자체를 DB에 복사하지 않고, 학습에 사용할 불변 GCS
 # 객체의 주소와 버전만 가리킨다.
@@ -613,6 +623,41 @@ def get_serving_status(
         "traffic": service.get("trafficStatuses", []),
         "terminal_condition": service.get("terminalCondition"),
     }
+
+
+@router.get(
+    "/serving/performance",
+    response_model=InferencePerformanceResponse,
+)
+def get_serving_performance(
+    session: SessionDep,
+) -> InferencePerformanceResponse:
+    """최근 5분 동안 저장된 온라인 추론 성능을 반환한다."""
+
+    since = datetime.now() - timedelta(minutes=PERFORMANCE_WINDOW_MINUTES)
+    summary = InferencePerformanceRepository(session).summarize_since(since)
+    return InferencePerformanceResponse(
+        window_minutes=PERFORMANCE_WINDOW_MINUTES,
+        inference_count=summary.inference_count,
+        p95_latency_ms=summary.p95_latency_ms,
+        latest_inference_at=summary.latest_inference_at,
+    )
+
+
+@router.get(
+    "/serving/monitoring",
+    response_model=ServingMonitoringResponse,
+)
+def get_serving_monitoring(
+    client: CloudMonitoringClientDep,
+    window_minutes: int = Query(default=60, ge=15, le=360),
+) -> dict[str, Any]:
+    """Cloud Run Serving의 최근 인프라 시계열을 반환한다."""
+
+    try:
+        return client.get_serving_metrics(window_minutes)
+    except CloudMonitoringError as exc:
+        raise _upstream_error(exc) from exc
 
 
 @router.post(

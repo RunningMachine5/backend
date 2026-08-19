@@ -29,7 +29,6 @@ class Account(SQLModel, table=True):
         default=None,
         foreign_key="customers.id",
         ondelete="SET NULL",
-        max_length=64,
         index=True,
     )
     account_number: str = Field(max_length=255, unique=True)
@@ -50,11 +49,11 @@ class Account(SQLModel, table=True):
     suspend_status: bool = Field(default=False, nullable=False)
 
     created_at: datetime = Field(
-        default_factory=datetime.now(UTC),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
     updated_at: datetime = Field(
-        default_factory=datetime.now(UTC),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 

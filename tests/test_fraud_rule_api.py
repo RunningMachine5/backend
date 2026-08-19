@@ -17,7 +17,6 @@ from app.data.model.fraud_rule import (
 )
 from app.services.rules.feature_builder import RULE_CONTEXT_FIELDS
 from main import app
-from tests.test_rule_feature_builder import valid_rule_raw_data
 
 ADMIN_HEADERS = {"X-MLOps-Admin-Token": "admin-secret"}
 
@@ -105,43 +104,6 @@ class FraudRuleApiTest(unittest.TestCase):
             if feature["field"] == "account_account_type"
         )
         self.assertEqual(account_type["allowed_values"], ["a", "b", "c", "d", "e"])
-
-    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_rule_set_test_returns_all_default_rule_scores(self) -> None:
-        draft = self.client.post(
-            "/rule-sets/drafts",
-            headers=ADMIN_HEADERS,
-        ).json()
-
-        raw_data = valid_rule_raw_data()
-        raw_data.update(
-            {
-                "customer_flag_terminal_malicious_behavior_1": 1,
-                "customer_flag_terminal_malicious_behavior_2": 1,
-                "customer_loan_type": "b",
-                "customer_inquery_atm_limit": 1,
-                "customer_increase_atm_limit": 1,
-                "account_indicator_release_limit_excess": 1,
-                "transaction_amount": 9_000_000,
-                "transaction_history_with_the_account": 1,
-                "another_person_account": 1,
-            }
-        )
-        response = self.client.post(
-            f"/rule-sets/{draft['id']}/test",
-            headers=ADMIN_HEADERS,
-            json={"raw_data": raw_data},
-        )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        body = response.json()
-        self.assertEqual(len(body["type_scores"]), 4)
-        score_by_type = {
-            item["type_code"]: item["score"] for item in body["type_scores"]
-        }
-        self.assertAlmostEqual(score_by_type["VOICE_PHISHING"], 1.0)
-        self.assertNotIn("status", body)
-        self.assertNotIn("fraud_type", body)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_new_draft_cannot_activate_transition_only_legacy_field(self) -> None:

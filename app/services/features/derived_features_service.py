@@ -1,12 +1,12 @@
 """ML로 보낼 피쳐들 다 조립하는 코드"""
-from datetime import timedelta, datetime, UTC
-from math import radians, sin, cos, asin, sqrt
+from datetime import UTC, datetime, timedelta
+from math import asin, cos, radians, sin, sqrt
 
 from app.data.model import CustomerEventType, DerivedFeatures
-from app.dto.ml_features import MLTransactionFeatures, DerivedFeaturesCreateDTO
-from app.dto.transaction import TransactionRequestDTO, TransactionCreateDTO
+from app.dto.ml_features import DerivedFeaturesCreateDTO, MLTransactionFeatures
+from app.dto.transaction import TransactionCreateDTO, TransactionRequestDTO
 from app.repositories.derived_features import DerivedFeaturesRepository
-from app.repositories.feature_context import FeatureContextRepository, FeatureContext
+from app.repositories.feature_context import FeatureContext, FeatureContextRepository
 
 
 def _calc_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -300,6 +300,7 @@ class DerivedFeatureService:
                     "account_remaining_amount_daily_limit_exceeded"
                 ],
             ),
+            # 외부·ML의 customer_* 값을 Transaction DB 필드명으로 옮긴다.
             TransactionCreateDTO(
                 customer_id=context.customer.id
                 if context.customer

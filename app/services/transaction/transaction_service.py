@@ -22,10 +22,10 @@ class TransactionService:
             predict_result.transaction_id = stored_tx.id
 
             return predict_result, TransactionResponseDTO(
-                transaction_id = stored_tx.id,
-                prediction_status = "DECLINED",
-                predict_proba = predict_result.predict_proba,
-                message = "이상거래 의심으로 거래가 거절되었습니다."
+                transaction_id=stored_tx.id,
+                prediction_status="DECLINED",
+                predict_proba=predict_result.predict_proba,
+                message="이상거래 의심으로 거래가 거절되었습니다.",
             )
         else:
             # Transaction 테이블에 적재
@@ -35,8 +35,8 @@ class TransactionService:
             predict_result.transaction_id = stored_tx.id
 
             return predict_result, TransactionResponseDTO(
-                transaction_id = stored_tx.id,
-                prediction_status = "COMPLETED",
-                predict_proba = predict_result.predict_proba,
-                message = "거래가 승인 되었습니다."
+                transaction_id=stored_tx.id,
+                prediction_status="COMPLETED",
+                predict_proba=predict_result.predict_proba,
+                message="거래가 승인 되었습니다.",
             )

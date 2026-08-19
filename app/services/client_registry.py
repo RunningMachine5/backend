@@ -9,6 +9,7 @@ import httpx
 from app.services.ml_serving.client import MLServingClient
 from app.services.mlops.cloud_run import CloudRunAdminClient
 from app.services.mlops.mlflow import MLflowRegistryClient
+from app.services.mlops.monitoring import CloudMonitoringClient
 
 
 class ServiceClientRegistry:
@@ -19,6 +20,7 @@ class ServiceClientRegistry:
         self._ml_serving: MLServingClient | None = None
         self._mlflow: MLflowRegistryClient | None = None
         self._cloud_run: CloudRunAdminClient | None = None
+        self._monitoring: CloudMonitoringClient | None = None
 
     def ml_serving(self) -> MLServingClient:
         with self._lock:
@@ -38,14 +40,26 @@ class ServiceClientRegistry:
                 self._cloud_run = CloudRunAdminClient(http_client=httpx.Client())
             return self._cloud_run
 
+    def monitoring(self) -> CloudMonitoringClient:
+        with self._lock:
+            if self._monitoring is None:
+                self._monitoring = CloudMonitoringClient(http_client=httpx.Client())
+            return self._monitoring
+
     def close(self) -> None:
         """실제로 만들어진 클라이언트만 닫는다."""
 
         with self._lock:
-            clients = (self._ml_serving, self._mlflow, self._cloud_run)
+            clients = (
+                self._ml_serving,
+                self._mlflow,
+                self._cloud_run,
+                self._monitoring,
+            )
             self._ml_serving = None
             self._mlflow = None
             self._cloud_run = None
+            self._monitoring = None
         for client in clients:
             if client is not None:
                 client.close()

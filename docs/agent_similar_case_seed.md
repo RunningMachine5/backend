@@ -2,12 +2,12 @@
 
 유사 사건 조회와 대시보드 Top 3 시연에 사용할 완료 사건을 적재한다.
 
-- 사기 유형 4개별 4건, 총 16건 생성
+- 사기 유형 4개별 6건, 총 24건 생성
 - `AGENT_CASES.execution_status=COMPLETED` 저장
 - `AGENT_REVIEWS.decision=CONFIRMED_FRAUD` 저장
 - 현재 활성 Rule Set의 실제 구성요소 키 사용
-- 고정 `case_id`를 사용하여 재실행 시 기존 사건 건너뜀
-- 고객 이메일을 저장하지 않아 Seed 실행만으로 메일이 발송되지 않음
+- 고정 `case_id`를 사용하여 재실행 시 중복 사건을 만들지 않고 기존 사건의 위험도·검토 결과를 현재 Seed 값으로 동기화
+- Agent 워크플로를 실행하지 않고 완료 사건을 직접 저장하므로 이메일은 발송하지 않음
 
 백엔드와 PostgreSQL을 실행하고 마이그레이션을 적용한 뒤 다음 명령을 실행한다.
 
@@ -20,7 +20,7 @@ uv run python -m app.scripts.seed_agent_similar_cases
 ```json
 {
   "rule_set_id": 1,
-  "created_count": 16,
+  "created_count": 24,
   "skipped_count": 0
 }
 ```
@@ -31,7 +31,7 @@ uv run python -m app.scripts.seed_agent_similar_cases
 {
   "rule_set_id": 1,
   "created_count": 0,
-  "skipped_count": 16
+  "skipped_count": 24
 }
 ```
 

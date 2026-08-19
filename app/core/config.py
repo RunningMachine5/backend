@@ -5,7 +5,6 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg://root:1234@localhost:5432/fdshield-db",
 )
 
-ML_SERVER_URL = os.getenv("ML_SERVING_URL", "http://localhost:8001").rstrip("/") # app/services/ml_serving/predict_client.py 서버 주소
 
 ML_SERVING_URL = os.getenv("ML_SERVING_URL", "http://localhost:8001").rstrip("/")
 ML_SERVING_TIMEOUT_SECONDS = float(os.getenv("ML_SERVING_TIMEOUT_SECONDS", "5"))

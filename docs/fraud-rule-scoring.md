@@ -4,39 +4,41 @@
 활성 룰셋을 읽고, 최종 4개 사기유형 각각의 가중치 점수를 독립적으로 계산해 전부
 저장·응답하는 구조**다.
 
-Backend는 하나의 대표 유형을 확정하지 않는다. `CLASSIFIED`, `UNCLASSIFIED`,
-최소 점수, 1·2위 점수 차이 같은 판정도 수행하지 않는다. 룰 조건은 Python
-`if/elif`가 아니라 JSON으로 저장되므로 관리 API를 통해 룰·조건·가중치를
-버전별로 변경하고 활성화할 수 있다.
+룰 엔진과 거래 API는 하나의 대표 유형을 확정하지 않고 유형별 점수 전체를 넘긴다.
+최소 점수나 1·2위 점수 차이도 룰 계산에는 사용하지 않는다. 다만 후속 Agent는
+`type_scores`를 정렬해 기본값 `0.60`·`0.15`로 `CONFIDENT` / `AMBIGUOUS`를 판단하고,
+필요하면 유사 사건 조사를 거쳐 적용 유형을 고른다. 룰 조건은 Python `if/elif`가 아니라
+JSON으로 저장되므로 관리 API를 통해 룰·조건·가중치를 버전별로 변경하고 활성화할 수 있다.
 
-최종 룰의 기준은 2026-08-08 확정안이며 카드부정사용 유형은 제거됐다.
+코드의 현재 기본 룰셋 버전 표기는 `2026-08-13-raw60`이며 카드부정사용 유형은 없다.
+`raw60`은 남아 있는 버전 라벨일 뿐, 현재 입력 개수는 아래에 설명한 ML Feature 51개다.
 
 ## 1. 전체 실행 흐름
 
 ```mermaid
 flowchart TD
-    A["POST /transactions<br/>raw60 입력"] --> B["입력 검증"]
-    B --> C["원본 거래 DB 저장"]
+    A["POST /transactions<br/>Slim 거래 요청"] --> B["기존 고객·계좌·이력 조회"]
+    B --> C["ML 입력 51개와 저장값 조립"]
     C --> D["ML Serving /ml/predict 호출"]
 
-    D -->|"호출 실패"| E["prediction_status = FAILED<br/>룰 점수 미생성"]
-    D -->|"정상 판정"| F["prediction_status = COMPLETED<br/>rule_scores = null"]
-    D -->|"사기 판정"| G["DB에서 ACTIVE 룰셋 조회"]
+    D -->|"호출 실패"| E["500 응답<br/>DB 커밋 없음"]
+    D -->|"확률 0.5 미만"| F["거래 APPROVED<br/>rule_scores = null"]
+    D -->|"확률 0.5 이상"| G["거래 DECLINED<br/>ACTIVE 룰셋 조회"]
 
-    G -->|"없음 또는 계산 오류"| H["오류 로그 기록<br/>ML 결과는 COMPLETED 유지<br/>룰 점수 행 미생성"]
-    G -->|"있음"| I["43개 룰 원본값 정규화"]
+    G -->|"없음 또는 계산 오류"| H["오류 로그 기록<br/>거절 거래와 ML 결과 유지<br/>룰 점수 행 미생성"]
+    G -->|"있음"| I["50개 룰 원본값 정규화"]
     I --> J["27개 최종 파생 신호 계산"]
     J --> K["JSON 조건식 평가"]
     K --> L["4개 유형별 가중치 독립 합산"]
-    L --> M["전체 유형 점수 DB 저장"]
-    M --> N["rule_scores 전체 응답"]
+    L --> M["거래·파생값·ML·룰 결과 커밋"]
+    M --> N["통합 탐지 결과 응답"]
 ```
 
 역할은 다음처럼 분리된다.
 
 - ML 모델: 거래의 `사기 / 정상` 이진 예측과 사기 확률 계산
 - 룰 엔진: 사기 거래에 대해 유형별 조건 일치 점수 계산
-- 룰 관리 API: 룰 생성·수정·테스트·활성화
+- 룰 관리 API: 룰 생성·수정·Replay 비교·활성화
 - DB: 룰 버전, 유형별 점수, 일치한 조건 저장
 - 프론트·대시보드: 전체 점수를 정렬하고 필요한 상위 N개 표시
 
@@ -44,46 +46,49 @@ flowchart TD
 
 실제 실행은 `app/api/transaction.py`의 `POST /transactions`에서 시작한다.
 
-1. 거래 ID와 모델 입력 원본 59개로 구성된 raw60을 받는다.
-2. 원본 거래를 `transactions` 테이블에 먼저 저장한다.
-3. ML Serving의 `/ml/predict`를 동기로 호출한다.
-4. ML 예측 결과를 거래 행에 저장한다.
-5. `is_fraud=true`일 때만 활성 룰셋을 읽고 점수를 계산한다.
-6. 모든 유형 점수를 `fraud_type_score_results`에 저장한다.
-7. 거래 응답의 `rule_scores`에 전체 점수를 포함한다.
+1. 계좌번호·거래·단말 정보로 구성된 `TransactionRequestDTO`를 받는다.
+2. DB에 미리 저장된 출금계좌·수취계좌·고객과 이벤트·거래 이력을 조회한다.
+3. `MLTransactionFeatures` 51개와 거래·파생 Feature 저장값을 조립한다.
+4. ML Serving의 `/ml/predict`를 동기로 호출한다.
+5. 확률이 `0.5` 이상이면 거래를 `DECLINED`, 미만이면 `APPROVED`로 저장한다.
+6. `ml_prediction_results`에 모델 결과를 저장하고, 거절 거래만 룰 점수를 계산한다.
+7. 거래·파생값·ML·룰 결과를 한 번에 커밋하고 통합 응답을 반환한다.
 
-원본 거래를 먼저 저장하기 때문에 ML 호출이 실패해도 입력 데이터는 사라지지
-않는다.
+ML 호출이 거래 저장보다 먼저이므로 최종 호출 실패 시 거래와 결과는 커밋되지 않는다.
 
 ```text
 ML 호출 실패
-→ transactions.prediction_status = FAILED
+→ API 500 공통 오류 응답
+→ transactions 행 없음
 → fraud_type_score_results 행 없음
 
 ML 정상 판정
-→ transactions.prediction_status = COMPLETED
-→ transactions.ml_is_fraud = false
+→ transactions.transaction_status = APPROVED
+→ ml_prediction_results.predict_result = false
 → fraud_type_score_results 행 없음
 → rule_scores = null
 
 ML 사기 판정 + 룰 점수 계산 성공
-→ transactions.prediction_status = COMPLETED
+→ transactions.transaction_status = DECLINED
+→ ml_prediction_results.predict_result = true
 → fraud_type_score_results에 전체 점수 저장
 → rule_scores에 전체 점수 응답
 ```
 
 ## 3. 입력 데이터 계약
 
-입력 DTO는 `app/dto/ml_prediction.py`에 있다. 거래 요청은 `transaction_id`와
-정확히 59개의 ML 원본 Feature로 구성된 raw60을 받는다.
+외부 입력 DTO는 `app/dto/transaction.py`의 `TransactionRequestDTO`다. 요청에는
+DB가 생성하는 `transaction_id`를 넣지 않으며, Backend가 기존 원장과 이력에서
+`app/dto/ml_features.py`의 ML 입력 51개를 조립한다.
 
 - 필수값 누락 시 `422`
 - 정의하지 않은 컬럼 입력 시 `422`
 - 숫자 범위와 카테고리 값 검증
+- 출금·수취 계좌와 출금 계좌에 연결된 고객은 DB에 미리 존재해야 함
 - Backend에서는 One-hot Encoding을 수행하지 않음
-- 검증한 원본값을 ML Serving과 룰 엔진에 전달
+- 조립한 같은 Feature를 ML Serving과 룰 엔진에 전달
 
-룰 엔진은 식별·민감정보 7개를 제외한 안전한 원본 52개와 27개 파생 신호를
+룰 엔진은 식별·민감정보를 제외한 안전한 원본 50개와 27개 파생 신호를
 사용한다. 기존 ACTIVE 룰의 CamelCase 이름은 실행 전환 기간에만 내부 alias로
 지원하며 신규 DRAFT는 snake_case만 허용한다.
 
@@ -92,10 +97,10 @@ ML 사기 판정 + 룰 점수 계산 성공
 `app/services/rules/feature_builder.py`가 원본값을 검증하고 파생 신호를 계산한다.
 
 ```text
-ML 원본 입력: 59개
-룰이 사용하는 원본: 52개
+ML 입력: 51개
+룰이 사용하는 원본: 50개
 룰 파생 신호: 27개
-최종 룰 사용 가능 Feature: 79개
+최종 룰 사용 가능 Feature: 77개
 ```
 
 주요 파생 신호는 다음과 같다.
@@ -126,7 +131,7 @@ rapid_repeat
 → 수취계좌 단시간 거래 횟수 >= 3
 
 amount_anomaly
-→ 거래금액 > max(월간 최대 거래금액, 월간 표준편차 × 3)
+→ 거래금액 > max(월간 최대 거래금액, max(월간 표준편차, 1) × 3)
 
 severe_amount_context
 → 금액 이상이면서 잔액 소진 또는 일 한도 압박
@@ -156,7 +161,7 @@ suspension_pair / suspension_release_only / recipient_suspended_only
 - `ACCOUNT_TAKEOVER`: 계정탈취
 - `FRAUD_USED_ACCOUNT`: 사기이용계좌
 
-8/8 최종 가중치는 다음과 같다.
+현재 `DEFAULT_RULE_SET`의 가중치는 다음과 같다.
 
 | 유형 | 조건과 가중치 |
 | --- | --- |
@@ -180,7 +185,7 @@ suspension_pair / suspension_release_only / recipient_suspended_only
 룰 점수는 확률도 아니다.
 
 ```text
-fraud_probability
+predict_proba
 → ML이 계산한 사기 확률
 
 rule_scores
@@ -262,8 +267,9 @@ IN, BETWEEN
 }
 ```
 
-최고점 유형을 선택하거나 `0.5` 최소점수 및 `0.1` 점수 차이로 판정하지 않는다.
-정렬과 상위 N개 선택은 이 값을 사용하는 쪽에서 수행한다.
+룰 엔진은 최고점 유형을 선택하거나 최소점수·점수 차이로 판정하지 않는다. 정렬과 상위 N개
+선택은 소비자가 수행한다. 현재 Agent의 별도 확실성 판정 기준은 최고점 `0.60` 이상,
+1·2위 차이 `0.15` 이상이며 둘 중 하나라도 부족하면 `AMBIGUOUS`다.
 
 룰 검증 시에는 다음을 강제한다.
 
@@ -273,7 +279,9 @@ IN, BETWEEN
 - 가중치는 `0 초과, 1 이하`
 - 각 유형의 component 가중치 합은 정확히 `1.0`
 
-새로운 유형도 enum이나 엔진 코드를 수정하지 않고 DB 룰만 추가해 계산할 수 있다.
+룰 엔진 자체는 새로운 유형도 enum 수정 없이 DB 룰만 추가해 계산할 수 있다. 하지만 현재
+Agent 대응 정책과 표시명·가이드 코퍼스는 4개 유형을 전제로 하므로 전체 서비스에 새 유형을
+추가할 때는 그 소비자 계약도 함께 확장해야 한다.
 
 ## 8. DB 룰 조회와 오류 처리
 
@@ -313,38 +321,52 @@ activated_at
 ### `fraud_rules`
 
 ```text
+id
 rule_set_id
 type_code
 display_name
 description
 enabled
 sort_order
+created_at
+updated_at
 ```
 
 ### `fraud_rule_components`
 
 ```text
+id
 rule_id
 component_key
 name
 condition_expression JSONB
 weight
 sort_order
+created_at
+updated_at
 ```
 
 ### `fraud_type_score_results`
 
 ```text
+id
 transaction_id
+rule_set_id
+rule_filter_status: APPLIED / SKIPPED_NOT_FRAUD / FAILED
+primary_fraud_type (nullable)
 type_scores JSONB
 matched_components JSONB
-rule_set_version
 created_at
 ```
 
 `type_scores`에는 모든 활성 유형의 점수가 들어간다. `matched_components`는 감사와
-설명을 위해 유형별로 일치한 component key를 보관하지만 거래 API 응답에는 우선
-노출하지 않는다.
+설명을 위해 유형별로 일치한 component key를 보관하지만 거래 API 응답에는 노출하지 않는다.
+현재 실시간 점수 저장 경로는 `rule_filter_status = APPLIED`인 행만 만들며, 정상 거래나
+룰 계산 실패에는 행을 만들지 않는다. `SKIPPED_NOT_FRAUD`와 `FAILED`는 DB CHECK에 허용된
+값이지만 현재 파이프라인은 쓰지 않는다.
+
+`primary_fraud_type` 컬럼도 현재 스키마에는 남아 있다. 실시간 룰 계산은 대표 유형을 정하지
+않으므로 `NULL`로 저장하고, 시연용 완료 사건 Seed처럼 별도 입력 경로만 값을 채운다.
 
 다음 분류 전용 값은 제거했다.
 
@@ -360,26 +382,33 @@ error_message
 ## 10. 거래 API 응답
 
 `POST /transactions`, `GET /transactions`,
-`GET /transactions/{transaction_id}`에서 저장된 전체 점수를 `rule_scores`로
-응답한다.
+`GET /transactions/{transaction_id}`에서 거래·최신 ML 결과·룰 점수·확정 라벨을
+하나의 `FraudDetectionResponseDTO`로 응답한다.
 
 ```json
 {
-  "transaction_id": "TX_001",
-  "prediction_status": "COMPLETED",
-  "ml_is_fraud": true,
-  "fraud_probability": 0.9959,
+  "transaction_id": 123,
+  "prediction_status": "DECLINED",
+  "predict_proba": 0.9959,
+  "message": "이상거래 의심으로 거래가 거절되었습니다.",
+  "predict_result": true,
+  "rule_set_id": 1,
   "rule_scores": {
     "VOICE_PHISHING": 0.70,
     "MESSENGER_PHISHING": 0.60,
     "ACCOUNT_TAKEOVER": 0.40,
     "FRAUD_USED_ACCOUNT": 0.80
-  }
+  },
+  "confirmed_is_fraud": null,
+  "labeled_at": null,
+  "created_at": "2026-08-19T10:00:00+09:00"
 }
 ```
 
-정상 거래, ML 호출 실패, 활성 룰셋 없음, 룰 계산 실패일 때는
-`rule_scores = null`이다. ML 처리 상태는 기존 `prediction_status`로 구분한다.
+승인 거래, 활성 룰셋 없음, 룰 계산 실패일 때는 `rule_scores = null`이다.
+`prediction_status`는 DB 컬럼이 아니라 `transactions.transaction_status`를 API용
+`COMPLETED` 또는 `DECLINED`로 바꾼 값이다. ML 호출 실패는 이 응답 DTO가 아니라
+공통 오류 응답으로 반환된다.
 
 ## 11. 관리자 API
 
@@ -398,7 +427,6 @@ PUT    /rule-sets/{id}/rules/{rule_id}
 DELETE /rule-sets/{id}/rules/{rule_id}
 
 POST   /rule-sets/{id}/validate
-POST   /rule-sets/{id}/test
 POST   /rule-sets/{id}/replay
 POST   /rule-sets/{id}/activate
 ```
@@ -411,10 +439,9 @@ POST   /rule-sets/{id}/activate
 GET /rule-sets?rule_set_status=DRAFT로 수정 중인 DRAFT 확인
 → 있으면 해당 DRAFT를 이어서 수정
 → 없으면 POST /rule-sets/drafts로 현재 ACTIVE를 복제
-→ PUT으로 유지할 4개 유형의 component·가중치를 8/8 최종안에 맞게 수정
+→ PUT으로 유지할 4개 유형의 component·가중치를 현재 `DEFAULT_RULE_SET`에 맞게 수정
 → DELETE로 CARD_FRAUD 룰 제거
 → 유효성 검증
-→ 실제 raw60 샘플로 모든 유형 점수 확인
 → 최신 ML 양성 거래를 최대 1,000건 리플레이해 ACTIVE 대비 영향 확인
 → 활성화
 → 기존 ACTIVE는 ARCHIVED
@@ -434,7 +461,7 @@ transaction_id DESC` 순서로 기본·최대 1,000건 선택한다. 동일한 �
 ```text
 ML 최신 양성 거래
 → Transaction + Customer + 출금·수취 Account + DerivedFeatures 일괄 조회
-→ assemble_ml_features로 거래별 raw59 Feature 복원
+→ assemble_ml_features로 거래별 ML Feature 51개 복원
 → 동일 Rule Context에 ACTIVE·DRAFT 적용
 → 점수·근거·구성요소 유입/이탈 영향 요약
 ```
@@ -445,39 +472,29 @@ ML 최신 양성 거래
 상세를 각각 최대 100건으로 제한하며 `0`이면 요약만 반환한다. 실행 중 ACTIVE나
 DRAFT의 상태·갱신 시각이 바뀌면 혼합된 결과 대신 `409`로 다시 실행하도록 한다.
 
-## 12. 구형 스켈레톤 코드
+## 12. 현재 실행 파이프라인
 
-`app/pipelines/fraud_detection_pipeline.py`에는 Fake 모델 기반의 초기 스켈레톤
-파이프라인이 남아 있다. 해당 코드는 현재 `POST /transactions` 실행 경로에서
-사용하지 않는다.
+`POST /transactions`는 `app/pipelines/d_fraud_detection_pipline.py`의
+`DFraudDetectionPipeline`을 사용한다.
 
 ```text
-구형 pipeline
-→ 별도 테스트·초기 스켈레톤 코드
-
-app/services/rules
-→ 실제 거래 API에 연결된 유형별 점수 시스템
+DerivedFeatureService
+→ ML 입력·거래 저장값·파생 Feature 조립
+→ MLServingClient
+→ TransactionService
+→ DetectionResultService
+→ app/services/rules
 ```
-
-추후 구형 파이프라인은 제거하거나 `legacy`로 분리하는 것이 좋다.
 
 ## 13. 주의사항과 검증 결과
 
 - 기본 룰 코드를 바꿔도 DB의 기존 ACTIVE 룰셋은 자동 변경되지 않는다.
 - 기존 DB에는 ACTIVE를 복제한 DRAFT의 룰을 관리 API로 하나씩 수정하고,
-  검증·테스트 후 활성화한다.
-- ACTIVE가 하나도 없는 새 DB에서는 코드의 8/8 최종안이 최초 룰셋으로
+  검증·Replay 비교 후 활성화한다.
+- ACTIVE가 하나도 없는 새 DB에서는 코드의 현재 `DEFAULT_RULE_SET`이 최초 룰셋으로
   자동 생성된다.
 - 생성형 CSV를 거래 API 요청으로 바꿀 때 숫자 문자열은 숫자로, 빈 날짜는
   `null`로 변환해야 한다.
-- 관리자 프론트 UI는 아직 없고 Backend API와 DB 구조까지만 구현돼 있다.
-
-검증 결과는 다음과 같다.
-
-```text
-백엔드 전체 단위·API 테스트 통과
-대표 유형 판정 관련 애플리케이션 참조 검색: 없음
-```
 
 한 문장으로 요약하면 다음과 같다.
 

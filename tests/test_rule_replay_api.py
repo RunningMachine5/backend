@@ -80,20 +80,21 @@ def _save_transaction(
         loan_type=loan_type,
     )
     suffix = transaction_id.lower()
+    numeric_id = _transaction_id(transaction_id)
     customer = Customer(
-        id=f"C-{suffix}",
+        id=numeric_id,
         name="동명이인 허용 고객",
         identification_number=f"identity-{suffix}",
         **build_customer_fields(features),
     )
     source = Account(
-        id=f"source-{suffix}",
+        id=numeric_id * 2 - 1,
         customer_id=customer.id,
         account_number=f"source-{suffix}",
         **build_account_fields(features),
     )
     recipient = Account(
-        id=f"recipient-{suffix}",
+        id=numeric_id * 2,
         account_number=f"recipient-{suffix}",
     )
     session.add(customer)
@@ -102,7 +103,7 @@ def _save_transaction(
     session.add(recipient)
     session.flush()
     transaction = Transaction(
-        id=_transaction_id(transaction_id),
+        id=numeric_id,
         customer_id=customer.id,
         source_account_number=source.account_number,
         recipient_account_number=recipient.account_number,
