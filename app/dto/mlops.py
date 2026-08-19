@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit
@@ -31,6 +31,19 @@ class DatasetVersionRequest(StrictMLOpsDTO):
     @classmethod
     def validate_gcs_uri(cls, value: str) -> str:
         return _validated_gcs_uri(value)
+
+
+class DatasetPeriodRequest(StrictMLOpsDTO):
+    """기본 데이터에 추가할 판정 완료 거래 기간."""
+
+    period_start: date
+    period_end: date
+
+    @model_validator(mode="after")
+    def validate_period(self) -> Self:
+        if self.period_start > self.period_end:
+            raise ValueError("기간 시작일은 종료일보다 늦을 수 없습니다.")
+        return self
 
 
 def _validated_gcs_uri(value: str) -> str:
@@ -123,13 +136,29 @@ class DatasetVersionResponse(StrictMLOpsDTO):
     version: str
     gcs_uri: str
     row_count: int
+    period_start: date | None
+    period_end: date | None
+    period_normal_count: int
+    period_fraud_count: int
     created_at: datetime
+
+
+class DatasetPeriodSummaryResponse(StrictMLOpsDTO):
+    base_period_start: date
+    base_period_end: date
+    period_start: date
+    period_end: date
+    labeled_count: int
+    normal_count: int
+    fraud_count: int
 
 
 class DatasetBuildSummaryResponse(StrictMLOpsDTO):
     source_row_count: int
     confirmed_label_count: int
     appended_label_count: int
+    normal_count: int
+    fraud_count: int
 
 
 class LabeledDatasetBuildResponse(DatasetVersionResponse):
@@ -233,6 +262,8 @@ class MLflowModelDetails(StrictMLOpsDTO):
 __all__ = [
     "CloudRunOperationResponse",
     "DatasetBuildSummaryResponse",
+    "DatasetPeriodRequest",
+    "DatasetPeriodSummaryResponse",
     "DatasetVersionRequest",
     "DatasetVersionResponse",
     "DeploymentCompleteRequest",
