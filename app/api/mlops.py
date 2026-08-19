@@ -12,7 +12,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -30,6 +30,7 @@ from app.dto.mlops import (
     MLflowDetailsPointer,
     MLflowModelDetails,
     ModelPromotionRequest,
+    ServingMonitoringResponse,
     TrainingDecision,
     TrainingDecisionRequest,
     TrainingResultRequest,
@@ -53,6 +54,10 @@ from app.services.mlops.dataset_builder import (
 from app.services.mlops.mlflow import (
     MLflowRegistryClientDep,
     MLflowRegistryError,
+)
+from app.services.mlops.monitoring import (
+    CloudMonitoringClientDep,
+    CloudMonitoringError,
 )
 
 
@@ -637,6 +642,22 @@ def get_serving_performance(
         p95_latency_ms=summary.p95_latency_ms,
         latest_inference_at=summary.latest_inference_at,
     )
+
+
+@router.get(
+    "/serving/monitoring",
+    response_model=ServingMonitoringResponse,
+)
+def get_serving_monitoring(
+    client: CloudMonitoringClientDep,
+    window_minutes: int = Query(default=60, ge=15, le=360),
+) -> dict[str, Any]:
+    """Cloud Run Serving의 최근 인프라 시계열을 반환한다."""
+
+    try:
+        return client.get_serving_metrics(window_minutes)
+    except CloudMonitoringError as exc:
+        raise _upstream_error(exc) from exc
 
 
 @router.post(
