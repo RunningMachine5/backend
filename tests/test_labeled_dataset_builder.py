@@ -24,10 +24,11 @@ from app.services.features.ml_feature_assembler import (
 )
 from app.services.mlops.dataset_builder import (
     TRAINING_CSV_COLUMNS,
+    TRAINING_SOURCE_COLUMNS,
     DatasetBuildError,
     LabeledDatasetBuilder,
 )
-from tests.ml_feature_fixture import valid_transaction_row
+from tests.ml_feature_fixture import valid_ml_raw_data, valid_transaction_row
 
 FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
 FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
@@ -49,6 +50,18 @@ class FakeObjectStorage:
 def _csv_bytes(rows: list[dict[str, object]]) -> bytes:
     output = StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=TRAINING_CSV_COLUMNS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue().encode("utf-8")
+
+
+def _raw51_training_csv_bytes(
+    rows: list[dict[str, object]],
+    *,
+    fieldnames: tuple[str, ...] = TRAINING_SOURCE_COLUMNS,
+) -> bytes:
+    output = StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
     return output.getvalue().encode("utf-8")
@@ -283,7 +296,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertNotIn(FLAG_DEPOSIT_CANONICAL, first_row)
         self.assertEqual(first_row["is_fraud"], "1")
 
-    def test_preserves_source_row_and_appends_db_row_when_ids_match(self) -> None:
+    def test_preserves_source_row_without_appending_duplicate_id(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,
@@ -311,8 +324,9 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
 
         self.assertEqual(result.source_row_count, 1)
-        self.assertEqual(result.appended_label_count, 1)
-        self.assertEqual(result.output_row_count, 2)
+        self.assertEqual(result.confirmed_label_count, 1)
+        self.assertEqual(result.appended_label_count, 0)
+        self.assertEqual(result.output_row_count, 1)
         rows = list(
             csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
         )
@@ -320,10 +334,59 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertEqual(rows[0]["is_fraud"], "False")
         self.assertEqual(rows[0]["customer_name"], "source-preserved")
         self.assertEqual(rows[0]["account_account_number"], "source-preserved")
-        self.assertEqual(rows[1]["transaction_id"], "1")
-        self.assertEqual(rows[1]["is_fraud"], "1")
-        self.assertEqual(rows[1]["customer_name"], "테스트고객-1")
-        self.assertEqual(rows[1]["account_account_number"], "stored-source-account")
+
+    def test_expands_raw51_training_source_to_ml_raw64(self) -> None:
+        payload = _transaction_payload(
+            "TX-DATASET-1",
+            customer_id=1,
+            source_account_number="stored-source-account",
+            recipient_account_number="stored-recipient-account",
+            confirmed_is_fraud=True,
+        )
+        self._save(payload)
+        source_row = {
+            "transaction_id": str(payload.transaction_id),
+            **valid_ml_raw_data(),
+            "is_fraud": 0,
+        }
+        source_uri = "gs://bucket/generated/v1/transactions.csv"
+        destination_uri = "gs://bucket/generated/v2/transactions.csv"
+        source_columns = list(TRAINING_SOURCE_COLUMNS)
+        source_columns.remove("customer_loan_type")
+        source_columns.insert(
+            source_columns.index("customer_credit_rating") + 1,
+            "customer_loan_type",
+        )
+        storage = FakeObjectStorage(
+            {
+                source_uri: _raw51_training_csv_bytes(
+                    [source_row],
+                    fieldnames=tuple(source_columns),
+                )
+            }
+        )
+
+        result = LabeledDatasetBuilder(
+            storage,
+            source_uri=source_uri,
+        ).build(
+            self.session,
+            destination_uri=destination_uri,
+        )
+
+        rows = list(
+            csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
+        )
+        self.assertEqual(result.source_row_count, 1)
+        self.assertEqual(result.confirmed_label_count, 1)
+        self.assertEqual(result.appended_label_count, 0)
+        self.assertEqual(result.output_row_count, 1)
+        self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
+        self.assertEqual(len(rows[0]), 64)
+        self.assertEqual(rows[0]["account_release_suspention"], "False")
+        self.assertEqual(rows[0][FLAG_DEPOSIT_ALIAS], "True")
+        self.assertEqual(rows[0]["transaction_resumed_date"], "")
+        self.assertEqual(rows[0]["first_time_ios_by_vulnerable_user"], "0")
 
     def test_declined_transaction_keeps_ml_account_balance_in_dataset(self) -> None:
         payload = _transaction_payload(
@@ -422,7 +485,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
 
         self.assertNotIn(destination_uri, storage.objects)
 
-    def test_requires_exact_ordered_train1_raw64_source_contract(self) -> None:
+    def test_rejects_incomplete_source_contract(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,

@@ -23,7 +23,10 @@ from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
-from app.dto.ml_features import MLTransactionFeatures
+from app.dto.ml_features import (
+    RAW_TRANSACTION_FEATURE_COLUMNS,
+    MLTransactionFeatures,
+)
 from app.services.features.ml_feature_assembler import assemble_ml_features
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -59,6 +62,19 @@ TRAINING_BALANCE_DRAIN_RATIO_COLUMN = "balance_drain_ratio"
 TRAINING_LABEL_COLUMN = "is_fraud"
 TRAINING_FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
 TRAINING_FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
+TRAINING_CSV_ALIASES = {
+    "recipient_release_suspension": "account_release_suspention",
+    TRAINING_FLAG_DEPOSIT_CANONICAL: TRAINING_FLAG_DEPOSIT_ALIAS,
+    "recipient_transaction_resumed_date": "transaction_resumed_date",
+}
+
+# ML 추론용 raw51에 거래 ID와 정답 라벨을 붙인 현재 학습 CSV 형식이다.
+# 데이터셋 생성 시 ML 학습 Job이 요구하는 raw64로 확장한다.
+TRAINING_SOURCE_COLUMNS = (
+    TRAINING_TRANSACTION_ID_COLUMN,
+    *RAW_TRANSACTION_FEATURE_COLUMNS,
+    TRAINING_LABEL_COLUMN,
+)
 
 # 실시간 추론은 담당자의 raw51을 사용하지만 기존 train1.csv는 64열 원본이다.
 # 재학습 데이터는 기존 파일에 행을 추가하므로 이 헤더 순서를 그대로 유지한다.
@@ -334,24 +350,44 @@ class LabeledDatasetBuilder:
         }
 
     @staticmethod
-    def _validate_header(fieldnames: list[str] | None) -> list[str]:
+    def _validate_header(fieldnames: list[str] | None) -> None:
         if not fieldnames:
             raise DatasetBuildError("기존 학습 CSV에 헤더가 없습니다.")
         provided = tuple(fieldnames)
-        if provided != TRAINING_CSV_COLUMNS:
-            expected = set(TRAINING_CSV_COLUMNS)
-            actual = set(provided)
-            missing = sorted(expected - actual)
-            unknown = sorted(actual - expected)
-            duplicates = sorted(
-                {column for column in provided if provided.count(column) > 1}
-            )
-            raise DatasetBuildError(
-                "기존 학습 CSV가 train1 raw64 헤더 계약과 다릅니다: "
-                f"missing={missing}, unknown={unknown}, "
-                f"duplicates={duplicates}, order_matches=False"
-            )
-        return fieldnames
+        duplicates = sorted(
+            {column for column in provided if provided.count(column) > 1}
+        )
+        actual = set(provided)
+        supported_headers = (
+            set(TRAINING_CSV_COLUMNS),
+            set(TRAINING_SOURCE_COLUMNS),
+        )
+        if not duplicates and actual in supported_headers:
+            return
+
+        raise DatasetBuildError(
+            "기존 학습 CSV는 ML raw51+transaction_id+is_fraud 또는 "
+            "train1 raw64 헤더여야 합니다: "
+            f"columns={len(provided)}, duplicates={duplicates}, "
+            "supported_columns=False"
+        )
+
+    @staticmethod
+    def _normalize_source_row(row: dict[str, str]) -> dict[str, object]:
+        """raw51 기반 학습 행을 ML 학습 Job의 raw64 열 순서로 확장한다."""
+
+        normalized: dict[str, object] = {
+            column: "" for column in TRAINING_CSV_COLUMNS
+        }
+        for column, value in row.items():
+            output_column = TRAINING_CSV_ALIASES.get(column, column)
+            if output_column in normalized:
+                normalized[output_column] = value
+
+        # 이 과거 메타데이터 열은 model79 전처리 입력에서 사용하지 않는다.
+        if "first_time_ios_by_vulnerable_user" not in row:
+            normalized["first_time_ios_by_vulnerable_user"] = 0
+        return normalized
 
     @staticmethod
     def _csv_feature_value(field_name: str, value: object) -> object:
@@ -501,19 +537,29 @@ class LabeledDatasetBuilder:
                 output_path.open("w", encoding="utf-8", newline="") as output_file,
             ):
                 reader = csv.DictReader(source_file)
-                fieldnames = self._validate_header(reader.fieldnames)
+                self._validate_header(reader.fieldnames)
                 writer = csv.DictWriter(
                     output_file,
-                    fieldnames=fieldnames,
+                    fieldnames=TRAINING_CSV_COLUMNS,
                     extrasaction="ignore",
                 )
                 writer.writeheader()
 
+                source_transaction_ids: set[str] = set()
                 for row in reader:
                     source_row_count += 1
-                    writer.writerow(row)
+                    transaction_id = row.get(
+                        TRAINING_TRANSACTION_ID_COLUMN,
+                        "",
+                    ).strip()
+                    if transaction_id:
+                        source_transaction_ids.add(transaction_id)
+                    writer.writerow(self._normalize_source_row(row))
 
+                appended_label_count = 0
                 for transaction_id in sorted(confirmed):
+                    if str(transaction_id) in source_transaction_ids:
+                        continue
                     labeled = confirmed[transaction_id]
                     if labeled.derived is None:
                         raise DatasetBuildError(
@@ -535,20 +581,20 @@ class LabeledDatasetBuilder:
                         ) from exc
                     writer.writerow(
                         self._new_row(
-                            fieldnames,
+                            list(TRAINING_CSV_COLUMNS),
                             labeled,
                             assembled,
                         )
                     )
+                    appended_label_count += 1
 
-            appended_label_count = len(confirmed)
             output_row_count = source_row_count + appended_label_count
             self._storage.upload_new(output_path, destination_uri)
 
         return DatasetBuildResult(
             source_row_count=source_row_count,
             output_row_count=output_row_count,
-            confirmed_label_count=appended_label_count,
+            confirmed_label_count=len(confirmed),
             appended_label_count=appended_label_count,
         )
 
@@ -567,6 +613,7 @@ LabeledDatasetBuilderDep = Annotated[
 __all__ = [
     "MLOPS_BASE_DATASET_URI",
     "TRAINING_CSV_COLUMNS",
+    "TRAINING_SOURCE_COLUMNS",
     "ConfirmedTransaction",
     "DatasetBuildError",
     "DatasetBuildResult",
