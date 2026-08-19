@@ -5,7 +5,7 @@
 
 - 언제 추출하고 언제 집계하는지: PRD [2.6 사기 정황 추출과 채점](README.md#26-사기-정황-추출과-채점-4-2)
 - 추출 프롬프트와 20종 정의: [LLM 프롬프트 A.3](prompts.md#a3-사기-정황-추출-프롬프트)
-- 점수를 저장하는 테이블: [DB·스키마 3.7](schema.md#37-fraud_type_score_after_chat--구조-변경)
+- 점수를 저장하는 테이블: [DB·스키마 3.7](schema.md#37-fraud_type_score_after_chat)
 
 이 표는 코드에서 `app/domain/fraud_circumstance_codes.py`의
 `FRAUD_CIRCUMSTANCE_SCORES: Mapping[str, Mapping[str, int]]`로 관리한다
