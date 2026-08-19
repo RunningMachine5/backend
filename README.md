@@ -20,6 +20,60 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uv run python -m unittest discover -s tests -v
 ```
 
+## 강현님이 작성한 DB 주입 스크립트 사용법
+
+강현님이 작성한 [`scripts/seed_database_until_july.py`](scripts/seed_database_until_july.py)는
+고객, 계좌, 고객 이벤트, 7월까지의 거래, 파생 피처, 거래 라벨을 순서대로 DB에
+적재합니다.
+
+전달받은 CSV 파일은 Git에 올리지 않고 Backend의 `dummy_data/` 폴더에 넣습니다.
+
+```text
+dummy_data/
+├── customers.csv
+├── accounts.csv
+├── customer_events.csv
+├── transactions_until_july.csv
+├── derived_features_until_july.csv
+├── transaction_labels.csv
+└── transactions_august.csv
+```
+
+DB와 `.env`의 `DATABASE_URL`을 준비한 뒤 Backend 루트에서 실행합니다.
+
+```powershell
+uv run python scripts/seed_database_until_july.py --truncate
+```
+
+`--truncate`를 사용하면 기존 `transaction_labels`, `derived_features`,
+`transactions`, `customer_events`, `accounts`, `customers` 데이터를 모두 비운 뒤
+다시 적재합니다. 기존 데이터를 유지하려면 `--truncate`를 빼고 실행합니다.
+
+```powershell
+uv run python scripts/seed_database_until_july.py
+```
+
+7월까지의 기준 데이터를 적재하고 Backend를 실행한 뒤, 강현님이 작성한
+[`scripts/stream_transactions_api.py`](scripts/stream_transactions_api.py)로 8월 거래를
+`POST /transactions`에 한 건씩 전송합니다. 기본 전송 간격은 1초입니다.
+
+```powershell
+uv run python scripts/stream_transactions_api.py --use-current-time
+```
+
+0.5초 간격으로 최대 100건을 보내려면 다음과 같이 실행합니다.
+
+```powershell
+uv run python scripts/stream_transactions_api.py `
+  --interval 0.5 `
+  --max-count 100 `
+  --use-current-time
+```
+
+CSV 끝까지 전송한 뒤 처음부터 다시 반복하려면 `--loop`를 추가합니다.
+`--use-current-time`은 각 거래의 `transaction_datetime`을 전송 시각으로 바꿔 현재
+대시보드 조회 기간에 표시되게 합니다.
+
 ## Docker 실행
 
 `.env.example`을 `.env`로 복사하고 비밀번호를 변경합니다.
@@ -253,7 +307,8 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 1. 이미 준비된 GCS CSV는 `POST /mlops/datasets`로 등록합니다. DB 확정 라벨을
    반영할 때는 `POST /mlops/datasets/build`로 고정 원본
    `gs://fdshield-ml-data-801817539291/base/train1.csv`에서 새 불변 CSV와
-   데이터셋 버전을 함께 만듭니다.
+   데이터셋 버전을 함께 만듭니다. 버전명과 GCS 객체 위치는 원본명과 서버의 UTC
+   생성 시각을 기준으로 자동 결정합니다.
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
    `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
 3. Training Job은 후보와 현재 champion을 평가하고 성공 시 `status`, `mlflow_run_id`,
@@ -285,8 +340,7 @@ POST /mlops/datasets
  "row_count": 210000}
 
 POST /mlops/datasets/build
-{"version": "generated-v2",
- "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv"}
+요청 본문 없음
 
 POST /mlops/training/runs
 {"dataset_version_id": 2, "min_pr_auc": 0.75, "min_recall": 0.8}
@@ -333,7 +387,9 @@ champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않�
 학습 메타데이터를 재조립한 raw64 행입니다. 학습에서 `transaction_id`를 피처로 쓰지
 않으므로 원본 ID와 DB ID를 비교하거나 변환하지 않습니다. 기준 객체는 수정하지 않으며
 GCS generation precondition으로 목적 객체 덮어쓰기도 금지합니다. 병합 결과의 원본 행 수와
-추가 라벨 수는 API 응답에 포함됩니다.
+추가 라벨 수는 API 응답에 포함됩니다. 생성 결과는
+`train1-labeled-YYYYMMDDTHHMMSSZ` 버전명과
+`gs://fdshield-ml-data-801817539291/versions/<버전명>.csv` 경로를 사용합니다.
 
 Training Job에는 다음 설정을 추가해야 합니다. callback token은 평문 환경변수가 아닌
 Secret Manager로 주입합니다.
