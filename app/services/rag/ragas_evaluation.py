@@ -408,6 +408,7 @@ def _aggregate(
         )
 
     summary["abstain_rate"] = _mean(float(r.abstained) for r in results)
+    summary["avg_elapsed_seconds"] = _mean(r.elapsed_seconds for r in results)
     summary["scored_count"] = len(answerable)
     return summary
 

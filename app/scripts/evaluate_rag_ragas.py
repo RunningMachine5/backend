@@ -121,6 +121,7 @@ def _print_summary(report: dict) -> None:
         "factual_correctness_precision",
         "factual_correctness_recall",
         "abstain_rate",
+        "avg_elapsed_seconds",
     ):
         value = overall.get(key)
         _log(f"  {key:<30} {'-' if value is None else f'{value:.4f}'}")
