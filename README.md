@@ -35,7 +35,8 @@ dummy_data/
 ├── customer_events.csv
 ├── transactions_until_july.csv
 ├── derived_features_until_july.csv
-└── transaction_labels.csv
+├── transaction_labels.csv
+└── transactions_august.csv
 ```
 
 DB와 `.env`의 `DATABASE_URL`을 준비한 뒤 Backend 루트에서 실행합니다.
@@ -51,6 +52,27 @@ uv run python scripts/seed_database_until_july.py --truncate
 ```powershell
 uv run python scripts/seed_database_until_july.py
 ```
+
+7월까지의 기준 데이터를 적재하고 Backend를 실행한 뒤, 강현님이 작성한
+[`scripts/stream_transactions_api.py`](scripts/stream_transactions_api.py)로 8월 거래를
+`POST /transactions`에 한 건씩 전송합니다. 기본 전송 간격은 1초입니다.
+
+```powershell
+uv run python scripts/stream_transactions_api.py --use-current-time
+```
+
+0.5초 간격으로 최대 100건을 보내려면 다음과 같이 실행합니다.
+
+```powershell
+uv run python scripts/stream_transactions_api.py `
+  --interval 0.5 `
+  --max-count 100 `
+  --use-current-time
+```
+
+CSV 끝까지 전송한 뒤 처음부터 다시 반복하려면 `--loop`를 추가합니다.
+`--use-current-time`은 각 거래의 `transaction_datetime`을 전송 시각으로 바꿔 현재
+대시보드 조회 기간에 표시되게 합니다.
 
 ## Docker 실행
 
