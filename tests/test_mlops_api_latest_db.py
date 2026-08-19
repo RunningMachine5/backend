@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 os.environ.setdefault("OPENAI_API_KEY", "test-only-key")
 
@@ -13,6 +13,10 @@ from app.data.model.mlops import DatasetVersion, TrainingRun
 from app.services.mlops.cloud_run import (
     CloudRunAdminError,
     get_cloud_run_admin_client,
+)
+from app.services.mlops.dataset_builder import (
+    DatasetBuildResult,
+    get_labeled_dataset_builder,
 )
 from app.services.mlops.mlflow import MLflowRegistryError, get_mlflow_registry_client
 from main import app
@@ -34,9 +38,13 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
                 yield session
 
         self.cloud_run = Mock()
+        self.dataset_builder = Mock()
         self.mlflow = Mock()
         app.dependency_overrides[get_session] = override_session
         app.dependency_overrides[get_cloud_run_admin_client] = lambda: self.cloud_run
+        app.dependency_overrides[get_labeled_dataset_builder] = (
+            lambda: self.dataset_builder
+        )
         app.dependency_overrides[get_mlflow_registry_client] = lambda: self.mlflow
         self.client = TestClient(app)
         self.headers = {"X-MLOps-Admin-Token": "admin-secret"}
@@ -66,6 +74,33 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             session.refresh(run)
             assert run.id is not None
             return run.id
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_dataset_build_generates_version_and_gcs_uri(self) -> None:
+        self.dataset_builder.build.return_value = DatasetBuildResult(
+            source_row_count=200_000,
+            output_row_count=200_012,
+            confirmed_label_count=12,
+            appended_label_count=12,
+        )
+
+        response = self.client.post("/mlops/datasets/build", headers=self.headers)
+
+        self.assertEqual(response.status_code, 201, response.text)
+        created = response.json()
+        self.assertRegex(
+            created["version"],
+            r"^train1-labeled-\d{8}T\d{6}Z$",
+        )
+        self.assertEqual(
+            created["gcs_uri"],
+            "gs://fdshield-ml-data-801817539291/versions/"
+            f"{created['version']}.csv",
+        )
+        self.dataset_builder.build.assert_called_once_with(
+            ANY,
+            destination_uri=created["gcs_uri"],
+        )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_admin_auth_error_uses_common_response(self) -> None:

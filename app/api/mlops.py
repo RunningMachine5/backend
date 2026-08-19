@@ -9,7 +9,8 @@ MLflow에서, 실제 리비전과 트래픽의 원본은 Cloud Run에서 다시 
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from pathlib import PurePosixPath
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -25,7 +26,6 @@ from app.dto.mlops import (
     DatasetVersionResponse,
     DeploymentCompleteRequest,
     InferencePerformanceResponse,
-    LabeledDatasetBuildRequest,
     LabeledDatasetBuildResponse,
     MLflowDetailsPointer,
     MLflowModelDetails,
@@ -50,6 +50,7 @@ from app.services.mlops.dataset_builder import (
     DatasetBuildError,
     DatasetStorageError,
     LabeledDatasetBuilderDep,
+    parse_gcs_uri,
 )
 from app.services.mlops.mlflow import (
     MLflowRegistryClientDep,
@@ -89,9 +90,21 @@ router = APIRouter(
 )
 
 PERFORMANCE_WINDOW_MINUTES = 5
+DATASET_VERSION_DIRECTORY = "versions"
 
 # DatasetVersion은 CSV 자체를 DB에 복사하지 않고, 학습에 사용할 불변 GCS
 # 객체의 주소와 버전만 가리킨다.
+
+
+def _new_labeled_dataset_target() -> tuple[str, str]:
+    """고정 원본 이름과 생성 시각으로 새 버전명과 저장 위치를 만든다."""
+
+    source = parse_gcs_uri(MLOPS_BASE_DATASET_URI)
+    source_name = PurePosixPath(source.name).stem
+    created_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    version = f"{source_name}-labeled-{created_at}"
+    gcs_uri = f"gs://{source.bucket}/{DATASET_VERSION_DIRECTORY}/{version}.csv"
+    return version, gcs_uri
 
 
 def _operation_id(payload: dict[str, Any]) -> str | None:
@@ -217,14 +230,14 @@ def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
     response_model=LabeledDatasetBuildResponse,
 )
 def build_labeled_dataset_version(
-    payload: LabeledDatasetBuildRequest,
     builder: LabeledDatasetBuilderDep,
     session: SessionDep,
 ) -> dict[str, Any]:
     """고정 GCS CSV와 DB 확정 라벨 거래를 병합해 새 불변 버전을 만든다."""
 
+    version, gcs_uri = _new_labeled_dataset_target()
     existing_version = session.exec(
-        select(DatasetVersion).where(DatasetVersion.version == payload.version)
+        select(DatasetVersion).where(DatasetVersion.version == version)
     ).first()
     if existing_version is not None:
         raise HTTPException(
@@ -235,7 +248,7 @@ def build_labeled_dataset_version(
     try:
         result = builder.build(
             session,
-            destination_uri=payload.gcs_uri,
+            destination_uri=gcs_uri,
         )
     except DatasetStorageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -243,8 +256,8 @@ def build_labeled_dataset_version(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     dataset = DatasetVersion(
-        version=payload.version,
-        gcs_uri=payload.gcs_uri,
+        version=version,
+        gcs_uri=gcs_uri,
         row_count=result.output_row_count,
     )
     session.add(dataset)
