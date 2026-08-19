@@ -20,6 +20,38 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uv run python -m unittest discover -s tests -v
 ```
 
+## 강현님이 작성한 DB 주입 스크립트 사용법
+
+강현님이 작성한 [`scripts/seed_database_until_july.py`](scripts/seed_database_until_july.py)는
+고객, 계좌, 고객 이벤트, 7월까지의 거래, 파생 피처, 거래 라벨을 순서대로 DB에
+적재합니다.
+
+전달받은 CSV 파일은 Git에 올리지 않고 Backend의 `dummy_data/` 폴더에 넣습니다.
+
+```text
+dummy_data/
+├── customers.csv
+├── accounts.csv
+├── customer_events.csv
+├── transactions_until_july.csv
+├── derived_features_until_july.csv
+└── transaction_labels.csv
+```
+
+DB와 `.env`의 `DATABASE_URL`을 준비한 뒤 Backend 루트에서 실행합니다.
+
+```powershell
+uv run python scripts/seed_database_until_july.py --truncate
+```
+
+`--truncate`를 사용하면 기존 `transaction_labels`, `derived_features`,
+`transactions`, `customer_events`, `accounts`, `customers` 데이터를 모두 비운 뒤
+다시 적재합니다. 기존 데이터를 유지하려면 `--truncate`를 빼고 실행합니다.
+
+```powershell
+uv run python scripts/seed_database_until_july.py
+```
+
 ## Docker 실행
 
 `.env.example`을 `.env`로 복사하고 비밀번호를 변경합니다.
