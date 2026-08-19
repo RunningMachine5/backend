@@ -20,6 +20,60 @@ uv run --env-file .env uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uv run python -m unittest discover -s tests -v
 ```
 
+## 강현님이 작성한 DB 주입 스크립트 사용법
+
+강현님이 작성한 [`scripts/seed_database_until_july.py`](scripts/seed_database_until_july.py)는
+고객, 계좌, 고객 이벤트, 7월까지의 거래, 파생 피처, 거래 라벨을 순서대로 DB에
+적재합니다.
+
+전달받은 CSV 파일은 Git에 올리지 않고 Backend의 `dummy_data/` 폴더에 넣습니다.
+
+```text
+dummy_data/
+├── customers.csv
+├── accounts.csv
+├── customer_events.csv
+├── transactions_until_july.csv
+├── derived_features_until_july.csv
+├── transaction_labels.csv
+└── transactions_august.csv
+```
+
+DB와 `.env`의 `DATABASE_URL`을 준비한 뒤 Backend 루트에서 실행합니다.
+
+```powershell
+uv run python scripts/seed_database_until_july.py --truncate
+```
+
+`--truncate`를 사용하면 기존 `transaction_labels`, `derived_features`,
+`transactions`, `customer_events`, `accounts`, `customers` 데이터를 모두 비운 뒤
+다시 적재합니다. 기존 데이터를 유지하려면 `--truncate`를 빼고 실행합니다.
+
+```powershell
+uv run python scripts/seed_database_until_july.py
+```
+
+7월까지의 기준 데이터를 적재하고 Backend를 실행한 뒤, 강현님이 작성한
+[`scripts/stream_transactions_api.py`](scripts/stream_transactions_api.py)로 8월 거래를
+`POST /transactions`에 한 건씩 전송합니다. 기본 전송 간격은 1초입니다.
+
+```powershell
+uv run python scripts/stream_transactions_api.py --use-current-time
+```
+
+0.5초 간격으로 최대 100건을 보내려면 다음과 같이 실행합니다.
+
+```powershell
+uv run python scripts/stream_transactions_api.py `
+  --interval 0.5 `
+  --max-count 100 `
+  --use-current-time
+```
+
+CSV 끝까지 전송한 뒤 처음부터 다시 반복하려면 `--loop`를 추가합니다.
+`--use-current-time`은 각 거래의 `transaction_datetime`을 전송 시각으로 바꿔 현재
+대시보드 조회 기간에 표시되게 합니다.
+
 ## Docker 실행
 
 `.env.example`을 `.env`로 복사하고 비밀번호를 변경합니다.

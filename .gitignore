@@ -36,3 +36,7 @@ dist/
 
 # PDF embedding targets
 docs/embed_target_pdfs/
+
+# 로컬 DB 적재용 더미 데이터
+dummy_data/*
+!dummy_data/.gitkeep
