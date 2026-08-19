@@ -272,7 +272,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertNotIn(FLAG_DEPOSIT_ALIAS, first_row)
         self.assertEqual(first_row["is_fraud"], "1")
 
-    def test_preserves_source_row_without_appending_duplicate_id(self) -> None:
+    def test_preserves_source_row_and_appends_confirmed_db_row(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,
@@ -300,14 +300,16 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
 
         self.assertEqual(result.source_row_count, 1)
         self.assertEqual(result.confirmed_label_count, 1)
-        self.assertEqual(result.appended_label_count, 0)
-        self.assertEqual(result.output_row_count, 1)
+        self.assertEqual(result.appended_label_count, 1)
+        self.assertEqual(result.output_row_count, 2)
         rows = list(
             csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
         )
         self.assertEqual(rows[0]["transaction_id"], "1")
         self.assertEqual(rows[0]["is_fraud"], "False")
         self.assertEqual(rows[0]["account_balance"], "12345")
+        self.assertEqual(rows[1]["transaction_id"], "1")
+        self.assertEqual(rows[1]["is_fraud"], "1")
 
     def test_reorders_current_53_column_training_source(self) -> None:
         payload = _transaction_payload(
@@ -353,8 +355,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(result.source_row_count, 1)
         self.assertEqual(result.confirmed_label_count, 1)
-        self.assertEqual(result.appended_label_count, 0)
-        self.assertEqual(result.output_row_count, 1)
+        self.assertEqual(result.appended_label_count, 1)
+        self.assertEqual(result.output_row_count, 2)
         self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
         self.assertEqual(len(rows[0]), 53)
         self.assertEqual(rows[0]["recipient_release_suspension"], "False")

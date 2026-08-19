@@ -389,21 +389,11 @@ class LabeledDatasetBuilder:
                 )
                 writer.writeheader()
 
-                source_transaction_ids: set[str] = set()
                 for row in reader:
                     source_row_count += 1
-                    transaction_id = row.get(
-                        TRAINING_TRANSACTION_ID_COLUMN,
-                        "",
-                    ).strip()
-                    if transaction_id:
-                        source_transaction_ids.add(transaction_id)
                     writer.writerow(self._normalize_source_row(row))
 
-                appended_label_count = 0
                 for transaction_id in sorted(confirmed):
-                    if str(transaction_id) in source_transaction_ids:
-                        continue
                     labeled = confirmed[transaction_id]
                     if labeled.derived is None:
                         raise DatasetBuildError(
@@ -429,8 +419,8 @@ class LabeledDatasetBuilder:
                             assembled,
                         )
                     )
-                    appended_label_count += 1
 
+            appended_label_count = len(confirmed)
             output_row_count = source_row_count + appended_label_count
             self._storage.upload_new(output_path, destination_uri)
 
