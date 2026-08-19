@@ -24,7 +24,6 @@ from app.services.features.ml_feature_assembler import (
 )
 from app.services.mlops.dataset_builder import (
     TRAINING_CSV_COLUMNS,
-    TRAINING_SOURCE_COLUMNS,
     DatasetBuildError,
     LabeledDatasetBuilder,
 )
@@ -47,18 +46,10 @@ class FakeObjectStorage:
         self.objects[uri] = source.read_bytes()
 
 
-def _csv_bytes(rows: list[dict[str, object]]) -> bytes:
-    output = StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=TRAINING_CSV_COLUMNS)
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue().encode("utf-8")
-
-
-def _raw51_training_csv_bytes(
+def _csv_bytes(
     rows: list[dict[str, object]],
     *,
-    fieldnames: tuple[str, ...] = TRAINING_SOURCE_COLUMNS,
+    fieldnames: tuple[str, ...] = TRAINING_CSV_COLUMNS,
 ) -> bytes:
     output = StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -72,12 +63,11 @@ def _training_row(
     *,
     confirmed_is_fraud: bool,
 ) -> dict[str, object]:
-    row = valid_transaction_row(
-        transaction_id,
-        is_fraud=confirmed_is_fraud,
-    )
-    row[FLAG_DEPOSIT_ALIAS] = row.pop(FLAG_DEPOSIT_CANONICAL)
-    return row
+    return {
+        "transaction_id": transaction_id,
+        **valid_ml_raw_data(),
+        "is_fraud": confirmed_is_fraud,
+    }
 
 
 @dataclass(frozen=True)
@@ -219,7 +209,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.session.commit()
 
-    def test_appends_exact_train1_raw64_row_with_one_join_query(self) -> None:
+    def test_appends_exact_ml_training_row_with_one_join_query(self) -> None:
         long_source = "SOURCE-" + "1" * 80
         long_recipient = "RECIPIENT-" + "1" * 80
         first = _transaction_payload(
@@ -274,26 +264,12 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         first_row = rows[0]
         self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
-        self.assertEqual(len(first_row), 64)
+        self.assertEqual(len(first_row), 53)
         self.assertEqual(first_row["transaction_id"], "1")
-        self.assertEqual(first_row["customer_id"], "1")
-        self.assertEqual(first_row["customer_name"], "테스트고객-1")
-        self.assertEqual(
-            first_row["customer_identification_number"],
-            "identity-1",
-        )
-        self.assertEqual(first_row["account_account_number"], long_source)
-        self.assertEqual(first_row["recipient_account_number"], long_recipient)
-        self.assertEqual(first_row["ip_address"], "2001:db8::1")
-        self.assertEqual(first_row["mac_address"], "aa:bb:cc:dd:ee:01")
         self.assertEqual(first_row["transaction_amount"], "75000")
         self.assertEqual(first_row["time_difference"], "0 days 00:01:30")
-        self.assertAlmostEqual(
-            float(first_row["balance_drain_ratio"]),
-            75_000 / 10_000_000,
-        )
-        self.assertIn(FLAG_DEPOSIT_ALIAS, first_row)
-        self.assertNotIn(FLAG_DEPOSIT_CANONICAL, first_row)
+        self.assertIn(FLAG_DEPOSIT_CANONICAL, first_row)
+        self.assertNotIn(FLAG_DEPOSIT_ALIAS, first_row)
         self.assertEqual(first_row["is_fraud"], "1")
 
     def test_preserves_source_row_without_appending_duplicate_id(self) -> None:
@@ -309,8 +285,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             payload.transaction_id,
             confirmed_is_fraud=False,
         )
-        source_row["customer_name"] = "source-preserved"
-        source_row["account_account_number"] = "source-preserved"
+        source_row["account_balance"] = 12345
         source_uri = "gs://bucket/generated/v1/transactions.csv"
         destination_uri = "gs://bucket/generated/v2/transactions.csv"
         storage = FakeObjectStorage({source_uri: _csv_bytes([source_row])})
@@ -332,10 +307,9 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(rows[0]["transaction_id"], "1")
         self.assertEqual(rows[0]["is_fraud"], "False")
-        self.assertEqual(rows[0]["customer_name"], "source-preserved")
-        self.assertEqual(rows[0]["account_account_number"], "source-preserved")
+        self.assertEqual(rows[0]["account_balance"], "12345")
 
-    def test_expands_raw51_training_source_to_ml_raw64(self) -> None:
+    def test_reorders_current_53_column_training_source(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,
@@ -351,7 +325,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         }
         source_uri = "gs://bucket/generated/v1/transactions.csv"
         destination_uri = "gs://bucket/generated/v2/transactions.csv"
-        source_columns = list(TRAINING_SOURCE_COLUMNS)
+        source_columns = list(TRAINING_CSV_COLUMNS)
         source_columns.remove("customer_loan_type")
         source_columns.insert(
             source_columns.index("customer_credit_rating") + 1,
@@ -359,7 +333,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         storage = FakeObjectStorage(
             {
-                source_uri: _raw51_training_csv_bytes(
+                source_uri: _csv_bytes(
                     [source_row],
                     fieldnames=tuple(source_columns),
                 )
@@ -382,11 +356,10 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertEqual(result.appended_label_count, 0)
         self.assertEqual(result.output_row_count, 1)
         self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
-        self.assertEqual(len(rows[0]), 64)
-        self.assertEqual(rows[0]["account_release_suspention"], "False")
-        self.assertEqual(rows[0][FLAG_DEPOSIT_ALIAS], "True")
-        self.assertEqual(rows[0]["transaction_resumed_date"], "")
-        self.assertEqual(rows[0]["first_time_ios_by_vulnerable_user"], "0")
+        self.assertEqual(len(rows[0]), 53)
+        self.assertEqual(rows[0]["recipient_release_suspension"], "False")
+        self.assertEqual(rows[0][FLAG_DEPOSIT_CANONICAL], "True")
+        self.assertEqual(rows[0]["recipient_transaction_resumed_date"], "")
 
     def test_declined_transaction_keeps_ml_account_balance_in_dataset(self) -> None:
         payload = _transaction_payload(
@@ -423,7 +396,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(int(row["account_balance"]), expected_balance)
 
-    def test_zero_initial_balance_emits_empty_metadata_ratio(self) -> None:
+    def test_zero_initial_balance_is_preserved(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,
@@ -450,7 +423,6 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(row["transaction_amount"], "75000")
         self.assertEqual(row["account_initial_balance"], "0")
-        self.assertEqual(row["balance_drain_ratio"], "")
 
     def test_reports_feature_contract_validation_as_dataset_build_error(self) -> None:
         payload = _transaction_payload(
@@ -497,14 +469,14 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         incomplete_columns = [
             column
             for column in TRAINING_CSV_COLUMNS
-            if column != "customer_identification_number"
+            if column != "recipient_release_suspension"
         ]
         output = StringIO(newline="")
         csv.DictWriter(output, fieldnames=incomplete_columns).writeheader()
         source_uri = "gs://bucket/generated/v1/transactions.csv"
         storage = FakeObjectStorage({source_uri: output.getvalue().encode("utf-8")})
 
-        with self.assertRaisesRegex(DatasetBuildError, "train1 raw64"):
+        with self.assertRaisesRegex(DatasetBuildError, "53열"):
             LabeledDatasetBuilder(
                 storage,
                 source_uri=source_uri,

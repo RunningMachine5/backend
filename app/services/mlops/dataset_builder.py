@@ -39,7 +39,7 @@ CSV_DATETIME_COLUMNS = frozenset(
         "transaction_datetime",
         "last_atm_transaction_datetime",
         "last_bank_branch_transaction_datetime",
-        "transaction_resumed_date",
+        "recipient_transaction_resumed_date",
     }
 )
 CSV_DURATION_COLUMNS = frozenset({"time_difference"})
@@ -56,108 +56,19 @@ CSV_INTEGER_AMOUNT_COLUMNS = frozenset(
 )
 
 TRAINING_TRANSACTION_ID_COLUMN = "transaction_id"
-TRAINING_IDENTIFICATION_COLUMN = "customer_identification_number"
-TRAINING_CUSTOMER_ID_COLUMN = "customer_id"
-TRAINING_BALANCE_DRAIN_RATIO_COLUMN = "balance_drain_ratio"
 TRAINING_LABEL_COLUMN = "is_fraud"
-TRAINING_FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
-TRAINING_FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
-TRAINING_CSV_ALIASES = {
-    "recipient_release_suspension": "account_release_suspention",
-    TRAINING_FLAG_DEPOSIT_CANONICAL: TRAINING_FLAG_DEPOSIT_ALIAS,
-    "recipient_transaction_resumed_date": "transaction_resumed_date",
-}
 
-# ML 추론용 raw51에 거래 ID와 정답 라벨을 붙인 현재 학습 CSV 형식이다.
-# 데이터셋 생성 시 ML 학습 Job이 요구하는 raw64로 확장한다.
-TRAINING_SOURCE_COLUMNS = (
-    TRAINING_TRANSACTION_ID_COLUMN,
-    *RAW_TRANSACTION_FEATURE_COLUMNS,
-    TRAINING_LABEL_COLUMN,
-)
-
-# 실시간 추론은 담당자의 raw51을 사용하지만 기존 train1.csv는 64열 원본이다.
-# 재학습 데이터는 기존 파일에 행을 추가하므로 이 헤더 순서를 그대로 유지한다.
-TRAINING_MODEL_INPUT_COLUMNS = (
-    "customer_birth_date",
-    "customer_gender",
-    "customer_name",
-    "customer_registration_datetime",
-    "customer_credit_rating",
-    "customer_flag_change_of_authentication_1",
-    "customer_flag_change_of_authentication_2",
-    "customer_flag_change_of_authentication_3",
-    "customer_flag_change_of_authentication_4",
-    "customer_rooting_jailbreak_indicator",
-    "customer_mobile_roaming_indicator",
-    "customer_vpn_indicator",
-    "customer_loan_type",
-    "customer_flag_terminal_malicious_behavior_1",
-    "customer_flag_terminal_malicious_behavior_2",
-    "customer_flag_terminal_malicious_behavior_3",
-    "customer_flag_terminal_malicious_behavior_5",
-    "customer_flag_terminal_malicious_behavior_6",
-    "customer_inquery_atm_limit",
-    "customer_increase_atm_limit",
-    "account_account_number",
-    "account_account_type",
-    "account_creation_datetime",
-    "account_initial_balance",
-    "account_balance",
-    "account_indicator_release_limit_excess",
-    "account_amount_daily_limit",
-    "account_indicator_openbanking",
-    "account_remaining_amount_daily_limit_exceeded",
-    "account_release_suspention",
-    "account_one_month_max_amount",
-    "account_one_month_std_dev",
-    "account_dawn_one_month_max_amount",
-    "account_dawn_one_month_std_dev",
-    "transaction_datetime",
-    "transaction_amount",
-    "channel",
-    "operating_system",
-    "error_code",
-    "type_general_automatic",
-    "ip_address",
-    "mac_address",
-    "access_medium",
-    "location",
-    "recipient_account_number",
-    "transaction_num_connection_failure",
-    "another_person_account",
-    "distance",
-    "time_difference",
-    "unused_terminal_status",
-    "last_atm_transaction_datetime",
-    "last_bank_branch_transaction_datetime",
-    "flag_deposit_more_than_ten_million",
-    "unused_account_status",
-    "recipient_account_suspend_status",
-    "number_of_transaction_with_the_account",
-    "transaction_history_with_the_account",
-    "first_time_ios_by_vulnerable_user",
-    "transaction_resumed_date",
-)
+# ML 최신 학습 계약은 raw51에 거래 ID와 정답 라벨을 붙인 53열이다.
 TRAINING_CSV_COLUMNS = (
     TRAINING_TRANSACTION_ID_COLUMN,
-    *TRAINING_MODEL_INPUT_COLUMNS[:3],
-    TRAINING_IDENTIFICATION_COLUMN,
-    *(
-        TRAINING_FLAG_DEPOSIT_ALIAS
-        if column == TRAINING_FLAG_DEPOSIT_CANONICAL
-        else column
-        for column in TRAINING_MODEL_INPUT_COLUMNS[3:]
-    ),
-    TRAINING_CUSTOMER_ID_COLUMN,
-    TRAINING_BALANCE_DRAIN_RATIO_COLUMN,
+    *RAW_TRANSACTION_FEATURE_COLUMNS,
     TRAINING_LABEL_COLUMN,
 )
 MLOPS_BASE_DATASET_URI = (
     "gs://fdshield-ml-data-801817539291/base/train1.csv"
 )
-if len(TRAINING_CSV_COLUMNS) != 64:  # pragma: no cover - import invariant
-    raise RuntimeError("TRAINING_CSV_COLUMNS must contain exactly 64 columns.")
+if len(TRAINING_CSV_COLUMNS) != 53:  # pragma: no cover - import invariant
+    raise RuntimeError("TRAINING_CSV_COLUMNS must contain exactly 53 columns.")
 if len(TRAINING_CSV_COLUMNS) != len(  # pragma: no cover - import invariant
     set(TRAINING_CSV_COLUMNS)
 ):
@@ -290,7 +201,7 @@ class LabeledDatasetBuilder:
     """고정 train1 CSV에 확정 라벨 거래를 추가해 새 버전을 만든다.
 
     기존 GCS 객체는 수정하지 않는다. 원본 행은 그대로 복사하고 DB의 정규화
-    테이블에서 확정 라벨 거래를 raw64 행으로 복원해 모두 추가한다.
+    테이블에서 확정 라벨 거래를 ML 학습용 53열 행으로 복원해 추가한다.
     """
 
     def __init__(
@@ -358,36 +269,20 @@ class LabeledDatasetBuilder:
             {column for column in provided if provided.count(column) > 1}
         )
         actual = set(provided)
-        supported_headers = (
-            set(TRAINING_CSV_COLUMNS),
-            set(TRAINING_SOURCE_COLUMNS),
-        )
-        if not duplicates and actual in supported_headers:
+        if not duplicates and actual == set(TRAINING_CSV_COLUMNS):
             return
 
         raise DatasetBuildError(
-            "기존 학습 CSV는 ML raw51+transaction_id+is_fraud 또는 "
-            "train1 raw64 헤더여야 합니다: "
+            "기존 학습 CSV는 ML 학습용 53열 헤더여야 합니다: "
             f"columns={len(provided)}, duplicates={duplicates}, "
             "supported_columns=False"
         )
 
     @staticmethod
     def _normalize_source_row(row: dict[str, str]) -> dict[str, object]:
-        """raw51 기반 학습 행을 ML 학습 Job의 raw64 열 순서로 확장한다."""
+        """입력 순서와 관계없이 ML 학습용 53열 순서로 정렬한다."""
 
-        normalized: dict[str, object] = {
-            column: "" for column in TRAINING_CSV_COLUMNS
-        }
-        for column, value in row.items():
-            output_column = TRAINING_CSV_ALIASES.get(column, column)
-            if output_column in normalized:
-                normalized[output_column] = value
-
-        # 이 과거 메타데이터 열은 model79 전처리 입력에서 사용하지 않는다.
-        if "first_time_ios_by_vulnerable_user" not in row:
-            normalized["first_time_ios_by_vulnerable_user"] = 0
-        return normalized
+        return {column: row.get(column, "") for column in TRAINING_CSV_COLUMNS}
 
     @staticmethod
     def _csv_feature_value(field_name: str, value: object) -> object:
@@ -440,73 +335,22 @@ class LabeledDatasetBuilder:
 
     @staticmethod
     def _new_row(
-        fieldnames: list[str],
         confirmed: ConfirmedTransaction,
         assembled: MLTransactionFeatures,
     ) -> dict[str, object]:
         transaction = confirmed.transaction
         features = assembled.model_dump(mode="python", by_alias=False)
 
-        row: dict[str, object] = {name: "" for name in fieldnames}
+        row: dict[str, object] = {}
         for field_name, value in features.items():
-            output_name = (
-                TRAINING_FLAG_DEPOSIT_ALIAS
-                if field_name == TRAINING_FLAG_DEPOSIT_CANONICAL
-                else field_name
-            )
-            row[output_name] = LabeledDatasetBuilder._csv_feature_value(
+            row[field_name] = LabeledDatasetBuilder._csv_feature_value(
                 field_name,
                 value,
             )
 
-        # train1.csv에는 남아 있지만 raw51에서는 모델 입력에서 빠진 원본 컬럼이다.
-        # 저장된 정규화 값으로 채우고, 더 이상 계산하지 않는 iOS 파생값만 0으로 둔다.
-        row.update(
-            {
-                "customer_name": confirmed.customer.name,
-                "account_account_number": confirmed.source_account.account_number,
-                "account_release_suspention": int(
-                    assembled.recipient_release_suspension
-                ),
-                "error_code": transaction.error_code or "",
-                "ip_address": LabeledDatasetBuilder._csv_feature_value(
-                    "ip_address",
-                    transaction.ip_address,
-                ),
-                "mac_address": LabeledDatasetBuilder._csv_feature_value(
-                    "mac_address",
-                    transaction.mac_address,
-                ),
-                "location": (
-                    f"{transaction.location_lat} {transaction.location_lon}"
-                    if transaction.location_lat is not None
-                    and transaction.location_lon is not None
-                    else ""
-                ),
-                "recipient_account_number": transaction.recipient_account_number,
-                "first_time_ios_by_vulnerable_user": 0,
-                "transaction_resumed_date": (
-                    LabeledDatasetBuilder._csv_feature_value(
-                        "transaction_resumed_date",
-                        assembled.recipient_transaction_resumed_date,
-                    )
-                ),
-            }
-        )
-
-        balance_drain_ratio: float | str = ""
-        if transaction.initial_balance is not None and transaction.initial_balance > 0:
-            balance_drain_ratio = (
-                transaction.transaction_amount / transaction.initial_balance
-            )
         row.update(
             {
                 TRAINING_TRANSACTION_ID_COLUMN: transaction.id,
-                TRAINING_IDENTIFICATION_COLUMN: (
-                    confirmed.customer.identification_number
-                ),
-                TRAINING_CUSTOMER_ID_COLUMN: transaction.customer_id,
-                TRAINING_BALANCE_DRAIN_RATIO_COLUMN: balance_drain_ratio,
                 TRAINING_LABEL_COLUMN: int(confirmed.label.confirmed_is_fraud),
             }
         )
@@ -581,7 +425,6 @@ class LabeledDatasetBuilder:
                         ) from exc
                     writer.writerow(
                         self._new_row(
-                            list(TRAINING_CSV_COLUMNS),
                             labeled,
                             assembled,
                         )
@@ -613,7 +456,6 @@ LabeledDatasetBuilderDep = Annotated[
 __all__ = [
     "MLOPS_BASE_DATASET_URI",
     "TRAINING_CSV_COLUMNS",
-    "TRAINING_SOURCE_COLUMNS",
     "ConfirmedTransaction",
     "DatasetBuildError",
     "DatasetBuildResult",
