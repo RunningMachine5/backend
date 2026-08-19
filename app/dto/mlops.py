@@ -170,6 +170,44 @@ class InferencePerformanceResponse(StrictMLOpsDTO):
     latest_inference_at: datetime | None
 
 
+class MonitoringPointResponse(StrictMLOpsDTO):
+    timestamp: datetime
+    value: float
+
+
+class ServingMonitoringSummaryResponse(StrictMLOpsDTO):
+    request_count: int
+    error_rate_percent: float
+    p95_latency_ms: float | None
+    active_instances: float | None
+    idle_instances: float | None
+    cpu_utilization_percent: float | None
+    memory_utilization_percent: float | None
+
+
+class ServingMonitoringSeriesResponse(StrictMLOpsDTO):
+    requests_per_minute: list[MonitoringPointResponse]
+    error_rate_percent: list[MonitoringPointResponse]
+    p95_latency_ms: list[MonitoringPointResponse]
+    active_instances: list[MonitoringPointResponse]
+    cpu_utilization_percent: list[MonitoringPointResponse]
+    memory_utilization_percent: list[MonitoringPointResponse]
+
+
+class ServingMonitoringResponse(StrictMLOpsDTO):
+    """Cloud Monitoring에서 조회한 Cloud Run 준실시간 운영 지표."""
+
+    window_minutes: int
+    alignment_seconds: int
+    data_delay_seconds: int
+    service_name: str
+    region: str
+    queried_at: datetime
+    latest_sample_at: datetime | None
+    summary: ServingMonitoringSummaryResponse
+    series: ServingMonitoringSeriesResponse
+
+
 class CloudRunOperationResponse(BaseModel):
     """Cloud Run 장기 실행 operation의 공통 필드와 확장 필드."""
 
@@ -214,6 +252,10 @@ __all__ = [
     "MLflowDetailsPointer",
     "MLflowModelDetails",
     "ModelPromotionRequest",
+    "MonitoringPointResponse",
+    "ServingMonitoringResponse",
+    "ServingMonitoringSeriesResponse",
+    "ServingMonitoringSummaryResponse",
     "TrainingDecision",
     "TrainingDecisionRequest",
     "TrainingResultRequest",
