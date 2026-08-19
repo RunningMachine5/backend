@@ -38,7 +38,7 @@ flowchart TD
 
 - ML 모델: 거래의 `사기 / 정상` 이진 예측과 사기 확률 계산
 - 룰 엔진: 사기 거래에 대해 유형별 조건 일치 점수 계산
-- 룰 관리 API: 룰 생성·수정·테스트·활성화
+- 룰 관리 API: 룰 생성·수정·Replay 비교·활성화
 - DB: 룰 버전, 유형별 점수, 일치한 조건 저장
 - 프론트·대시보드: 전체 점수를 정렬하고 필요한 상위 N개 표시
 
@@ -427,7 +427,6 @@ PUT    /rule-sets/{id}/rules/{rule_id}
 DELETE /rule-sets/{id}/rules/{rule_id}
 
 POST   /rule-sets/{id}/validate
-POST   /rule-sets/{id}/test
 POST   /rule-sets/{id}/replay
 POST   /rule-sets/{id}/activate
 ```
@@ -443,7 +442,6 @@ GET /rule-sets?rule_set_status=DRAFT로 수정 중인 DRAFT 확인
 → PUT으로 유지할 4개 유형의 component·가중치를 현재 `DEFAULT_RULE_SET`에 맞게 수정
 → DELETE로 CARD_FRAUD 룰 제거
 → 유효성 검증
-→ 실제 ML Feature 샘플로 모든 유형 점수 확인
 → 최신 ML 양성 거래를 최대 1,000건 리플레이해 ACTIVE 대비 영향 확인
 → 활성화
 → 기존 ACTIVE는 ARCHIVED
@@ -492,7 +490,7 @@ DerivedFeatureService
 
 - 기본 룰 코드를 바꿔도 DB의 기존 ACTIVE 룰셋은 자동 변경되지 않는다.
 - 기존 DB에는 ACTIVE를 복제한 DRAFT의 룰을 관리 API로 하나씩 수정하고,
-  검증·테스트 후 활성화한다.
+  검증·Replay 비교 후 활성화한다.
 - ACTIVE가 하나도 없는 새 DB에서는 코드의 현재 `DEFAULT_RULE_SET`이 최초 룰셋으로
   자동 생성된다.
 - 생성형 CSV를 거래 API 요청으로 바꿀 때 숫자 문자열은 숫자로, 빈 날짜는
