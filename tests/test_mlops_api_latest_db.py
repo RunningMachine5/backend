@@ -121,16 +121,15 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_dataset_preview_returns_period_label_counts(self) -> None:
-        self.dataset_builder.label_summary.return_value = DatasetLabelSummary(
-            normal_count=9,
-            fraud_count=3,
-        )
-
-        response = self.client.post(
-            "/mlops/datasets/preview",
-            headers=self.headers,
-            json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
-        )
+        with patch(
+            "app.api.mlops.LabeledDatasetBuilder.label_summary",
+            return_value=DatasetLabelSummary(normal_count=9, fraud_count=3),
+        ):
+            response = self.client.post(
+                "/mlops/datasets/preview",
+                headers=self.headers,
+                json={"period_start": "2026-08-01", "period_end": "2026-08-31"},
+            )
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(

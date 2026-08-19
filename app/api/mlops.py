@@ -54,6 +54,7 @@ from app.services.mlops.dataset_builder import (
     MLOPS_BASE_DATASET_URI,
     DatasetBuildError,
     DatasetStorageError,
+    LabeledDatasetBuilder,
     LabeledDatasetBuilderDep,
     parse_gcs_uri,
 )
@@ -270,13 +271,12 @@ def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
 )
 def preview_labeled_dataset_version(
     payload: DatasetPeriodRequest,
-    builder: LabeledDatasetBuilderDep,
     session: SessionDep,
 ) -> DatasetPeriodSummaryResponse:
     """선택 기간에 학습 데이터로 추가할 확정 라벨 건수를 보여준다."""
 
     try:
-        summary = builder.label_summary(
+        summary = LabeledDatasetBuilder.label_summary(
             session,
             period_start=payload.period_start,
             period_end=payload.period_end,
