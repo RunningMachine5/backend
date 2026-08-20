@@ -281,7 +281,8 @@ IN, BETWEEN
 
 룰 엔진 자체는 새로운 유형도 enum 수정 없이 DB 룰만 추가해 계산할 수 있다. 하지만 현재
 Agent 대응 정책과 표시명·가이드 코퍼스는 4개 유형을 전제로 하므로 전체 서비스에 새 유형을
-추가할 때는 그 소비자 계약도 함께 확장해야 한다.
+추가할 때는 그 소비자 계약도 함께 확장해야 한다. 현재 관리자 API는 이 불완전한 확장을
+막기 위해 기존 4개 유형의 가중치만 수정하도록 제한한다.
 
 ## 8. DB 룰 조회와 오류 처리
 
@@ -422,9 +423,7 @@ GET    /rule-sets/{id}
 
 POST   /rule-sets/drafts
 DELETE /rule-sets/{id}
-POST   /rule-sets/{id}/rules
 PUT    /rule-sets/{id}/rules/{rule_id}
-DELETE /rule-sets/{id}/rules/{rule_id}
 
 POST   /rule-sets/{id}/validate
 POST   /rule-sets/{id}/replay
@@ -439,8 +438,7 @@ POST   /rule-sets/{id}/activate
 GET /rule-sets?rule_set_status=DRAFT로 수정 중인 DRAFT 확인
 → 있으면 해당 DRAFT를 이어서 수정
 → 없으면 POST /rule-sets/drafts로 현재 ACTIVE를 복제
-→ PUT으로 유지할 4개 유형의 component·가중치를 현재 `DEFAULT_RULE_SET`에 맞게 수정
-→ DELETE로 CARD_FRAUD 룰 제거
+→ PUT으로 기존 4개 유형의 component 가중치만 수정
 → 유효성 검증
 → 최신 ML 양성 거래를 최대 1,000건 리플레이해 ACTIVE 대비 영향 확인
 → 활성화
