@@ -1,6 +1,7 @@
 import csv
 import unittest
 from dataclasses import dataclass
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -27,10 +28,12 @@ from app.services.mlops.dataset_builder import (
     DatasetBuildError,
     LabeledDatasetBuilder,
 )
-from tests.ml_feature_fixture import valid_transaction_row
+from tests.ml_feature_fixture import valid_ml_raw_data, valid_transaction_row
 
 FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
 FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
+TEST_PERIOD_START = date(2026, 8, 1)
+TEST_PERIOD_END = date(2026, 8, 31)
 
 
 class FakeObjectStorage:
@@ -45,10 +48,17 @@ class FakeObjectStorage:
             raise AssertionError("test storage does not allow overwrites")
         self.objects[uri] = source.read_bytes()
 
+    def delete(self, uri: str) -> None:
+        self.objects.pop(uri, None)
 
-def _csv_bytes(rows: list[dict[str, object]]) -> bytes:
+
+def _csv_bytes(
+    rows: list[dict[str, object]],
+    *,
+    fieldnames: tuple[str, ...] = TRAINING_CSV_COLUMNS,
+) -> bytes:
     output = StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=TRAINING_CSV_COLUMNS)
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
     return output.getvalue().encode("utf-8")
@@ -59,12 +69,11 @@ def _training_row(
     *,
     confirmed_is_fraud: bool,
 ) -> dict[str, object]:
-    row = valid_transaction_row(
-        transaction_id,
-        is_fraud=confirmed_is_fraud,
-    )
-    row[FLAG_DEPOSIT_ALIAS] = row.pop(FLAG_DEPOSIT_CANONICAL)
-    return row
+    return {
+        "transaction_id": transaction_id,
+        **valid_ml_raw_data(),
+        "is_fraud": confirmed_is_fraud,
+    }
 
 
 @dataclass(frozen=True)
@@ -206,7 +215,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.session.commit()
 
-    def test_appends_exact_train1_raw64_row_with_one_join_query(self) -> None:
+    def test_appends_exact_ml_training_row_with_one_join_query(self) -> None:
         long_source = "SOURCE-" + "1" * 80
         long_recipient = "RECIPIENT-" + "1" * 80
         first = _transaction_payload(
@@ -250,6 +259,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             ).build(
                 self.session,
                 destination_uri=destination_uri,
+                period_start=TEST_PERIOD_START,
+                period_end=TEST_PERIOD_END,
             )
         finally:
             event.remove(self.engine, "before_cursor_execute", record_select)
@@ -261,29 +272,98 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         first_row = rows[0]
         self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
-        self.assertEqual(len(first_row), 64)
+        self.assertEqual(len(first_row), 53)
         self.assertEqual(first_row["transaction_id"], "1")
-        self.assertEqual(first_row["customer_id"], "1")
-        self.assertEqual(first_row["customer_name"], "테스트고객-1")
-        self.assertEqual(
-            first_row["customer_identification_number"],
-            "identity-1",
-        )
-        self.assertEqual(first_row["account_account_number"], long_source)
-        self.assertEqual(first_row["recipient_account_number"], long_recipient)
-        self.assertEqual(first_row["ip_address"], "2001:db8::1")
-        self.assertEqual(first_row["mac_address"], "aa:bb:cc:dd:ee:01")
         self.assertEqual(first_row["transaction_amount"], "75000")
         self.assertEqual(first_row["time_difference"], "0 days 00:01:30")
-        self.assertAlmostEqual(
-            float(first_row["balance_drain_ratio"]),
-            75_000 / 10_000_000,
+        self.assertEqual(
+            first_row["customer_flag_change_of_authentication_1"],
+            str(first.features.customer_flag_change_of_authentication_1),
         )
-        self.assertIn(FLAG_DEPOSIT_ALIAS, first_row)
-        self.assertNotIn(FLAG_DEPOSIT_CANONICAL, first_row)
+        self.assertIn(FLAG_DEPOSIT_CANONICAL, first_row)
+        self.assertNotIn(FLAG_DEPOSIT_ALIAS, first_row)
         self.assertEqual(first_row["is_fraud"], "1")
+        self.assertEqual(result.normal_count, 1)
+        self.assertEqual(result.fraud_count, 1)
 
-    def test_preserves_source_row_and_appends_db_row_when_ids_match(self) -> None:
+    def test_uses_only_confirmed_labels_in_selected_period(self) -> None:
+        august = _transaction_payload(
+            "TX-DATASET-1",
+            customer_id=1,
+            source_account_number="source-account-1",
+            recipient_account_number="recipient-account-1",
+            confirmed_is_fraud=True,
+        )
+        september = _transaction_payload(
+            "TX-DATASET-2",
+            customer_id=2,
+            source_account_number="source-account-2",
+            recipient_account_number="recipient-account-2",
+            confirmed_is_fraud=False,
+        )
+        self._save(august)
+        self._save(september)
+        september_transaction = self.session.get(Transaction, september.transaction_id)
+        assert september_transaction is not None
+        september_transaction.transaction_datetime = datetime(2026, 9, 1)
+        self.session.add(september_transaction)
+        self.session.commit()
+
+        source_uri = "gs://bucket/base/train1.csv"
+        destination_uri = "gs://bucket/versions/august.csv"
+        storage = FakeObjectStorage({source_uri: _csv_bytes([])})
+        builder = LabeledDatasetBuilder(storage, source_uri=source_uri)
+
+        summary = builder.label_summary(
+            self.session,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
+        )
+        result = builder.build(
+            self.session,
+            destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
+        )
+
+        self.assertEqual(summary.labeled_count, 1)
+        self.assertEqual(summary.normal_count, 0)
+        self.assertEqual(summary.fraud_count, 1)
+        self.assertEqual(result.appended_label_count, 1)
+        rows = list(
+            csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
+        )
+        self.assertEqual([row["transaction_id"] for row in rows], ["1"])
+
+    def test_rejects_period_already_included_in_base_dataset(self) -> None:
+        builder = LabeledDatasetBuilder(FakeObjectStorage({}))
+
+        with self.assertRaisesRegex(DatasetBuildError, "2026-08-01"):
+            builder.label_summary(
+                self.session,
+                period_start=date(2026, 7, 1),
+                period_end=date(2026, 7, 31),
+            )
+
+    def test_deletes_generated_dataset_but_keeps_base_dataset(self) -> None:
+        source_uri = "gs://bucket/base/train1.csv"
+        generated_uri = "gs://bucket/versions/august.csv"
+        storage = FakeObjectStorage(
+            {
+                source_uri: _csv_bytes([]),
+                generated_uri: _csv_bytes([]),
+            }
+        )
+        builder = LabeledDatasetBuilder(storage, source_uri=source_uri)
+
+        builder.delete_dataset(generated_uri)
+
+        self.assertNotIn(generated_uri, storage.objects)
+        self.assertIn(source_uri, storage.objects)
+        with self.assertRaisesRegex(DatasetBuildError, "기본 학습"):
+            builder.delete_dataset(source_uri)
+
+    def test_preserves_source_row_and_appends_confirmed_db_row(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,
@@ -296,8 +376,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             payload.transaction_id,
             confirmed_is_fraud=False,
         )
-        source_row["customer_name"] = "source-preserved"
-        source_row["account_account_number"] = "source-preserved"
+        source_row["account_balance"] = 12345
         source_uri = "gs://bucket/generated/v1/transactions.csv"
         destination_uri = "gs://bucket/generated/v2/transactions.csv"
         storage = FakeObjectStorage({source_uri: _csv_bytes([source_row])})
@@ -308,9 +387,12 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         ).build(
             self.session,
             destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
         )
 
         self.assertEqual(result.source_row_count, 1)
+        self.assertEqual(result.confirmed_label_count, 1)
         self.assertEqual(result.appended_label_count, 1)
         self.assertEqual(result.output_row_count, 2)
         rows = list(
@@ -318,12 +400,63 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(rows[0]["transaction_id"], "1")
         self.assertEqual(rows[0]["is_fraud"], "False")
-        self.assertEqual(rows[0]["customer_name"], "source-preserved")
-        self.assertEqual(rows[0]["account_account_number"], "source-preserved")
+        self.assertEqual(rows[0]["account_balance"], "12345")
         self.assertEqual(rows[1]["transaction_id"], "1")
         self.assertEqual(rows[1]["is_fraud"], "1")
-        self.assertEqual(rows[1]["customer_name"], "테스트고객-1")
-        self.assertEqual(rows[1]["account_account_number"], "stored-source-account")
+
+    def test_reorders_current_53_column_training_source(self) -> None:
+        payload = _transaction_payload(
+            "TX-DATASET-1",
+            customer_id=1,
+            source_account_number="stored-source-account",
+            recipient_account_number="stored-recipient-account",
+            confirmed_is_fraud=True,
+        )
+        self._save(payload)
+        source_row = {
+            "transaction_id": str(payload.transaction_id),
+            **valid_ml_raw_data(),
+            "is_fraud": 0,
+        }
+        source_uri = "gs://bucket/generated/v1/transactions.csv"
+        destination_uri = "gs://bucket/generated/v2/transactions.csv"
+        source_columns = list(TRAINING_CSV_COLUMNS)
+        source_columns.remove("customer_loan_type")
+        source_columns.insert(
+            source_columns.index("customer_credit_rating") + 1,
+            "customer_loan_type",
+        )
+        storage = FakeObjectStorage(
+            {
+                source_uri: _csv_bytes(
+                    [source_row],
+                    fieldnames=tuple(source_columns),
+                )
+            }
+        )
+
+        result = LabeledDatasetBuilder(
+            storage,
+            source_uri=source_uri,
+        ).build(
+            self.session,
+            destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
+        )
+
+        rows = list(
+            csv.DictReader(StringIO(storage.objects[destination_uri].decode("utf-8")))
+        )
+        self.assertEqual(result.source_row_count, 1)
+        self.assertEqual(result.confirmed_label_count, 1)
+        self.assertEqual(result.appended_label_count, 1)
+        self.assertEqual(result.output_row_count, 2)
+        self.assertEqual(tuple(rows[0]), TRAINING_CSV_COLUMNS)
+        self.assertEqual(len(rows[0]), 53)
+        self.assertEqual(rows[0]["recipient_release_suspension"], "False")
+        self.assertEqual(rows[0][FLAG_DEPOSIT_CANONICAL], "True")
+        self.assertEqual(rows[0]["recipient_transaction_resumed_date"], "")
 
     def test_declined_transaction_keeps_ml_account_balance_in_dataset(self) -> None:
         payload = _transaction_payload(
@@ -349,6 +482,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         LabeledDatasetBuilder(storage, source_uri=source_uri).build(
             self.session,
             destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
         )
 
         row = next(
@@ -360,7 +495,7 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(int(row["account_balance"]), expected_balance)
 
-    def test_zero_initial_balance_emits_empty_metadata_ratio(self) -> None:
+    def test_zero_initial_balance_is_preserved(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,
@@ -380,6 +515,8 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         ).build(
             self.session,
             destination_uri=destination_uri,
+            period_start=TEST_PERIOD_START,
+            period_end=TEST_PERIOD_END,
         )
 
         row = next(
@@ -387,7 +524,6 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual(row["transaction_amount"], "75000")
         self.assertEqual(row["account_initial_balance"], "0")
-        self.assertEqual(row["balance_drain_ratio"], "")
 
     def test_reports_feature_contract_validation_as_dataset_build_error(self) -> None:
         payload = _transaction_payload(
@@ -418,11 +554,13 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
             ).build(
                 self.session,
                 destination_uri=destination_uri,
+                period_start=TEST_PERIOD_START,
+                period_end=TEST_PERIOD_END,
             )
 
         self.assertNotIn(destination_uri, storage.objects)
 
-    def test_requires_exact_ordered_train1_raw64_source_contract(self) -> None:
+    def test_rejects_incomplete_source_contract(self) -> None:
         payload = _transaction_payload(
             "TX-DATASET-1",
             customer_id=1,
@@ -434,20 +572,22 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         incomplete_columns = [
             column
             for column in TRAINING_CSV_COLUMNS
-            if column != "customer_identification_number"
+            if column != "recipient_release_suspension"
         ]
         output = StringIO(newline="")
         csv.DictWriter(output, fieldnames=incomplete_columns).writeheader()
         source_uri = "gs://bucket/generated/v1/transactions.csv"
         storage = FakeObjectStorage({source_uri: output.getvalue().encode("utf-8")})
 
-        with self.assertRaisesRegex(DatasetBuildError, "train1 raw64"):
+        with self.assertRaisesRegex(DatasetBuildError, "53열"):
             LabeledDatasetBuilder(
                 storage,
                 source_uri=source_uri,
             ).build(
                 self.session,
                 destination_uri="gs://bucket/generated/v2/transactions.csv",
+                period_start=TEST_PERIOD_START,
+                period_end=TEST_PERIOD_END,
             )
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,14 +16,17 @@ from google import auth as google_auth
 from google.auth.transport.requests import AuthorizedSession
 from pydantic import ValidationError
 from sqlalchemy.orm import aliased
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from app.data.model.account import Account
 from app.data.model.customer import Customer
 from app.data.model.derived_features import DerivedFeatures
 from app.data.model.transaction import Transaction
 from app.data.model.transaction_label import TransactionLabel
-from app.dto.ml_features import MLTransactionFeatures
+from app.dto.ml_features import (
+    RAW_TRANSACTION_FEATURE_COLUMNS,
+    MLTransactionFeatures,
+)
 from app.services.features.ml_feature_assembler import assemble_ml_features
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -36,7 +39,7 @@ CSV_DATETIME_COLUMNS = frozenset(
         "transaction_datetime",
         "last_atm_transaction_datetime",
         "last_bank_branch_transaction_datetime",
-        "transaction_resumed_date",
+        "recipient_transaction_resumed_date",
     }
 )
 CSV_DURATION_COLUMNS = frozenset({"time_difference"})
@@ -53,95 +56,21 @@ CSV_INTEGER_AMOUNT_COLUMNS = frozenset(
 )
 
 TRAINING_TRANSACTION_ID_COLUMN = "transaction_id"
-TRAINING_IDENTIFICATION_COLUMN = "customer_identification_number"
-TRAINING_CUSTOMER_ID_COLUMN = "customer_id"
-TRAINING_BALANCE_DRAIN_RATIO_COLUMN = "balance_drain_ratio"
 TRAINING_LABEL_COLUMN = "is_fraud"
-TRAINING_FLAG_DEPOSIT_ALIAS = "flag_deposit_more_than_tenmillion"
-TRAINING_FLAG_DEPOSIT_CANONICAL = "flag_deposit_more_than_ten_million"
 
-# 실시간 추론은 담당자의 raw51을 사용하지만 기존 train1.csv는 64열 원본이다.
-# 재학습 데이터는 기존 파일에 행을 추가하므로 이 헤더 순서를 그대로 유지한다.
-TRAINING_MODEL_INPUT_COLUMNS = (
-    "customer_birth_date",
-    "customer_gender",
-    "customer_name",
-    "customer_registration_datetime",
-    "customer_credit_rating",
-    "customer_flag_change_of_authentication_1",
-    "customer_flag_change_of_authentication_2",
-    "customer_flag_change_of_authentication_3",
-    "customer_flag_change_of_authentication_4",
-    "customer_rooting_jailbreak_indicator",
-    "customer_mobile_roaming_indicator",
-    "customer_vpn_indicator",
-    "customer_loan_type",
-    "customer_flag_terminal_malicious_behavior_1",
-    "customer_flag_terminal_malicious_behavior_2",
-    "customer_flag_terminal_malicious_behavior_3",
-    "customer_flag_terminal_malicious_behavior_5",
-    "customer_flag_terminal_malicious_behavior_6",
-    "customer_inquery_atm_limit",
-    "customer_increase_atm_limit",
-    "account_account_number",
-    "account_account_type",
-    "account_creation_datetime",
-    "account_initial_balance",
-    "account_balance",
-    "account_indicator_release_limit_excess",
-    "account_amount_daily_limit",
-    "account_indicator_openbanking",
-    "account_remaining_amount_daily_limit_exceeded",
-    "account_release_suspention",
-    "account_one_month_max_amount",
-    "account_one_month_std_dev",
-    "account_dawn_one_month_max_amount",
-    "account_dawn_one_month_std_dev",
-    "transaction_datetime",
-    "transaction_amount",
-    "channel",
-    "operating_system",
-    "error_code",
-    "type_general_automatic",
-    "ip_address",
-    "mac_address",
-    "access_medium",
-    "location",
-    "recipient_account_number",
-    "transaction_num_connection_failure",
-    "another_person_account",
-    "distance",
-    "time_difference",
-    "unused_terminal_status",
-    "last_atm_transaction_datetime",
-    "last_bank_branch_transaction_datetime",
-    "flag_deposit_more_than_ten_million",
-    "unused_account_status",
-    "recipient_account_suspend_status",
-    "number_of_transaction_with_the_account",
-    "transaction_history_with_the_account",
-    "first_time_ios_by_vulnerable_user",
-    "transaction_resumed_date",
-)
+# ML 최신 학습 계약은 raw51에 거래 ID와 정답 라벨을 붙인 53열이다.
 TRAINING_CSV_COLUMNS = (
     TRAINING_TRANSACTION_ID_COLUMN,
-    *TRAINING_MODEL_INPUT_COLUMNS[:3],
-    TRAINING_IDENTIFICATION_COLUMN,
-    *(
-        TRAINING_FLAG_DEPOSIT_ALIAS
-        if column == TRAINING_FLAG_DEPOSIT_CANONICAL
-        else column
-        for column in TRAINING_MODEL_INPUT_COLUMNS[3:]
-    ),
-    TRAINING_CUSTOMER_ID_COLUMN,
-    TRAINING_BALANCE_DRAIN_RATIO_COLUMN,
+    *RAW_TRANSACTION_FEATURE_COLUMNS,
     TRAINING_LABEL_COLUMN,
 )
 MLOPS_BASE_DATASET_URI = (
     "gs://fdshield-ml-data-801817539291/base/train1.csv"
 )
-if len(TRAINING_CSV_COLUMNS) != 64:  # pragma: no cover - import invariant
-    raise RuntimeError("TRAINING_CSV_COLUMNS must contain exactly 64 columns.")
+MLOPS_BASE_DATASET_PERIOD_START = date(2026, 1, 1)
+MLOPS_BASE_DATASET_PERIOD_END = date(2026, 7, 31)
+if len(TRAINING_CSV_COLUMNS) != 53:  # pragma: no cover - import invariant
+    raise RuntimeError("TRAINING_CSV_COLUMNS must contain exactly 53 columns.")
 if len(TRAINING_CSV_COLUMNS) != len(  # pragma: no cover - import invariant
     set(TRAINING_CSV_COLUMNS)
 ):
@@ -180,6 +109,8 @@ class ObjectStorage(Protocol):
     def download(self, uri: str, destination: Path) -> None: ...
 
     def upload_new(self, source: Path, uri: str) -> None: ...
+
+    def delete(self, uri: str) -> None: ...
 
 
 class GCSObjectStorage:
@@ -249,6 +180,26 @@ class GCSObjectStorage:
             if response is not None:
                 response.close()
 
+    def delete(self, uri: str) -> None:
+        target = parse_gcs_uri(uri)
+        url = (
+            "https://storage.googleapis.com/storage/v1/b/"
+            f"{quote(target.bucket, safe='')}/o/{quote(target.name, safe='')}"
+        )
+        response = None
+        try:
+            response = self._session.delete(url, timeout=(10, 60))
+            if response.status_code == 404:
+                return
+            response.raise_for_status()
+        except Exception as exc:
+            raise DatasetStorageError(
+                f"학습 데이터셋을 GCS에서 삭제하지 못했습니다: {uri}"
+            ) from exc
+        finally:
+            if response is not None:
+                response.close()
+
 
 @dataclass(frozen=True)
 class DatasetBuildResult:
@@ -256,6 +207,18 @@ class DatasetBuildResult:
     output_row_count: int
     confirmed_label_count: int
     appended_label_count: int
+    normal_count: int
+    fraud_count: int
+
+
+@dataclass(frozen=True)
+class DatasetLabelSummary:
+    normal_count: int
+    fraud_count: int
+
+    @property
+    def labeled_count(self) -> int:
+        return self.normal_count + self.fraud_count
 
 
 @dataclass(frozen=True)
@@ -274,7 +237,7 @@ class LabeledDatasetBuilder:
     """고정 train1 CSV에 확정 라벨 거래를 추가해 새 버전을 만든다.
 
     기존 GCS 객체는 수정하지 않는다. 원본 행은 그대로 복사하고 DB의 정규화
-    테이블에서 확정 라벨 거래를 raw64 행으로 복원해 모두 추가한다.
+    테이블에서 확정 라벨 거래를 ML 학습용 53열 행으로 복원해 추가한다.
     """
 
     def __init__(
@@ -287,9 +250,55 @@ class LabeledDatasetBuilder:
         self._source_uri = source_uri
 
     @staticmethod
-    def _confirmed_transactions(
+    def _period_bounds(period_start: date, period_end: date) -> tuple[datetime, datetime]:
+        """선택한 날짜 전체를 UTC 거래 시각 범위로 바꾼다."""
+
+        if period_start > period_end:
+            raise DatasetBuildError("기간 시작일은 종료일보다 늦을 수 없습니다.")
+        if period_start <= MLOPS_BASE_DATASET_PERIOD_END:
+            raise DatasetBuildError(
+                "추가 기간은 기본 데이터 다음 날인 2026-08-01부터 선택할 수 있습니다."
+            )
+        return (
+            datetime.combine(period_start, time.min, tzinfo=UTC),
+            datetime.combine(period_end, time.max, tzinfo=UTC),
+        )
+
+    @classmethod
+    def label_summary(
+        cls,
         session: Session,
+        *,
+        period_start: date,
+        period_end: date,
+    ) -> DatasetLabelSummary:
+        """선택 기간에 담당자가 확정한 정상·사기 건수를 센다."""
+
+        start_at, end_at = cls._period_bounds(period_start, period_end)
+        rows = session.exec(
+            select(TransactionLabel.confirmed_is_fraud, func.count())
+            .join(Transaction, Transaction.id == TransactionLabel.transaction_id)
+            .where(
+                Transaction.transaction_datetime >= start_at,
+                Transaction.transaction_datetime <= end_at,
+            )
+            .group_by(TransactionLabel.confirmed_is_fraud)
+        ).all()
+        counts = {bool(is_fraud): count for is_fraud, count in rows}
+        return DatasetLabelSummary(
+            normal_count=counts.get(False, 0),
+            fraud_count=counts.get(True, 0),
+        )
+
+    @classmethod
+    def _confirmed_transactions(
+        cls,
+        session: Session,
+        *,
+        period_start: date,
+        period_end: date,
     ) -> dict[int, ConfirmedTransaction]:
+        start_at, end_at = cls._period_bounds(period_start, period_end)
         source_account = aliased(Account, name="source_account")
         recipient_account = aliased(Account, name="recipient_account")
         rows = session.exec(
@@ -319,6 +328,10 @@ class LabeledDatasetBuilder:
                 DerivedFeatures,
                 DerivedFeatures.id == Transaction.id,
             )
+            .where(
+                Transaction.transaction_datetime >= start_at,
+                Transaction.transaction_datetime <= end_at,
+            )
             .order_by(TransactionLabel.labeled_at, Transaction.id)
         ).all()
         return {
@@ -334,33 +347,35 @@ class LabeledDatasetBuilder:
         }
 
     @staticmethod
-    def _validate_header(fieldnames: list[str] | None) -> list[str]:
+    def _validate_header(fieldnames: list[str] | None) -> None:
         if not fieldnames:
             raise DatasetBuildError("기존 학습 CSV에 헤더가 없습니다.")
         provided = tuple(fieldnames)
-        if provided != TRAINING_CSV_COLUMNS:
-            expected = set(TRAINING_CSV_COLUMNS)
-            actual = set(provided)
-            missing = sorted(expected - actual)
-            unknown = sorted(actual - expected)
-            duplicates = sorted(
-                {column for column in provided if provided.count(column) > 1}
-            )
-            raise DatasetBuildError(
-                "기존 학습 CSV가 train1 raw64 헤더 계약과 다릅니다: "
-                f"missing={missing}, unknown={unknown}, "
-                f"duplicates={duplicates}, order_matches=False"
-            )
-        return fieldnames
+        duplicates = sorted(
+            {column for column in provided if provided.count(column) > 1}
+        )
+        actual = set(provided)
+        if not duplicates and actual == set(TRAINING_CSV_COLUMNS):
+            return
+
+        raise DatasetBuildError(
+            "기존 학습 CSV는 ML 학습용 53열 헤더여야 합니다: "
+            f"columns={len(provided)}, duplicates={duplicates}, "
+            "supported_columns=False"
+        )
+
+    @staticmethod
+    def _normalize_source_row(row: dict[str, str]) -> dict[str, object]:
+        """입력 순서와 관계없이 ML 학습용 53열 순서로 정렬한다."""
+
+        return {column: row.get(column, "") for column in TRAINING_CSV_COLUMNS}
 
     @staticmethod
     def _csv_feature_value(field_name: str, value: object) -> object:
-        """새 행의 날짜를 기존 학습 CSV와 동일한 형식으로 직렬화한다."""
+        """새 행의 피처를 기존 학습 CSV와 동일한 형식으로 직렬화한다."""
 
         if value is None:
             return ""
-        if isinstance(value, bool):
-            return int(value)
         if field_name == "mac_address" and isinstance(value, str):
             return value.replace("-", ":").lower()
         if (
@@ -404,73 +419,22 @@ class LabeledDatasetBuilder:
 
     @staticmethod
     def _new_row(
-        fieldnames: list[str],
         confirmed: ConfirmedTransaction,
         assembled: MLTransactionFeatures,
     ) -> dict[str, object]:
         transaction = confirmed.transaction
         features = assembled.model_dump(mode="python", by_alias=False)
 
-        row: dict[str, object] = {name: "" for name in fieldnames}
+        row: dict[str, object] = {}
         for field_name, value in features.items():
-            output_name = (
-                TRAINING_FLAG_DEPOSIT_ALIAS
-                if field_name == TRAINING_FLAG_DEPOSIT_CANONICAL
-                else field_name
-            )
-            row[output_name] = LabeledDatasetBuilder._csv_feature_value(
+            row[field_name] = LabeledDatasetBuilder._csv_feature_value(
                 field_name,
                 value,
             )
 
-        # train1.csv에는 남아 있지만 raw51에서는 모델 입력에서 빠진 원본 컬럼이다.
-        # 저장된 정규화 값으로 채우고, 더 이상 계산하지 않는 iOS 파생값만 0으로 둔다.
-        row.update(
-            {
-                "customer_name": confirmed.customer.name,
-                "account_account_number": confirmed.source_account.account_number,
-                "account_release_suspention": int(
-                    assembled.recipient_release_suspension
-                ),
-                "error_code": transaction.error_code or "",
-                "ip_address": LabeledDatasetBuilder._csv_feature_value(
-                    "ip_address",
-                    transaction.ip_address,
-                ),
-                "mac_address": LabeledDatasetBuilder._csv_feature_value(
-                    "mac_address",
-                    transaction.mac_address,
-                ),
-                "location": (
-                    f"{transaction.location_lat} {transaction.location_lon}"
-                    if transaction.location_lat is not None
-                    and transaction.location_lon is not None
-                    else ""
-                ),
-                "recipient_account_number": transaction.recipient_account_number,
-                "first_time_ios_by_vulnerable_user": 0,
-                "transaction_resumed_date": (
-                    LabeledDatasetBuilder._csv_feature_value(
-                        "transaction_resumed_date",
-                        assembled.recipient_transaction_resumed_date,
-                    )
-                ),
-            }
-        )
-
-        balance_drain_ratio: float | str = ""
-        if transaction.initial_balance is not None and transaction.initial_balance > 0:
-            balance_drain_ratio = (
-                transaction.transaction_amount / transaction.initial_balance
-            )
         row.update(
             {
                 TRAINING_TRANSACTION_ID_COLUMN: transaction.id,
-                TRAINING_IDENTIFICATION_COLUMN: (
-                    confirmed.customer.identification_number
-                ),
-                TRAINING_CUSTOMER_ID_COLUMN: transaction.customer_id,
-                TRAINING_BALANCE_DRAIN_RATIO_COLUMN: balance_drain_ratio,
                 TRAINING_LABEL_COLUMN: int(confirmed.label.confirmed_is_fraud),
             }
         )
@@ -481,11 +445,17 @@ class LabeledDatasetBuilder:
         session: Session,
         *,
         destination_uri: str,
+        period_start: date,
+        period_end: date,
     ) -> DatasetBuildResult:
         if parse_gcs_uri(self._source_uri) == parse_gcs_uri(destination_uri):
             raise DatasetBuildError("새 데이터셋은 기존 GCS 객체와 달라야 합니다.")
 
-        confirmed = self._confirmed_transactions(session)
+        confirmed = self._confirmed_transactions(
+            session,
+            period_start=period_start,
+            period_end=period_end,
+        )
         if not confirmed:
             raise DatasetBuildError("반영할 확정 거래 라벨이 없습니다.")
 
@@ -501,17 +471,17 @@ class LabeledDatasetBuilder:
                 output_path.open("w", encoding="utf-8", newline="") as output_file,
             ):
                 reader = csv.DictReader(source_file)
-                fieldnames = self._validate_header(reader.fieldnames)
+                self._validate_header(reader.fieldnames)
                 writer = csv.DictWriter(
                     output_file,
-                    fieldnames=fieldnames,
+                    fieldnames=TRAINING_CSV_COLUMNS,
                     extrasaction="ignore",
                 )
                 writer.writeheader()
 
                 for row in reader:
                     source_row_count += 1
-                    writer.writerow(row)
+                    writer.writerow(self._normalize_source_row(row))
 
                 for transaction_id in sorted(confirmed):
                     labeled = confirmed[transaction_id]
@@ -535,7 +505,6 @@ class LabeledDatasetBuilder:
                         ) from exc
                     writer.writerow(
                         self._new_row(
-                            fieldnames,
                             labeled,
                             assembled,
                         )
@@ -545,12 +514,24 @@ class LabeledDatasetBuilder:
             output_row_count = source_row_count + appended_label_count
             self._storage.upload_new(output_path, destination_uri)
 
+        fraud_count = sum(
+            1 for item in confirmed.values() if item.label.confirmed_is_fraud
+        )
         return DatasetBuildResult(
             source_row_count=source_row_count,
             output_row_count=output_row_count,
-            confirmed_label_count=appended_label_count,
+            confirmed_label_count=len(confirmed),
             appended_label_count=appended_label_count,
+            normal_count=len(confirmed) - fraud_count,
+            fraud_count=fraud_count,
         )
+
+    def delete_dataset(self, uri: str) -> None:
+        """생성된 데이터셋 객체를 삭제하되 고정 원본은 유지한다."""
+
+        if parse_gcs_uri(uri) == parse_gcs_uri(self._source_uri):
+            raise DatasetBuildError("기본 학습 데이터셋은 삭제할 수 없습니다.")
+        self._storage.delete(uri)
 
 
 @lru_cache
@@ -566,10 +547,13 @@ LabeledDatasetBuilderDep = Annotated[
 
 __all__ = [
     "MLOPS_BASE_DATASET_URI",
+    "MLOPS_BASE_DATASET_PERIOD_END",
+    "MLOPS_BASE_DATASET_PERIOD_START",
     "TRAINING_CSV_COLUMNS",
     "ConfirmedTransaction",
     "DatasetBuildError",
     "DatasetBuildResult",
+    "DatasetLabelSummary",
     "DatasetStorageError",
     "GCSObjectStorage",
     "LabeledDatasetBuilder",

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,6 +112,75 @@ class TransactionLabelResponseDTO(BaseModel):
     labeled_at: datetime
 
 
+class TransactionLabelStatus(str, Enum):
+    """거래 라벨링 목록에서 선택할 담당자 판정 상태."""
+
+    ALL = "ALL"
+    UNLABELED = "UNLABELED"
+    NORMAL = "NORMAL"
+    FRAUD = "FRAUD"
+
+
+class TransactionPredictionFilter(str, Enum):
+    """거래 라벨링 목록에서 선택할 최신 ML 예측 상태."""
+
+    ALL = "ALL"
+    NORMAL = "NORMAL"
+    FRAUD = "FRAUD"
+
+
+class TransactionLabelQueueSummaryDTO(BaseModel):
+    """전체 거래의 담당자 라벨 현황."""
+
+    total_count: int = Field(ge=0)
+    unlabeled_count: int = Field(ge=0)
+    normal_count: int = Field(ge=0)
+    fraud_count: int = Field(ge=0)
+
+
+class TransactionLabelQueueItemDTO(BaseModel):
+    """담당자가 한 화면에서 예측과 거래 정보를 비교할 수 있는 목록 행."""
+
+    transaction_id: int = Field(strict=True, gt=0)
+    customer_id: int | None = None
+    transaction_datetime: datetime
+    transaction_amount: int
+    channel: str
+    transaction_status: TransactionStatus | None = None
+    source_account_number: str
+    recipient_account_number: str
+    initial_balance: int | None = None
+    balance: int | None = None
+    access_medium: str | None = None
+    operating_system: str | None = None
+    ip_address: str | None = None
+    mac_address: str | None = None
+    location_lat: float | None = None
+    location_lon: float | None = None
+    num_connection_failure: int
+    rooting_jailbreak_indicator: bool
+    mobile_roaming_indicator: bool
+    vpn_indicator: bool
+    terminal_malicious_behavior_detected: bool
+    predict_result: bool | None = None
+    predict_proba: float | None = Field(default=None, ge=0, le=1)
+    model_name: str | None = None
+    model_version: str | None = None
+    predicted_at: datetime | None = None
+    confirmed_is_fraud: bool | None = None
+    labeled_at: datetime | None = None
+
+
+class TransactionLabelQueueResponseDTO(BaseModel):
+    """라벨링 목록과 화면 상단 집계를 함께 반환한다."""
+
+    items: list[TransactionLabelQueueItemDTO]
+    summary: TransactionLabelQueueSummaryDTO
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+    total_count: int = Field(ge=0)
+
+
 @dataclass(frozen=True)
 class TransactionDTO:
     user_id: str
@@ -132,8 +202,13 @@ class TransactionFeaturesDTO:
 
 
 __all__ = [
+    "TransactionLabelQueueItemDTO",
+    "TransactionLabelQueueResponseDTO",
+    "TransactionLabelQueueSummaryDTO",
     "TransactionLabelResponseDTO",
+    "TransactionLabelStatus",
     "TransactionLabelUpdateDTO",
+    "TransactionPredictionFilter",
     "TransactionRequestDTO",
     "TransactionResponseDTO",
 ]

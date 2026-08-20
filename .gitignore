@@ -38,3 +38,7 @@ dist/
 docs/embed_target_pdfs/
 # 코퍼스에서 뺀 pdf 보관용 (적재 대상 아님)
 docs/excluded_pdfs/
+
+# 로컬 DB 적재용 더미 데이터
+dummy_data/*
+!dummy_data/.gitkeep

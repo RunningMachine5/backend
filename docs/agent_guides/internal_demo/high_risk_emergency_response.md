@@ -1,6 +1,6 @@
 ---
 document_id: FDS-INTERNAL-HIGH-RISK-EMERGENCY-001
-title: FDShield 고위험 이상거래 긴급 대응 절차
+title: FDShield VERY_HIGH 메신저피싱·이상거래 긴급 우선 확인 절차
 source_type: INTERNAL_DEMO_GUIDE
 source_name: FDShield 시연용 내부 지침
 source_url: null
@@ -37,6 +37,13 @@ accessed_at: 2026-08-11
 
 거래 식별자, 탐지 시각, 위험등급, 유형별 Rule 점수와 Agent 적용 유형, 적중 근거를 확인한다. 고객 연락이 필요한
 경우 등록된 공식 연락처를 사용하고 추가 거래가 진행 중인지 우선 확인한다.
+
+## VERY_HIGH 메신저피싱 우선 확인
+
+매우 높은 메신저피싱 위험에서는 일반적인 대화 정황 확인보다 고객 거래 진위 확인을 먼저
+수행한다. 등록된 고객 연락처로 거래 일시·금액·수취계좌를 안내하고, 가족·지인 사칭 메시지의
+송금 요구를 받았는지와 추가 송금이 진행 중인지 확인한다. 메신저 대화창에 포함된 연락처가
+아닌 기존 연락처로 사칭 대상자의 신원을 별도로 확인하도록 안내한다.
 
 ## 유형별 긴급 조치 방향
 
