@@ -45,13 +45,14 @@ class DashboardInsightPipeline:
     ) -> DashboardInsightResponse:
         self._validate_period(request)
 
-        # 같은 기간의 결과가 있으면 LLM을 다시 호출하지 않고 재사용한다.
-        existing_insight = self.repository.get_latest_for_period(
-            period_start=request.period_start,
-            period_end=request.period_end,
-        )
-        if existing_insight is not None:
-            return self._to_response(existing_insight)
+        # force_refresh가 아닐 때만 같은 기간의 결과를 재사용한다.
+        if not request.force_refresh:
+            existing_insight = self.repository.get_latest_for_period(
+                period_start=request.period_start,
+                period_end=request.period_end,
+            )
+            if existing_insight is not None:
+                return self._to_response(existing_insight)
 
         # Agent가 기간 비교, 원인 선정, 차트 생성을 수행한다.
         draft = self._build_agent().run(

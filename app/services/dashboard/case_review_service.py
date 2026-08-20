@@ -22,14 +22,6 @@ class CaseReviewService:
         *,
         case_id: str,
         request: CaseReviewUpsertRequest
-    ) -> None:
-        self.repository = repository
-
-    def save_review(
-        self,
-        *,
-        case_id: str,
-        request: CaseReviewUpsertRequest
     ) -> CaseReviewResponse:
         agent_case = self.repository.get_agent_case(case_id)
 
