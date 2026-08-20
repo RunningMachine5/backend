@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -203,6 +204,22 @@ class CloudMonitoringClient:
         return sorted(result, key=lambda item: item["timestamp"])
 
     @staticmethod
+    def _run_queries_in_parallel(
+        queries: Mapping[str, Callable[[], list[dict[str, Any]]]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """서로 독립적인 Monitoring 조회를 동시에 실행한다."""
+
+        with ThreadPoolExecutor(max_workers=len(queries)) as executor:
+            futures = {
+                name: executor.submit(query)
+                for name, query in queries.items()
+            }
+            return {
+                name: future.result()
+                for name, future in futures.items()
+            }
+
+    @staticmethod
     def _latest(points: list[dict[str, Any]]) -> float | None:
         return points[-1]["value"] if points else None
 
@@ -256,67 +273,80 @@ class CloudMonitoringClient:
             "end": end,
             "alignment_seconds": alignment_seconds,
         }
-        requests = self._query_points(
-            metric_type="run.googleapis.com/request_count",
-            aligner="ALIGN_SUM",
-            reducer="REDUCE_SUM",
-            **common,
+        points = self._run_queries_in_parallel(
+            {
+                "requests": lambda: self._query_points(
+                    metric_type="run.googleapis.com/request_count",
+                    aligner="ALIGN_SUM",
+                    reducer="REDUCE_SUM",
+                    **common,
+                ),
+                "errors": lambda: self._query_points(
+                    metric_type="run.googleapis.com/request_count",
+                    aligner="ALIGN_SUM",
+                    reducer="REDUCE_SUM",
+                    metric_label_filter=(
+                        'metric.labels.response_code_class = "5xx"'
+                    ),
+                    **common,
+                ),
+                "p95_latency": lambda: self._query_points(
+                    metric_type="run.googleapis.com/request_latencies",
+                    aligner="ALIGN_PERCENTILE_95",
+                    reducer="REDUCE_PERCENTILE_95",
+                    **common,
+                ),
+                "p99_latency": lambda: self._query_points(
+                    metric_type="run.googleapis.com/request_latencies",
+                    aligner="ALIGN_PERCENTILE_99",
+                    reducer="REDUCE_PERCENTILE_99",
+                    **common,
+                ),
+                "pending_latency": lambda: self._query_points(
+                    metric_type="run.googleapis.com/request_latency/pending",
+                    aligner="ALIGN_PERCENTILE_95",
+                    reducer="REDUCE_PERCENTILE_95",
+                    **common,
+                ),
+                "active_instances": lambda: self._query_points(
+                    metric_type="run.googleapis.com/container/instance_count",
+                    aligner="ALIGN_MEAN",
+                    reducer="REDUCE_SUM",
+                    metric_label_filter='metric.labels.state = "active"',
+                    **common,
+                ),
+                "idle_instances": lambda: self._query_points(
+                    metric_type="run.googleapis.com/container/instance_count",
+                    aligner="ALIGN_MEAN",
+                    reducer="REDUCE_SUM",
+                    metric_label_filter='metric.labels.state = "idle"',
+                    **common,
+                ),
+                "cpu": lambda: self._query_points(
+                    metric_type="run.googleapis.com/container/cpu/utilizations",
+                    aligner="ALIGN_PERCENTILE_50",
+                    reducer="REDUCE_MEAN",
+                    **common,
+                ),
+                "memory": lambda: self._query_points(
+                    metric_type=(
+                        "run.googleapis.com/container/memory/utilizations"
+                    ),
+                    aligner="ALIGN_PERCENTILE_50",
+                    reducer="REDUCE_MEAN",
+                    **common,
+                ),
+            }
         )
-        errors = self._query_points(
-            metric_type="run.googleapis.com/request_count",
-            aligner="ALIGN_SUM",
-            reducer="REDUCE_SUM",
-            metric_label_filter='metric.labels.response_code_class = "5xx"',
-            **common,
-        )
-        p95_latency = self._query_points(
-            metric_type="run.googleapis.com/request_latencies",
-            aligner="ALIGN_PERCENTILE_95",
-            reducer="REDUCE_PERCENTILE_95",
-            **common,
-        )
-        p99_latency = self._query_points(
-            metric_type="run.googleapis.com/request_latencies",
-            aligner="ALIGN_PERCENTILE_99",
-            reducer="REDUCE_PERCENTILE_99",
-            **common,
-        )
-        pending_latency = self._query_points(
-            metric_type="run.googleapis.com/request_latency/pending",
-            aligner="ALIGN_PERCENTILE_95",
-            reducer="REDUCE_PERCENTILE_95",
-            **common,
-        )
-        active_instances = self._query_points(
-            metric_type="run.googleapis.com/container/instance_count",
-            aligner="ALIGN_MEAN",
-            reducer="REDUCE_SUM",
-            metric_label_filter='metric.labels.state = "active"',
-            **common,
-        )
-        idle_instances = self._query_points(
-            metric_type="run.googleapis.com/container/instance_count",
-            aligner="ALIGN_MEAN",
-            reducer="REDUCE_SUM",
-            metric_label_filter='metric.labels.state = "idle"',
-            **common,
-        )
-        cpu = self._percent_points(
-            self._query_points(
-                metric_type="run.googleapis.com/container/cpu/utilizations",
-                aligner="ALIGN_PERCENTILE_50",
-                reducer="REDUCE_MEAN",
-                **common,
-            )
-        )
-        memory = self._percent_points(
-            self._query_points(
-                metric_type="run.googleapis.com/container/memory/utilizations",
-                aligner="ALIGN_PERCENTILE_50",
-                reducer="REDUCE_MEAN",
-                **common,
-            )
-        )
+        requests = points["requests"]
+        errors = points["errors"]
+        p95_latency = points["p95_latency"]
+        p99_latency = points["p99_latency"]
+        pending_latency = points["pending_latency"]
+        active_instances = points["active_instances"]
+        idle_instances = points["idle_instances"]
+        cpu = self._percent_points(points["cpu"])
+        memory = self._percent_points(points["memory"])
         error_rates = self._error_rate_points(requests, errors)
         request_count = sum(point["value"] for point in requests)
         error_count = sum(point["value"] for point in errors)
@@ -374,40 +404,51 @@ class CloudMonitoringClient:
             "end": end,
             "alignment_seconds": alignment_seconds,
         }
-        running = self._query_points(
-            metric_type="run.googleapis.com/job/running_executions",
-            aligner="ALIGN_MAX",
-            reducer="REDUCE_MAX",
-            **common,
+        points = self._run_queries_in_parallel(
+            {
+                "running": lambda: self._query_points(
+                    metric_type="run.googleapis.com/job/running_executions",
+                    aligner="ALIGN_MAX",
+                    reducer="REDUCE_MAX",
+                    **common,
+                ),
+                "completed": lambda: self._query_points(
+                    metric_type=(
+                        "run.googleapis.com/job/completed_execution_count"
+                    ),
+                    aligner="ALIGN_SUM",
+                    reducer="REDUCE_SUM",
+                    **common,
+                ),
+                "cpu": lambda: self._query_points(
+                    metric_type="run.googleapis.com/container/cpu/utilizations",
+                    aligner="ALIGN_PERCENTILE_50",
+                    reducer="REDUCE_MEAN",
+                    **common,
+                ),
+                "memory": lambda: self._query_points(
+                    metric_type=(
+                        "run.googleapis.com/container/memory/utilizations"
+                    ),
+                    aligner="ALIGN_PERCENTILE_50",
+                    reducer="REDUCE_MEAN",
+                    **common,
+                ),
+                "billable_time": lambda: self._query_points(
+                    metric_type=(
+                        "run.googleapis.com/container/billable_instance_time"
+                    ),
+                    aligner="ALIGN_SUM",
+                    reducer="REDUCE_SUM",
+                    **common,
+                ),
+            }
         )
-        completed = self._query_points(
-            metric_type="run.googleapis.com/job/completed_execution_count",
-            aligner="ALIGN_SUM",
-            reducer="REDUCE_SUM",
-            **common,
-        )
-        cpu = self._percent_points(
-            self._query_points(
-                metric_type="run.googleapis.com/container/cpu/utilizations",
-                aligner="ALIGN_PERCENTILE_50",
-                reducer="REDUCE_MEAN",
-                **common,
-            )
-        )
-        memory = self._percent_points(
-            self._query_points(
-                metric_type="run.googleapis.com/container/memory/utilizations",
-                aligner="ALIGN_PERCENTILE_50",
-                reducer="REDUCE_MEAN",
-                **common,
-            )
-        )
-        billable_time = self._query_points(
-            metric_type="run.googleapis.com/container/billable_instance_time",
-            aligner="ALIGN_SUM",
-            reducer="REDUCE_SUM",
-            **common,
-        )
+        running = points["running"]
+        completed = points["completed"]
+        cpu = self._percent_points(points["cpu"])
+        memory = self._percent_points(points["memory"])
+        billable_time = points["billable_time"]
 
         return {
             "window_minutes": window_minutes,
@@ -459,28 +500,35 @@ class CloudMonitoringClient:
             "end": end,
             "alignment_seconds": alignment_seconds,
         }
-        cpu = self._percent_points(
-            self._query_points(
-                metric_type="compute.googleapis.com/instance/cpu/utilization",
-                aligner="ALIGN_MEAN",
-                reducer="REDUCE_MEAN",
-                **common,
-            )
+        points = self._run_queries_in_parallel(
+            {
+                "cpu": lambda: self._query_points(
+                    metric_type=(
+                        "compute.googleapis.com/instance/cpu/utilization"
+                    ),
+                    aligner="ALIGN_MEAN",
+                    reducer="REDUCE_MEAN",
+                    **common,
+                ),
+                "memory": lambda: self._query_points(
+                    metric_type="agent.googleapis.com/memory/percent_used",
+                    aligner="ALIGN_MEAN",
+                    reducer="REDUCE_MAX",
+                    metric_label_filter='metric.labels.state = "used"',
+                    **common,
+                ),
+                "disk": lambda: self._query_points(
+                    metric_type="agent.googleapis.com/disk/percent_used",
+                    aligner="ALIGN_MEAN",
+                    reducer="REDUCE_MAX",
+                    metric_label_filter='metric.labels.state = "used"',
+                    **common,
+                ),
+            }
         )
-        memory = self._query_points(
-            metric_type="agent.googleapis.com/memory/percent_used",
-            aligner="ALIGN_MEAN",
-            reducer="REDUCE_MAX",
-            metric_label_filter='metric.labels.state = "used"',
-            **common,
-        )
-        disk = self._query_points(
-            metric_type="agent.googleapis.com/disk/percent_used",
-            aligner="ALIGN_MEAN",
-            reducer="REDUCE_MAX",
-            metric_label_filter='metric.labels.state = "used"',
-            **common,
-        )
+        cpu = self._percent_points(points["cpu"])
+        memory = points["memory"]
+        disk = points["disk"]
 
         return {
             "window_minutes": window_minutes,

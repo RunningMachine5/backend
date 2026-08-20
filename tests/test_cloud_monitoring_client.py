@@ -1,5 +1,6 @@
 import os
 import unittest
+from threading import Barrier, Lock
 from unittest.mock import Mock, patch
 
 import httpx
@@ -36,6 +37,30 @@ def monitoring_response(*values: tuple[str, float]) -> Mock:
     return response
 
 
+def route_monitoring_responses(
+    responses: dict[tuple[str, str, str | None], Mock],
+):
+    """요청한 지표·정렬 방식에 맞는 테스트 응답을 돌려준다."""
+
+    def get(*_args, **kwargs):
+        params = kwargs["params"]
+        filter_text = params["filter"]
+        aligner = params["aggregation.perSeriesAligner"]
+        for (metric_type, expected_aligner, label_filter), response in responses.items():
+            if f'metric.type = "{metric_type}"' not in filter_text:
+                continue
+            if aligner != expected_aligner:
+                continue
+            if label_filter is not None and label_filter not in filter_text:
+                continue
+            if label_filter is None and "metric.labels." in filter_text:
+                continue
+            return response
+        raise AssertionError(f"예상하지 못한 Monitoring 조회입니다: {filter_text}")
+
+    return get
+
+
 class CloudMonitoringClientTest(unittest.TestCase):
     def make_client(self, http_client: Mock) -> CloudMonitoringClient:
         return CloudMonitoringClient(
@@ -56,17 +81,55 @@ class CloudMonitoringClientTest(unittest.TestCase):
         first = "2026-08-19T03:00:00Z"
         second = "2026-08-19T03:01:00Z"
         http_client = Mock()
-        http_client.get.side_effect = [
-            monitoring_response((first, 10), (second, 20)),
-            monitoring_response((first, 1), (second, 2)),
-            monitoring_response((first, 100), (second, 120)),
-            monitoring_response((first, 140), (second, 180)),
-            monitoring_response((first, 20), (second, 30)),
-            monitoring_response((first, 1), (second, 2)),
-            monitoring_response((first, 0), (second, 1)),
-            monitoring_response((first, 0.2), (second, 0.4)),
-            monitoring_response((first, 0.5), (second, 0.6)),
-        ]
+        http_client.get.side_effect = route_monitoring_responses(
+            {
+                (
+                    "run.googleapis.com/request_count",
+                    "ALIGN_SUM",
+                    None,
+                ): monitoring_response((first, 10), (second, 20)),
+                (
+                    "run.googleapis.com/request_count",
+                    "ALIGN_SUM",
+                    "response_code_class",
+                ): monitoring_response((first, 1), (second, 2)),
+                (
+                    "run.googleapis.com/request_latencies",
+                    "ALIGN_PERCENTILE_95",
+                    None,
+                ): monitoring_response((first, 100), (second, 120)),
+                (
+                    "run.googleapis.com/request_latencies",
+                    "ALIGN_PERCENTILE_99",
+                    None,
+                ): monitoring_response((first, 140), (second, 180)),
+                (
+                    "run.googleapis.com/request_latency/pending",
+                    "ALIGN_PERCENTILE_95",
+                    None,
+                ): monitoring_response((first, 20), (second, 30)),
+                (
+                    "run.googleapis.com/container/instance_count",
+                    "ALIGN_MEAN",
+                    'state = "active"',
+                ): monitoring_response((first, 1), (second, 2)),
+                (
+                    "run.googleapis.com/container/instance_count",
+                    "ALIGN_MEAN",
+                    'state = "idle"',
+                ): monitoring_response((first, 0), (second, 1)),
+                (
+                    "run.googleapis.com/container/cpu/utilizations",
+                    "ALIGN_PERCENTILE_50",
+                    None,
+                ): monitoring_response((first, 0.2), (second, 0.4)),
+                (
+                    "run.googleapis.com/container/memory/utilizations",
+                    "ALIGN_PERCENTILE_50",
+                    None,
+                ): monitoring_response((first, 0.5), (second, 0.6)),
+            }
+        )
         client = self.make_client(http_client)
 
         result = client.get_serving_metrics(60)
@@ -111,13 +174,35 @@ class CloudMonitoringClientTest(unittest.TestCase):
     def test_training_metrics_use_job_resource(self) -> None:
         timestamp = "2026-08-19T03:00:00Z"
         http_client = Mock()
-        http_client.get.side_effect = [
-            monitoring_response((timestamp, 1)),
-            monitoring_response((timestamp, 2)),
-            monitoring_response((timestamp, 0.3)),
-            monitoring_response((timestamp, 0.4)),
-            monitoring_response((timestamp, 75)),
-        ]
+        http_client.get.side_effect = route_monitoring_responses(
+            {
+                (
+                    "run.googleapis.com/job/running_executions",
+                    "ALIGN_MAX",
+                    None,
+                ): monitoring_response((timestamp, 1)),
+                (
+                    "run.googleapis.com/job/completed_execution_count",
+                    "ALIGN_SUM",
+                    None,
+                ): monitoring_response((timestamp, 2)),
+                (
+                    "run.googleapis.com/container/cpu/utilizations",
+                    "ALIGN_PERCENTILE_50",
+                    None,
+                ): monitoring_response((timestamp, 0.3)),
+                (
+                    "run.googleapis.com/container/memory/utilizations",
+                    "ALIGN_PERCENTILE_50",
+                    None,
+                ): monitoring_response((timestamp, 0.4)),
+                (
+                    "run.googleapis.com/container/billable_instance_time",
+                    "ALIGN_SUM",
+                    None,
+                ): monitoring_response((timestamp, 75)),
+            }
+        )
         client = self.make_client(http_client)
 
         result = client.get_training_metrics(60)
@@ -133,11 +218,25 @@ class CloudMonitoringClientTest(unittest.TestCase):
     def test_platform_metrics_identify_current_vm(self) -> None:
         timestamp = "2026-08-19T03:00:00Z"
         http_client = Mock()
-        http_client.get.side_effect = [
-            monitoring_response((timestamp, 0.25)),
-            monitoring_response((timestamp, 42)),
-            monitoring_response((timestamp, 61)),
-        ]
+        http_client.get.side_effect = route_monitoring_responses(
+            {
+                (
+                    "compute.googleapis.com/instance/cpu/utilization",
+                    "ALIGN_MEAN",
+                    None,
+                ): monitoring_response((timestamp, 0.25)),
+                (
+                    "agent.googleapis.com/memory/percent_used",
+                    "ALIGN_MEAN",
+                    'state = "used"',
+                ): monitoring_response((timestamp, 42)),
+                (
+                    "agent.googleapis.com/disk/percent_used",
+                    "ALIGN_MEAN",
+                    'state = "used"',
+                ): monitoring_response((timestamp, 61)),
+            }
+        )
         client = self.make_client(http_client)
 
         result = client.get_platform_metrics(60)
@@ -148,6 +247,29 @@ class CloudMonitoringClientTest(unittest.TestCase):
         self.assertTrue(result["ops_agent_available"])
         request_params = http_client.get.call_args_list[0].kwargs["params"]
         self.assertIn('resource.labels.instance_id = "123"', request_params["filter"])
+
+    def test_independent_queries_run_in_parallel(self) -> None:
+        barrier = Barrier(3)
+        lock = Lock()
+        active_count = 0
+        peak_count = 0
+
+        def query() -> list[dict[str, object]]:
+            nonlocal active_count, peak_count
+            with lock:
+                active_count += 1
+                peak_count = max(peak_count, active_count)
+            barrier.wait(timeout=1)
+            with lock:
+                active_count -= 1
+            return []
+
+        result = CloudMonitoringClient._run_queries_in_parallel(
+            {"first": query, "second": query, "third": query}
+        )
+
+        self.assertEqual(list(result), ["first", "second", "third"])
+        self.assertEqual(peak_count, 3)
 
     def test_http_error_is_translated(self) -> None:
         http_client = Mock()
