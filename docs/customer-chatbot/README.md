@@ -372,8 +372,14 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 ```
 
 현재 고객 답변만 입력해 금융사기 대응에 의미 있는 행동·정보 노출·접촉을 검색 단위로
-만든다. 각 `search_query`는 다른 대화 문맥 없이도 검색 가능해야 한다. 단순 배경 사실은
-답변 안에서 사기 위험과 연결된 경우에만 포함한다.
+만든다. 각 `search_query`는 다른 대화 문맥 없이도 검색 가능해야 한다.
+
+**그런 행동이 없어도 금융과 관련된 질문이면 질의를 만든다.** 계좌·카드·이체·결제·대출·
+금융 보안 서비스에 관한 물음이나 걱정이면 사기 행동이 아직 없어도 대상이다 —
+「오픈뱅킹 안심차단에 가입하면 무엇이 차단되나요?」 같은 예방·제도 문의가 전에는 빈 배열로
+떨어져 응답이 통째로 비었다. 빈 배열은 **금융과 무관한 배경 사실만 있을 때**로 좁혔다.
+넓힌 대가로 0건이 늘 수 있다는 것까지
+[A.2 금융 일반 질문까지 넓힌 이유](prompts.md#금융-일반-질문까지-넓힌-이유)에 적었다.
 
 **개수 상한 5는 구조화 출력 스키마가 강제한다**(`max_length=5`). 프롬프트도 5개가
 상한일 뿐 목표가 아니며 실제 확인된 내용만 만들라고 지시한다. 단순히 「최대 5개」라고만
@@ -561,10 +567,25 @@ response = assemble(augmented, guidance)
 1. 가이드 검색 질의는 `chat_guide_search_queries`에 답변별 위치로 저장하고, 사기 정황은
    `chat_fraud_circumstances`의 `UNIQUE (chat_session_id, circumstance_code)`로
    세션당 enum 1행만 저장한다.
-2. 점수 계산은 매 턴 더하지 않고, **상담 종료 시점(`WANT_END` 판정)에
-   `chat_fraud_circumstances` 행 전체를 읽어 한 번만 집계**해
-   `fraud_type_score_after_chat`에 기록한다. 집계는 `DONE` 전이보다
-   먼저 끝나야 담당자가 화면에서 채점 결과를 볼 수 있다.
+2. 점수 계산은 매 턴 더하지 않는다. **사기 정황이 추출될 때마다(`SUFFICIENT` 판정으로
+   `_process_sufficient_answer`가 실행될 때마다) `chat_fraud_circumstances` 행 전체를
+   다시 읽어 처음부터 다시 집계**해 `fraud_type_score_after_chat`에 upsert한다
+   (`ON CONFLICT (transaction_id) DO UPDATE`). 증분 가산이 아니라 매번 전체 재계산이므로
+   같은 정황이 여러 턴에 걸쳐 다시 추출돼도 이중 가산되지 않는다.
+   구현은 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)의
+   `_update_fraud_type_scores`다.
+
+담당자 화면은 상담이 끝나기 전에도 그때까지의 집계 결과를 볼 수 있다. `WANT_END`
+전이(`_finish`) 시점에도 같은 재계산을 한 번 더 부르는데, 이는 한 번도 정황이 추출되지
+않은 세션(첫 질문에서 바로 종료 의사를 밝힌 경우)도 0점 행을 남기기 위한 안전망이다 —
+정상적으로 정황이 추출된 세션은 이미 마지막 추출 시점에 최신값으로 갱신돼 있어 이 호출이
+값을 바꾸지 않는다.
+
+**계산 비용**: 매 턴 다시 읽어 집계하더라도 세션당 정황은 최대 20종
+(`FINAL_FRAUD_CIRCUMSTANCE_CODES`)으로 상한이 있어 조회·합산·upsert 모두 인메모리 수준의
+비용이다. LLM 호출이 추가되는 것이 아니라(추출 LLM 호출은 기존과 동일하게 `SUFFICIENT`
+판정마다 한 번뿐이다) 그 결과를 반영하는 시점만 상담 종료에서 매 추출 시점으로 앞당긴
+것이므로, 턴당 지연에 유의미한 영향을 주지 않는다.
 
 집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
 상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat)).
@@ -595,6 +616,31 @@ response = assemble(augmented, guidance)
 전체 `HANDOFF_REQUESTED` 세션 스냅샷을 돌려주는 경로는 두지 않는다. 서버는 상태를 보관만
 하고 갱신 시점은 화면이 정한다.
 
+#### 사기 정황 점수 실시간 스트림 (SSE)
+
+**위 폴링 방침은 `status`에만 해당한다.** 유형별 점수(`type_scores`)는 별도로
+`GET /transactions/{transaction_id}/chat-session/score-events`가 SSE로 밀어준다.
+[2.6](#26-사기-정황-추출과-채점-4-2)대로 사기 정황이 추출될 때마다(`SUFFICIENT`
+판정 턴마다) 서버가 `type_scores` 전체를 다시 계산해 upsert하는데, 그 갱신을 담당자
+화면이 폴링 없이 그 자리에서 받아볼 수 있게 하는 경로다. 이벤트 이름은
+`chat_score_updated`이고, `data`는 상세 조회(`.../chat-session/detail`)의
+`type_scores`와 같은 형태(`type_code`/`display_name`/`score` 목록, 점수 내림차순)에
+`transaction_id`를 더한 것이다.
+
+구현은 [chat_score_event_broker.py](../../app/services/chatbot/chat_score_event_broker.py)로,
+대시보드 SSE([dashboard_event_broker.py](../../app/services/dashboard/dashboard_event_broker.py))와
+같은 큐 기반 브로커 패턴을 쓰되 **거래 단위로 구독을 나눈다** — 동시에 여러 상담이
+진행되므로 전체 브로드캐스트가 아니라 담당자가 연 거래의 점수만 받아야 하기 때문이다.
+발행은 `POST /chat/{chat_session_id}/messages` 턴이 커밋된 뒤 라우터가 호출한다
+(대시보드 SSE와 같은 방침 — 파이프라인이 아니라 커밋을 소유한 라우터가 발행한다).
+어떤 판정이었는지와 무관하게 매 턴 최신 점수를 다시 읽어 발행하므로, 점수가 그대로인
+턴(`TOO_VAGUE` 등)도 같은 값을 다시 받을 뿐이라 무해하다. 구독자가 없는 거래는 발행
+자체가 비용 없이 버려진다.
+
+**상태(`status`)는 여전히 이 스트림에 없다.** 상담사 반환 여부(`HANDOFF_REQUESTED`
+전이)는 위 폴링 경로로만 확인한다 — 점수 스트림을 상태 변경 알림으로 확장하는 것은
+범위 밖이다.
+
 #### 상담 내역 조회
 
 담당자가 목록에서 건 하나를 **열었을 때**는 상태만으로 부족하다. 대화 전문과 함께 유형별
@@ -608,8 +654,9 @@ response = assemble(augmented, guidance)
 
 - 세션이 없는 거래도 **404가 아니라 빈 값**이다. 상태 조회와 같은 이유로, 세션이 없는 거래도
   담당자 목록에는 그대로 남아야 한다.
-- `type_scores`는 상담 종료 시점에 한 번만 집계하므로([2.6](#26-사기-정황-추출과-채점-4-2))
-  그 전에 조회하면 빈 배열이다.
+- `type_scores`는 사기 정황이 추출될 때마다 갱신되므로([2.6](#26-사기-정황-추출과-채점-4-2))
+  상담 도중에도 그때까지의 집계 결과를 볼 수 있다. 정황이 한 번도 추출되지 않았으면
+  빈 배열이다.
 - 사기유형 점수는 4개 유형을 전부 담고 대표 유형을 고르지 않는다. 순위는 화면이 정한다.
 - **화면이 쓰지 않는 값은 담지 않는다.** 고령자 UI 분기(`is_older`)와 질문 진행
   (`question_step`)은 고객 화면의 관심사이고, 추출된 사기 정황 원본(`chat_fraud_circumstances`)은
@@ -631,6 +678,7 @@ response = assemble(augmented, guidance)
 | `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
 | `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
 | `GET /transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 담당자 화면이 폴링하는 경로. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
+| `GET /transactions/{transaction_id}/chat-session/score-events` | 사기 정황 점수 실시간 스트림(SSE, `text/event-stream`). 정황이 추출될 때마다 `chat_score_updated` 이벤트로 `type_scores` 전체를 다시 밀어준다. `status`는 포함하지 않는다 | [2.7](#사기-정황-점수-실시간-스트림-sse) |
 | `GET /transactions/{transaction_id}/chat-session/detail` | 거래별 상담 내역 조회. 대화 전문 + 유형별 점수. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 
 - 응답은 레포 공통 봉투 `ApiResponse`(`success`/`data`/`error`)를 쓴다.
@@ -690,6 +738,12 @@ response = assemble(augmented, guidance)
 - **프롬프트 인젝션 대비가 없다.** 고객 자유 서술이 그대로 추출 프롬프트에 들어간다.
   사용자 입력을 구분자로 감싸고 시스템 규칙 우선을 명시해야 한다. `message_text`가 `Text`라
   입력 길이 제한도 없다.
+- ~~**A.2가 고객이 묻지 않은 하위 항목을 지어낸다.**~~ 해결했다. RAG 평가 `easy-011`에서
+  「법정대리인의 신청 방법과 조건」처럼 고객 발언에 없는 어절이 붙어 검색이 다른 문서로
+  새고, 근거를 못 찾은 위치에 B.5 폴백이 붙어 `factual_correctness`가 깎였다.
+  A.2에 범위 제한 규칙 두 줄을 넣고 `search_query`의 `구체적인`을 뺐다
+  ([A.2 고객이 묻지 않은 하위 항목을 막은 이유](prompts.md#고객이-묻지-않은-하위-항목을-막은-이유)).
+  **A.2 지연 재측정과 골든셋 재실행 비교는 아직 하지 않았다.**
 - **A.2에서 「부정한 행동 제외」 규칙을 뺐다.** 지연을 줄이려고 서술 규칙을 정리하면서
   환각 가드 하나를 함께 걷어냈다([A.2 규칙을 줄인 이유](prompts.md#규칙을-줄인-이유)).
   「링크는 안 눌렀어요」처럼 고객이 **하지 않았다고 부정한 행동**에 대해 대응 가이드가

@@ -306,25 +306,35 @@ class ChatSessionRepository:
             ).all()
         )
 
-    def add_fraud_type_scores(
+    def upsert_fraud_type_scores(
         self,
         chat_session: ChatSession,
         *,
         type_scores: dict[str, float],
-    ) -> bool:
-        """채팅으로 얻어진 사기 정보를 거래당 한 번만 저장한다."""
+    ) -> None:
+        """사기 정황이 추출될 때마다 거래당 한 행을 다시 계산해 덮어쓴다.
 
-        return self._insert_do_nothing(
-            FraudTypeScoreAfterChat,
-            values={
-                "transaction_id": chat_session.transaction_id,
-                "chat_session_id": chat_session.chat_session_id,
-                "type_scores": dict(type_scores),
-                "scored_at": datetime.now(UTC),
-            },
-            # 이미 저장되어 있으면 저장하지 않는다
-            index_elements=["transaction_id"],
+        ``transaction_id`` 가 PK라 거래당 행은 하나로 유지되고, 매 채점마다
+        전체 정황을 다시 읽어 계산한 값으로 갱신한다(증분 가산이 아니다).
+        """
+
+        statement = (
+            postgresql_insert(FraudTypeScoreAfterChat)
+            .values(
+                transaction_id=chat_session.transaction_id,
+                chat_session_id=chat_session.chat_session_id,
+                type_scores=dict(type_scores),
+                scored_at=datetime.now(UTC),
+            )
+            .on_conflict_do_update(
+                index_elements=["transaction_id"],
+                set_={
+                    "type_scores": dict(type_scores),
+                    "scored_at": datetime.now(UTC),
+                },
+            )
         )
+        self.session.exec(statement)
 
     def get_fraud_type_scores(
         self,
@@ -332,7 +342,8 @@ class ChatSessionRepository:
     ) -> FraudTypeScoreAfterChat | None:
         """거래의 채팅 채점 결과를 조회한다(담당자 화면용).
 
-        상담 종료 시점에 한 번만 집계하므로, 그 전에 조회하면 ``None`` 이다.
+        사기 정황이 추출될 때마다 갱신되므로 상담 도중에도 그때까지의 점수를
+        볼 수 있다. 정황이 한 번도 추출되지 않았으면 ``None`` 이다.
         """
 
         # transaction_id 가 PK 라 그대로 조회한다.

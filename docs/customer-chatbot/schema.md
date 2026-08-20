@@ -64,7 +64,7 @@ FRAUD_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 | 챗봇 세션·메시지 | `chat_sessions`, `chat_messages` | 세션 상태와 대화 원문 |
 | 질문·시도·판정 이력 | `chat_answers` | 질문별 응답 시도와 LLM 판정 |
 | 추출 결과 | `chat_guide_search_queries`, `chat_fraud_circumstances` | RAG 검색 질의와 사기 정황 |
-| 채팅 후 사기유형 점수 | `fraud_type_score_after_chat` | 상담 종료 시 집계한 4개 유형 점수 |
+| 채팅 후 사기유형 점수 | `fraud_type_score_after_chat` | 정황 추출 때마다 갱신하는 4개 유형 점수 |
 | 고객 대응가이드 임베딩 | `cs_guide_documents`, `cs_guide_document_chunks` | 챗봇 RAG 검색 코퍼스 |
 
 ### 3.3 챗봇 상태 정의
@@ -253,9 +253,11 @@ DB에 저장하는 `evidence`는 고객 답변에 실제로 존재하는 연속 
 같은 방침으로 백엔드는 유형별 점수만 남기고, 대표 유형이 필요한 소비자가 `type_scores`에서
 직접 계산한다. 백엔드 안에 사용처가 생기면 그때 계산 함수를 추가한다.
 
-**중복 갱신 방지**: `transaction_id`가 PK이므로 거래당 1행이다. 채점은
-[2.6](README.md#채점-시점과-중복-방지)대로 상담 종료 시 한 번만 수행하고, 이미 행이 있으면
-갱신하지 않는다(`ON CONFLICT DO NOTHING`). 재상담이 생기면 그때 정책을 다시 정한다.
+**갱신 방식**: `transaction_id`가 PK이므로 거래당 1행이다. 채점은
+[2.6](README.md#채점-시점과-중복-방지)대로 사기 정황이 추출될 때마다(`SUFFICIENT` 판정마다)
+`chat_fraud_circumstances` 전체를 다시 읽어 재계산한 값으로 같은 행을 덮어쓴다
+(`ON CONFLICT (transaction_id) DO UPDATE`). 증분 가산이 아니라 매번 전체 재계산이므로
+행을 여러 번 갱신해도 이중 집계되지 않는다. 재상담이 생기면 그때 정책을 다시 정한다.
 
 ### 3.8 `app/domain/` enum 코드 상수화
 

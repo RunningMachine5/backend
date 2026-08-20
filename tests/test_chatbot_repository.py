@@ -474,7 +474,7 @@ class ChatSessionRepositoryTest(unittest.TestCase):
             ],
         )
 
-    def test_saves_fraud_type_scores_once_per_transaction(self) -> None:
+    def test_upserts_fraud_type_scores_per_transaction(self) -> None:
         chat_session = self.repository.create_or_get(
             chat_session_id="CHAT-SCORE",
             transaction_id=117,
@@ -485,23 +485,23 @@ class ChatSessionRepositoryTest(unittest.TestCase):
             ACCOUNT_TAKEOVER: 1.0,
             FRAUD_USED_ACCOUNT: 0.0,
         }
+        updated_scores = {**type_scores, VOICE_PHISHING: 99.0}
 
-        first_inserted = self.repository.add_fraud_type_scores(
+        self.repository.upsert_fraud_type_scores(
             chat_session,
             type_scores=type_scores,
         )
-        duplicate_inserted = self.repository.add_fraud_type_scores(
+        self.repository.upsert_fraud_type_scores(
             chat_session,
-            type_scores={VOICE_PHISHING: 99.0},
+            type_scores=updated_scores,
         )
 
-        self.assertIs(first_inserted, True)
-        self.assertIs(duplicate_inserted, False)
+        # 정황이 추출될 때마다 같은 행을 최신 집계 결과로 덮어쓴다(거래당 한 행).
         score = self.session.get(FraudTypeScoreAfterChat, 117)
         self.assertIsNotNone(score)
         assert score is not None
         self.assertEqual(score.chat_session_id, chat_session.chat_session_id)
-        self.assertEqual(score.type_scores, type_scores)
+        self.assertEqual(score.type_scores, updated_scores)
         self.assertIsInstance(score.scored_at, datetime)
 
     def test_gets_session_status_by_transaction(self) -> None:
