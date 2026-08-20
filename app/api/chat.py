@@ -22,7 +22,7 @@ from collections.abc import Iterator
 from queue import Empty
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, status
 from fastapi.responses import StreamingResponse
 
 from app.core.common_response import ApiResponse, success_response
@@ -31,12 +31,9 @@ from app.data.model.chatbot import (
     ChatMessage,
     ChatSession,
     ChatSessionStatus,
-    FraudTypeScoreAfterChat,
 )
-from app.domain.fraud_type_codes import get_fraud_type_display_name
 from app.dto.chatbot import (
     ChatButtonActionRequest,
-    ChatFraudTypeScoreResponse,
     ChatMessageResponse,
     ChatSessionDetailResponse,
     ChatTurnResponse,
@@ -52,6 +49,13 @@ from app.pipelines.customer_chatbot_pipeline import (
 )
 from app.repositories.chat_session import ChatSessionRepository
 from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
+from app.services.chatbot.chat_score_publisher import (
+    build_type_score_responses,
+    publish_chat_score_update,
+)
+from app.services.chatbot.fraud_circumstance_task_runner import (
+    FraudCircumstanceTaskRunnerDep,
+)
 from app.services.chatbot.identity_verifier import verify_birth_year
 
 
@@ -256,6 +260,8 @@ def send_chat_message(
     chat_session_id: ChatSessionIdPath,
     payload: SendChatMessageRequest,
     session: SessionDep,
+    background_tasks: BackgroundTasks,
+    fraud_circumstance_task_runner: FraudCircumstanceTaskRunnerDep,
 ) -> ApiResponse[ChatTurnResponse]:
     """고객 답변 한 건을 평가하고 그 턴의 챗봇 응답을 돌려준다(PRD 2.4~2.6).
 
@@ -273,15 +279,27 @@ def send_chat_message(
     이어지면 마지막 답변을 채택하고 전환 안내와 함께 다음 질문으로 넘어간다.
 
     평가·추출 LLM 이 실패해도 턴은 실패하지 않는다. 그 결과만 건너뛰고 다음 질문으로 진행한다.
+
+    **사기 정황 추출은 응답을 보낸 뒤 백그라운드로 돈다**(PRD 2.6). 추출 결과는 담당자
+    화면의 점수만 바꾸므로 고객은 추출 LLM 을 기다리지 않고 가이드 응답과 다음 질문을
+    받는다. 갱신된 점수는 추출이 끝난 뒤 SSE(`chat_score_updated`)로 나간다.
     """
 
     chat_session = _require_session(session, chat_session_id)
+    transaction_id = chat_session.transaction_id
     result = _run_turn(
         lambda: _pipeline(session, chat_session).handle_message(
             payload.message_text
         )
     )
-    _publish_score_update(session, chat_session.transaction_id)
+    # 이 시점의 점수는 아직 이번 답변의 정황이 반영되기 전 값이다. 추출이 끝나면
+    # 백그라운드 작업이 갱신된 값을 다시 발행한다.
+    publish_chat_score_update(session, transaction_id)
+    if result.pending_extraction is not None:
+        background_tasks.add_task(
+            fraud_circumstance_task_runner,
+            result.pending_extraction,
+        )
     return success_response(_turn_response(chat_session_id, result))
 
 
@@ -334,6 +352,10 @@ def stream_transaction_chat_score_events(
     사기 정황이 추출될 때마다(매 `SUFFICIENT` 판정 턴) 서버가 `type_scores` 전체를
     다시 계산해 이 스트림으로 밀어준다. 담당자 화면이 상담 도중에도 점수 변화를
     폴링 없이 바로 볼 수 있게 하기 위한 경로다.
+
+    추출은 고객 턴 응답 뒤 백그라운드로 돌기 때문에, 갱신된 점수는 그 턴의 응답보다
+    **늦게** 도착한다. 답변 턴 커밋 직후에도 한 번 발행하므로 같은 값을 두 번 받는
+    턴이 있을 수 있다(값이 같으면 화면이 다시 그릴 뿐이라 무해하다).
 
     **세션 상태(`status`)는 이 스트림에 포함되지 않는다** — 상태는 여전히
     [2.7](README.md#27-상담사-반환-경로-거래별-상태-조회)의 폴링 경로
@@ -476,57 +498,10 @@ def _transaction_session_detail(
             _message_response(message)
             for message in repository.list_messages(chat_session)
         ],
-        type_scores=_type_score_responses(
+        type_scores=build_type_score_responses(
             repository.get_fraud_type_scores(transaction_id)
         ),
     )
-
-
-def _publish_score_update(session: SessionDep, transaction_id: int) -> None:
-    """턴 커밋 뒤 최신 사기 정황 점수를 SSE 구독자에게 발행한다.
-
-    구독자가 없는 거래는 브로커가 즉시 버리므로 SSE를 아무도 안 듣는 상담이
-    다수여도 비용이 없다. 턴마다(판정 종류와 무관하게) 부르는 이유는 라우터가
-    이번 턴에서 실제로 정황이 추출됐는지 알지 못하기 때문이다 — 값이 그대로면
-    구독자가 같은 값을 다시 받을 뿐이라 무해하다.
-    """
-
-    scores = ChatSessionRepository(session).get_fraud_type_scores(transaction_id)
-    if scores is None:
-        return
-
-    chat_score_event_broker.publish(
-        transaction_id,
-        event="chat_score_updated",
-        data={
-            "transaction_id": transaction_id,
-            "type_scores": [
-                response.model_dump()
-                for response in _type_score_responses(scores)
-            ],
-        },
-    )
-
-
-def _type_score_responses(
-    scores: FraudTypeScoreAfterChat | None,
-) -> list[ChatFraudTypeScoreResponse]:
-    """점수 내림차순으로 정렬한다. 동점이면 코드 오름차순이라 순서가 흔들리지 않는다."""
-
-    if scores is None:
-        return []
-
-    return [
-        ChatFraudTypeScoreResponse(
-            type_code=type_code,
-            display_name=get_fraud_type_display_name(type_code),
-            score=int(score),
-        )
-        for type_code, score in sorted(
-            scores.type_scores.items(),
-            key=lambda item: (-item[1], item[0]),
-        )
-    ]
 
 
 def _message_response(message: ChatMessage) -> ChatMessageResponse:

@@ -39,10 +39,17 @@ from app.domain.fraud_type_codes import (
     VOICE_PHISHING,
     get_fraud_type_display_name,
 )
-from app.dto.chatbot import AnswerQualityVerdict
+from app.dto.chatbot import (
+    AnswerQualityVerdict,
+    FraudCircumstanceExtractionTask,
+    GuideSearchQueryExtractionResult,
+)
 from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
 from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
 from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
+from app.services.chatbot.fraud_circumstance_task_runner import (
+    get_fraud_circumstance_task_runner,
+)
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
     HANDOFF_WAITING_MESSAGE,
@@ -72,12 +79,28 @@ class _FakeEvaluator:
         return AnswerEvaluationOutcome(quality_verdict=self.verdict)
 
 
+class _FakeGuideSearchQueryExtractor:
+    """가이드 분해 LLM 자리에 끼워 넣는 대역. 분해 결과 0건을 돌려준다."""
+
+    def extract(self, *, user_answers: str) -> GuideSearchQueryExtractionResult:
+        return GuideSearchQueryExtractionResult(guide_search_queries=[])
+
+
 def _evaluating(verdict: AnswerQualityVerdict):
     """파이프라인이 지연 생성하는 ``AnswerEvaluator`` 를 대역으로 바꾼다."""
 
     return patch(
         "app.pipelines.customer_chatbot_pipeline.AnswerEvaluator",
         lambda: _FakeEvaluator(verdict),
+    )
+
+
+def _extracting_no_guide_query():
+    """SUFFICIENT 턴이 부르는 가이드 분해 LLM 을 대역으로 바꾼다."""
+
+    return patch(
+        "app.pipelines.customer_chatbot_pipeline.GuideSearchQueryExtractor",
+        _FakeGuideSearchQueryExtractor,
     )
 
 
@@ -103,6 +126,13 @@ class ChatApiTest(unittest.TestCase):
                 yield session
 
         app.dependency_overrides[get_session] = override_session
+
+        # 사기 정황 추출은 응답 뒤 백그라운드로 도는 작업이라 실행하지 않고
+        # 예약된 작업만 모은다(실행 자체는 tests/test_chatbot_fraud_circumstance_task.py).
+        self.scheduled_extractions: list[FraudCircumstanceExtractionTask] = []
+        app.dependency_overrides[get_fraud_circumstance_task_runner] = (
+            lambda: self.scheduled_extractions.append
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -410,6 +440,47 @@ class ChatApiTest(unittest.TestCase):
                 ],
             },
         )
+
+    def test_sufficient_turn_schedules_background_extraction(self) -> None:
+        """사기 정황 추출은 응답을 보낸 뒤 백그라운드로 돈다(PRD 2.6)."""
+
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+
+        with _evaluating(AnswerQualityVerdict.SUFFICIENT), _extracting_no_guide_query():
+            response = self._send(
+                chat_session.chat_session_id,
+                message_text="검찰이라고 전화가 왔어요",
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        answer = self.session.exec(select(ChatAnswer)).one()
+        self.assertEqual(
+            self.scheduled_extractions,
+            [
+                FraudCircumstanceExtractionTask(
+                    chat_session_id=chat_session.chat_session_id,
+                    transaction_id=chat_session.transaction_id,
+                    answer_id=answer.answer_id,
+                    message_text="검찰이라고 전화가 왔어요",
+                )
+            ],
+        )
+        # 추출은 아직 돌지 않았으므로 정황 행도 없다.
+        self.assertEqual(self.session.exec(select(ChatFraudCircumstance)).all(), [])
+
+    def test_non_sufficient_turn_schedules_nothing(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+
+        with _evaluating(AnswerQualityVerdict.TOO_VAGUE):
+            self._send(chat_session.chat_session_id)
+
+        self.assertEqual(self.scheduled_extractions, [])
 
     def test_message_turn_with_no_subscriber_does_not_raise(self) -> None:
         """구독자가 없는 거래에 대한 발행은 조용히 버려진다."""

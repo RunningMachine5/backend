@@ -269,9 +269,24 @@ class TransactionChatSessionDetailResponse(BaseModel):
         default_factory=list,
         description=(
             "사기유형별 점수 전체(점수 내림차순, 동점이면 코드 오름차순). "
-            "상담 종료 시 한 번 집계하므로 그 전에는 빈 배열이다."
+            "사기 정황이 추출될 때마다 갱신하므로 한 번도 추출되지 않았으면 빈 배열이다."
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class FraudCircumstanceExtractionTask:
+    """턴 커밋 뒤 백그라운드로 실행할 사기 정황 추출 작업(PRD 2.6).
+
+    파이프라인이 만들어 ``ChatTurnResult`` 에 실어 보내고, 라우터가
+    ``BackgroundTasks`` 로 넘긴다. 실행하는 쪽은 요청 세션이 이미 닫힌 뒤라
+    자기 세션을 새로 열어야 하므로, ORM 객체가 아니라 id와 원문만 담는다.
+    """
+
+    chat_session_id: str
+    transaction_id: int
+    answer_id: int
+    message_text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +314,7 @@ __all__ = [
     "ExtractedFraudCircumstance",
     "FraudCircumstanceCode",
     "FraudCircumstanceExtractionResult",
+    "FraudCircumstanceExtractionTask",
     "FraudTypeCode",
     "GeneratedSearchQueryGuide",
     "GuideResponseGenerationResult",

@@ -181,7 +181,7 @@ FDS·Agent 결합.
     Generate 실패·전원 빈 안내도 B.5로 채우고 상담 계속)
   - B.5 문구는 [messages.py](../../app/services/chatbot/messages.py)로 옮겼다(B.1~B.4·B.6은 6단계)
 - [x] [chat_scoring.py](../../app/services/chatbot/chat_scoring.py) — 사기 정황이 추출될 때마다
-  재집계(증분 가산이 아니라 매번 전체 재계산):
+  `rescore_chat_session`으로 재집계(증분 가산이 아니라 매번 전체 재계산):
   `chat_fraud_circumstances` 전체 × `FRAUD_CIRCUMSTANCE_SCORES` → 4개 유형 점수 전부
   `type_scores`로. 대표 유형·동점·정황 없음은 저장하지 않는다 (스키마 3.7)
 - [x] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
@@ -214,7 +214,8 @@ FDS·Agent 결합.
   3. 답변 평가 — 4단계 서비스 호출. 판정별 전이는 PRD 2.4 표 그대로
      (`TOO_VAGUE`는 재질문 최대 2회, 초과 시 마지막 응답 채택
      `is_adopted = true` 후 다음 질문)
-  4. `SUFFICIENT` → 가이드 검색 질의 분해·저장·RAG와 사기 정황 추출·저장을 독립 실행한다.
+  4. `SUFFICIENT` → 가이드 검색 질의 분해·저장·RAG는 이 턴 안에서 끝내고,
+     **사기 정황 추출은 예약만 한다**(`ChatTurnResult.pending_extraction`).
      한 경로가 재시도 후 실패해도 성공한 경로는 반영하고 다음 질문으로 진행한다
   5. `WANT_END` → 채점 집계(5단계) + `DONE` + `completed_at`. 문구는 B.6
   6. `HANDOFF_REQUESTED` 진입 경로는 1번의 "상담사 연결" 버튼뿐이다. `WANT_END`와
@@ -272,6 +273,18 @@ FDS·Agent 결합.
 - [x] ~~SSE — `GET /agent/chat-sessions/events`~~ — **제거했다.** 상태 확인을 프론트 폴링으로
   바꾸면서 스트림과 그 뒤의 in-process pub/sub(`session_event_broker.py`)에 소비자가 없어져
   브로커·이벤트 DTO·발행 호출까지 함께 걷어냈다(PRD 2.7)
+- [x] **사기 정황 추출을 비동기로 돌린다**(PRD 2.6 비동기 실행). 추출 결과는 그 턴의 고객
+  메시지에 쓰이지 않으므로 `POST /chat/{chat_session_id}/messages`가 응답을 보낸 뒤
+  `BackgroundTasks`로 실행한다. 실행부
+  ([fraud_circumstance_task_runner.py](../../app/services/chatbot/fraud_circumstance_task_runner.py))는
+  자기 Session을 새로 열어 저장·재채점까지 커밋한 뒤 점수를 SSE로 발행하고, 어떤 실패도
+  밖으로 올리지 않는다(Agent 백그라운드 실행과 같은 방침). 같은 세션의 추출은 세션 id별
+  프로세스 내 락으로 직렬화해 재채점이 옛 값으로 덮이지 않게 한다.
+  SSE 발행 공통부는 라우터에서 꺼내
+  [chat_score_publisher.py](../../app/services/chatbot/chat_score_publisher.py)로 옮겼다
+- [x] 테스트 [tests/test_chatbot_fraud_circumstance_task.py](../../tests/test_chatbot_fraud_circumstance_task.py):
+  추출기 대역으로 저장·재채점·SSE 발행, 같은 정황 반복 시 중복 가산 없음, 추출 실패·세션
+  없음·예기치 못한 실패가 밖으로 새지 않는 것까지 확인한다
 - [x] 두 조회 경로는 `/agent`가 아니라 `/transactions` 하위에 둔다. Agent
   (`app/services/agent/`)와 무관한 채팅 세션 조회이기 때문이다
 - [x] 테스트 [tests/test_chat_api.py](../../tests/test_chat_api.py): TestClient로 본인인증·버튼

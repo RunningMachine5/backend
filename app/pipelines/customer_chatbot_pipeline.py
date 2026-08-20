@@ -8,6 +8,11 @@
 ``InMemorySaver`` 체크포인터에 ``thread_id = chat_session_id`` 로 남아 다음 invoke 가
 이어받는다.
 
+**사기 정황 추출은 이 턴 안에서 돌지 않는다.** 추출 결과(PRD 2.6)는 그 턴에 고객에게
+보낼 메시지에 쓰이지 않고 담당자 화면의 점수만 바꾸므로, 파이프라인은 추출 작업만
+``ChatTurnResult.pending_extraction`` 으로 돌려주고 라우터가 턴 커밋 뒤 백그라운드로
+실행한다([fraud_circumstance_task_runner.py](../services/chatbot/fraud_circumstance_task_runner.py)).
+
 ``interrupt()`` + ``Command(resume=...)`` 로 그래프를 대화 중간에 멈춰 세우지 않은 이유:
 
 - 챗봇의 입력 경로가 HTTP 요청 하나뿐이라 멈춤 지점이 곧 요청 경계다. 요청마다
@@ -38,13 +43,16 @@ from app.data.model.chatbot import (
     ChatSessionStatus,
 )
 from app.data.model.transaction import Transaction
-from app.dto.chatbot import AnswerQualityVerdict, ChatButtonAction
+from app.dto.chatbot import (
+    AnswerQualityVerdict,
+    ChatButtonAction,
+    FraudCircumstanceExtractionTask,
+)
 from app.repositories.chat_session import ChatSessionRepository
 from app.services.chatbot.answer_evaluator import AnswerEvaluator
-from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
+from app.services.chatbot.chat_scoring import rescore_chat_session
 from app.services.chatbot.extractors import (
     ChatbotExtractionError,
-    FraudCircumstanceExtractor,
     GuideSearchQueryExtractor,
 )
 from app.services.chatbot.guide_responder import GuideResponder
@@ -75,11 +83,16 @@ class ChatTurnRejectedError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ChatTurnResult:
-    """한 턴에서 고객에게 보낸 메시지와 턴이 끝난 뒤의 세션 상태."""
+    """한 턴에서 고객에게 보낸 메시지와 턴이 끝난 뒤의 세션 상태.
+
+    ``pending_extraction`` 은 이 턴이 커밋된 뒤 백그라운드로 돌려야 할 사기 정황
+    추출 작업이다(PRD 2.6). 부르는 쪽(라우터)이 ``BackgroundTasks`` 로 넘긴다.
+    """
 
     messages: tuple[str, ...]
     status: ChatSessionStatus
     question_step: int
+    pending_extraction: FraudCircumstanceExtractionTask | None = None
 
 
 class ChatGraphState(TypedDict, total=False):
@@ -102,6 +115,9 @@ class ChatGraphState(TypedDict, total=False):
     route: str # 다음 경로의 위치
     answer_id: int | None
     outbound: list[str]
+    # 턴 커밋 뒤 백그라운드 추출에 넘길 답변 id (예약이 없으면 None).
+    # 체크포인터에 그대로 실리는 값이라 dataclass 가 아니라 id 만 남긴다.
+    pending_extraction_answer_id: int | None
 
 
 class CustomerChatbotPipeline:
@@ -114,7 +130,6 @@ class CustomerChatbotPipeline:
         chat_session: ChatSession,
         evaluator: AnswerEvaluator | None = None,
         guide_search_query_extractor: GuideSearchQueryExtractor | None = None,
-        fraud_circumstance_extractor: FraudCircumstanceExtractor | None = None,
         guide_responder: GuideResponder | None = None,
         checkpointer: Any | None = None,
     ) -> None:
@@ -125,7 +140,6 @@ class CustomerChatbotPipeline:
         # 턴에서 OPENAI_API_KEY 가 없다는 이유로 실패하지 않게 한다.
         self._evaluator = evaluator
         self._guide_search_query_extractor = guide_search_query_extractor
-        self._fraud_circumstance_extractor = fraud_circumstance_extractor
         self._guide_responder = guide_responder
         self.graph = self._build_graph(checkpointer or _CHECKPOINTER)
 
@@ -179,6 +193,7 @@ class CustomerChatbotPipeline:
             "message_text": None,# 이전 고객 답변 제거
             "answer_id": None,# 이전 ChatAnswer ID 제거 (고객응답과 평가 결과가 저장된 객체 id)
             "outbound": [],# 이전 턴에 보낸 메시지 제거
+            "pending_extraction_answer_id": None,# 이전 턴에 예약한 추출 작업 제거
             **turn_input,
         }
         state_input.update(self._seed_progress_state(config))
@@ -199,6 +214,23 @@ class CustomerChatbotPipeline:
             messages=tuple(final_state.get("outbound", [])),
             status=ChatSessionStatus(self.chat_session.status),
             question_step=self.chat_session.question_step,
+            pending_extraction=self._pending_extraction(final_state),
+        )
+
+    def _pending_extraction(
+        self,
+        final_state: dict[str, Any],
+    ) -> FraudCircumstanceExtractionTask | None:
+        """이번 턴이 예약한 사기 정황 추출 작업을 만든다(없으면 ``None``)."""
+
+        answer_id = final_state.get("pending_extraction_answer_id")
+        if answer_id is None:
+            return None
+        return FraudCircumstanceExtractionTask(
+            chat_session_id=self.chat_session.chat_session_id,
+            transaction_id=self.chat_session.transaction_id,
+            answer_id=answer_id,
+            message_text=final_state.get("message_text") or "",
         )
 
     def _seed_progress_state(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -416,9 +448,12 @@ class CustomerChatbotPipeline:
         self,
         state: ChatGraphState,
     ) -> dict[str, Any]:
-        """채택 답변에서 가이드 검색 질의와 사기 정황을 각각 독립 실행한다.
+        """채택 답변에서 가이드 응답을 만들고, 사기 정황 추출은 예약만 한다.
 
-        한 경로가 실패해도 다른 경로의 결과는 반영하고 다음 질문으로 넘어간다.
+        가이드 응답(PRD 2.5)은 이번 턴에 고객에게 보내야 하므로 여기서 끝내지만,
+        사기 정황 추출(PRD 2.6)의 결과는 담당자 화면의 점수만 바꾸므로 턴 응답을
+        붙잡아 둘 이유가 없다. 추출 작업은 ``pending_extraction`` 으로 돌려주고
+        턴이 커밋된 뒤 라우터가 백그라운드로 실행한다.
         """
 
         answer = self._load_answer(state)
@@ -429,16 +464,20 @@ class CustomerChatbotPipeline:
         if guide_message:
             outbound = self._emit(outbound, guide_message)
 
-        self._extract_fraud_circumstances(answer, message_text)
-        return {"outbound": outbound}
+        return {
+            "outbound": outbound,
+            "pending_extraction_answer_id": answer.answer_id,
+        }
 
     def _finish(self, state: ChatGraphState) -> dict[str, Any]:
         """WANT_END — 상담을 종료한다(PRD 2.6).
 
-        채점은 이미 정황이 추출될 때마다 ``_update_fraud_type_scores``로 갱신되어
-        있다. 여기서 다시 부르는 것은 정황이 한 번도 추출되지 않은 세션(예:
-        첫 질문에서 바로 종료 의사를 밝힌 경우)도 담당자 화면에 0점 행을 남기기
-        위한 안전망이다.
+        채점은 이미 백그라운드 추출 작업이 정황을 저장할 때마다 갱신해 둔다. 여기서
+        다시 부르는 것은 정황이 한 번도 추출되지 않은 세션(예: 첫 질문에서 바로 종료
+        의사를 밝힌 경우)도 담당자 화면에 0점 행을 남기기 위한 안전망이다.
+
+        마지막 턴의 추출이 아직 끝나지 않았어도 결과는 같다 — 양쪽 모두 정황 전체를
+        다시 읽어 덮어쓰므로, 나중에 끝난 쪽의 값이 남는다.
         """
 
         self._update_fraud_type_scores()
@@ -502,55 +541,15 @@ class CustomerChatbotPipeline:
             return ""
         return response.message_text
 
-    def _extract_fraud_circumstances(
-        self,
-        answer: ChatAnswer,
-        message_text: str,
-    ) -> None:
-        """사기 정황을 추출해 세션당 enum 한 행으로 저장한다(PRD 2.6)."""
-
-        try:
-            extraction = self.fraud_circumstance_extractor.extract(
-                user_answers=message_text
-            )
-        except ChatbotExtractionError:
-            logger.warning(
-                "사기 정황 추출을 건너뜁니다: session=%s",
-                self.chat_session.chat_session_id,
-            )
-            return
-
-        for circumstance in extraction.fraud_circumstances:
-            self.repository.add_fraud_circumstance(
-                self.chat_session,
-                circumstance_code=circumstance.type,
-                evidence=circumstance.evidence,
-                source_answer=answer,
-            )
-
-        # 이 턴에서 새 정황이 없었어도(전부 중복이거나 0건) 재계산 자체는 저렴하므로
-        # 그대로 갱신한다 — 세션당 최대 20종이라 매번 다시 읽어 합산해도 무시할 비용이다.
-        self._update_fraud_type_scores()
-
     def _update_fraud_type_scores(self) -> None:
         """세션에 쌓인 사기 정황 전체를 다시 읽어 유형별 점수를 갱신한다.
 
-        정황 추출마다(PRD 2.6) 호출된다. 세션당 정황은 최대 20종
-        (``FINAL_FRAUD_CIRCUMSTANCE_CODES``)으로 상한이 있어, 매 턴 다시 읽어
-        합산해도 응답 시간에 영향을 줄 만큼의 비용이 아니다 — LLM 호출은
-        추가되지 않고 인덱스 조회 1회와 in-memory 합산, upsert 1회뿐이다.
+        평상시 갱신은 백그라운드 추출 작업
+        ([fraud_circumstance_task_runner.py](../services/chatbot/fraud_circumstance_task_runner.py))이
+        하고, 파이프라인은 상담 종료(``_finish``) 안전망으로만 부른다.
         """
 
-        circumstance_codes = [
-            circumstance.circumstance_code
-            for circumstance in self.repository.list_fraud_circumstances(
-                self.chat_session
-            )
-        ]
-        self.repository.upsert_fraud_type_scores(
-            self.chat_session,
-            type_scores=score_chat_fraud_circumstances(circumstance_codes),
-        )
+        rescore_chat_session(self.repository, self.chat_session)
 
     def _emit(self, outbound: list[str], message_text: str) -> list[str]:
         """챗봇 메시지를 대화 로그에 남기고 이번 턴 출력에 덧붙인다."""
@@ -599,12 +598,6 @@ class CustomerChatbotPipeline:
         if self._guide_search_query_extractor is None:
             self._guide_search_query_extractor = GuideSearchQueryExtractor()
         return self._guide_search_query_extractor
-
-    @property
-    def fraud_circumstance_extractor(self) -> FraudCircumstanceExtractor:
-        if self._fraud_circumstance_extractor is None:
-            self._fraud_circumstance_extractor = FraudCircumstanceExtractor()
-        return self._fraud_circumstance_extractor
 
     @property
     def guide_responder(self) -> GuideResponder:

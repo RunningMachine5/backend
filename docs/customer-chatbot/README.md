@@ -46,6 +46,7 @@ SQLAlchemy, SQLModel, langchain-openai.
 조립(`app/services/chatbot/`), LangGraph 턴 파이프라인
 ([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)),
 Agent 통합 세션·메일 조정([session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)),
+턴 응답 뒤에 도는 사기 정황 추출 작업([fraud_circumstance_task_runner.py](../../app/services/chatbot/fraud_circumstance_task_runner.py)),
 [2.8의 API 6종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
 Fake 체인 `app/services/chatbot/customer_chatbot.py`는 제거했다.
 
@@ -539,7 +540,9 @@ response = assemble(augmented, guidance)
 ### 2.6 사기 정황 추출과 채점 (4-2)
 
 사기 정황을 분석해서 내부 채점표에 따라 사기 의심 점수를 누적한다.
-[2.5](#25-정보-응답--rag-대응-가이드-4-1)와 마찬가지로 `SUFFICIENT` 판정마다 실행된다.
+[2.5](#25-정보-응답--rag-대응-가이드-4-1)와 마찬가지로 `SUFFICIENT` 판정마다 실행되지만,
+**턴 응답 경로 안에서 돌지 않고 응답을 보낸 뒤 백그라운드로 돈다**(아래
+[비동기 실행](#비동기-실행)).
 
 → 프롬프트: [A.3](prompts.md#a3-사기-정황-추출-프롬프트)
 
@@ -553,6 +556,39 @@ response = assemble(augmented, guidance)
   ]
 }
 ```
+
+#### 비동기 실행
+
+추출 결과는 그 턴에 고객에게 보낼 메시지에 쓰이지 않고 담당자 화면의 점수만 바꾼다.
+그래서 추출 LLM 호출을 턴 응답 경로에서 빼 응답 뒤로 미룬다 — 고객은 [2.5](#25-정보-응답--rag-대응-가이드-4-1)의
+가이드 응답과 다음 질문을 추출이 끝나기를 기다리지 않고 받고, 턴 지연에서 추출 LLM
+호출 한 번이 통째로 빠진다.
+
+```
+POST /chat/{id}/messages
+  └ 파이프라인: 평가 → 가이드 응답(RAG) → 다음 질문 → 커밋
+      └ ChatTurnResult.pending_extraction  (추출할 답변 id + 원문)
+  └ 응답 반환 ─────────────────────────────── 고객은 여기서 끝
+      └ BackgroundTasks: 사기 정황 추출 → 저장 → 재채점 → 커밋 → SSE 발행
+```
+
+- 파이프라인(`_process_sufficient_answer`)은 추출을 **예약만** 한다. 실행할 답변 id와
+  원문을 `ChatTurnResult.pending_extraction`으로 돌려주고, 라우터가 턴을 커밋한 뒤
+  `BackgroundTasks`에 등록한다. Agent 백그라운드 실행
+  ([task_runner.py](../../app/services/agent/task_runner.py))과 같은 방침이다.
+- 실행은 [fraud_circumstance_task_runner.py](../../app/services/chatbot/fraud_circumstance_task_runner.py)가
+  맡는다. 요청 세션이 이미 닫힌 뒤이므로 **자기 Session을 새로 열어** 저장·재채점까지
+  커밋하고, 그 뒤에 점수를 SSE로 발행한다([2.7](#사기-정황-점수-실시간-스트림-sse)).
+- 추출 실패는 상담을 막지 않는다. 그 답변의 정황만 비고 다음 턴에서 다시 추출한다.
+  추출 작업의 어떤 실패도 밖으로 올리지 않고 로그만 남긴다 — 고객 응답은 이미 나갔다.
+- 같은 세션의 추출 작업은 **한 번에 하나만** 돈다. 채점이 "정황 전체를 다시 읽어
+  덮어쓰는" 방식이라, 두 턴의 추출이 겹치면 늦게 시작한 쪽의 갱신을 먼저 시작한 쪽이
+  옛 값으로 덮을 수 있기 때문이다. 세션 id별 프로세스 내 락으로 직렬화한다(진행 상태가
+  이미 프로세스에 묶여 있으므로 — [스키마 3.4](schema.md#34-chat_sessions) — 프로세스
+  범위 직렬화로 충분하다).
+
+**담당자 화면에서 보이는 차이**: 점수는 고객의 턴 응답보다 조금 늦게 갱신된다. 갱신
+시점을 화면이 알 필요가 없도록 SSE로 밀어준다.
 
 #### 내부 채점표
 
@@ -568,25 +604,25 @@ response = assemble(augmented, guidance)
 1. 가이드 검색 질의는 `chat_guide_search_queries`에 답변별 위치로 저장하고, 사기 정황은
    `chat_fraud_circumstances`의 `UNIQUE (chat_session_id, circumstance_code)`로
    세션당 enum 1행만 저장한다.
-2. 점수 계산은 매 턴 더하지 않는다. **사기 정황이 추출될 때마다(`SUFFICIENT` 판정으로
-   `_process_sufficient_answer`가 실행될 때마다) `chat_fraud_circumstances` 행 전체를
-   다시 읽어 처음부터 다시 집계**해 `fraud_type_score_after_chat`에 upsert한다
-   (`ON CONFLICT (transaction_id) DO UPDATE`). 증분 가산이 아니라 매번 전체 재계산이므로
-   같은 정황이 여러 턴에 걸쳐 다시 추출돼도 이중 가산되지 않는다.
-   구현은 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)의
-   `_update_fraud_type_scores`다.
+2. 점수 계산은 매 턴 더하지 않는다. **사기 정황이 추출될 때마다(백그라운드 추출 작업이
+   끝날 때마다) `chat_fraud_circumstances` 행 전체를 다시 읽어 처음부터 다시 집계**해
+   `fraud_type_score_after_chat`에 upsert한다(`ON CONFLICT (transaction_id) DO UPDATE`).
+   증분 가산이 아니라 매번 전체 재계산이므로 같은 정황이 여러 턴에 걸쳐 다시 추출돼도
+   이중 가산되지 않는다. 구현은
+   [chat_scoring.py](../../app/services/chatbot/chat_scoring.py)의 `rescore_chat_session`이고,
+   부르는 곳은 백그라운드 추출 작업과 종료 턴의 안전망 두 곳이다.
 
 담당자 화면은 상담이 끝나기 전에도 그때까지의 집계 결과를 볼 수 있다. `WANT_END`
 전이(`_finish`) 시점에도 같은 재계산을 한 번 더 부르는데, 이는 한 번도 정황이 추출되지
 않은 세션(첫 질문에서 바로 종료 의사를 밝힌 경우)도 0점 행을 남기기 위한 안전망이다 —
 정상적으로 정황이 추출된 세션은 이미 마지막 추출 시점에 최신값으로 갱신돼 있어 이 호출이
-값을 바꾸지 않는다.
+값을 바꾸지 않는다. 마지막 턴의 백그라운드 추출이 종료 턴보다 늦게 끝나도 양쪽 모두
+정황 전체를 다시 읽어 덮어쓰므로 나중에 끝난 쪽의 값이 남고, 결과는 같다.
 
-**계산 비용**: 매 턴 다시 읽어 집계하더라도 세션당 정황은 최대 20종
+**계산 비용**: 매번 다시 읽어 집계하더라도 세션당 정황은 최대 20종
 (`FINAL_FRAUD_CIRCUMSTANCE_CODES`)으로 상한이 있어 조회·합산·upsert 모두 인메모리 수준의
-비용이다. LLM 호출이 추가되는 것이 아니라(추출 LLM 호출은 기존과 동일하게 `SUFFICIENT`
-판정마다 한 번뿐이다) 그 결과를 반영하는 시점만 상담 종료에서 매 추출 시점으로 앞당긴
-것이므로, 턴당 지연에 유의미한 영향을 주지 않는다.
+비용이다. LLM 호출도 늘지 않는다 — 추출 LLM 호출은 `SUFFICIENT` 판정마다 한 번뿐이고,
+그마저 [비동기 실행](#비동기-실행)으로 턴 응답 경로 밖으로 나갔다.
 
 집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
 상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat)).
@@ -622,8 +658,10 @@ response = assemble(augmented, guidance)
 **위 폴링 방침은 `status`에만 해당한다.** 유형별 점수(`type_scores`)는 별도로
 `GET /transactions/{transaction_id}/chat-session/score-events`가 SSE로 밀어준다.
 [2.6](#26-사기-정황-추출과-채점-4-2)대로 사기 정황이 추출될 때마다(`SUFFICIENT`
-판정 턴마다) 서버가 `type_scores` 전체를 다시 계산해 upsert하는데, 그 갱신을 담당자
-화면이 폴링 없이 그 자리에서 받아볼 수 있게 하는 경로다. 이벤트 이름은
+판정 턴마다, [턴 응답 뒤 백그라운드로](#비동기-실행)) 서버가 `type_scores` 전체를 다시
+계산해 upsert하는데, 그 갱신을 담당자 화면이 폴링 없이 그 자리에서 받아볼 수 있게 하는
+경로다. 추출이 비동기라 갱신은 그 턴의 HTTP 응답보다 늦게 오므로, 폴링 대신 이 스트림을
+쓰는 이유가 더 분명하다. 이벤트 이름은
 `chat_score_updated`이고, `data`는 상세 조회(`.../chat-session/detail`)의
 `type_scores`와 같은 형태(`type_code`/`display_name`/`score` 목록, 점수 내림차순)에
 `transaction_id`를 더한 것이다.
@@ -632,11 +670,19 @@ response = assemble(augmented, guidance)
 대시보드 SSE([dashboard_event_broker.py](../../app/services/dashboard/dashboard_event_broker.py))와
 같은 큐 기반 브로커 패턴을 쓰되 **거래 단위로 구독을 나눈다** — 동시에 여러 상담이
 진행되므로 전체 브로드캐스트가 아니라 담당자가 연 거래의 점수만 받아야 하기 때문이다.
-발행은 `POST /chat/{chat_session_id}/messages` 턴이 커밋된 뒤 라우터가 호출한다
-(대시보드 SSE와 같은 방침 — 파이프라인이 아니라 커밋을 소유한 라우터가 발행한다).
-어떤 판정이었는지와 무관하게 매 턴 최신 점수를 다시 읽어 발행하므로, 점수가 그대로인
-턴(`TOO_VAGUE` 등)도 같은 값을 다시 받을 뿐이라 무해하다. 구독자가 없는 거래는 발행
-자체가 비용 없이 버려진다.
+발행 지점은 둘이고, 둘 다 **자기 커밋을 마친 뒤** 발행한다(대시보드 SSE와 같은 방침 —
+커밋을 소유한 쪽이 발행한다). 공통 구현은
+[chat_score_publisher.py](../../app/services/chatbot/chat_score_publisher.py)다.
+
+| 발행 지점 | 시점 | 값 |
+| --- | --- | --- |
+| 라우터(`POST /chat/{chat_session_id}/messages`) | 턴 커밋 직후 | 이번 답변의 정황이 아직 반영되기 전 값 |
+| 백그라운드 추출 작업 | 추출·재채점 커밋 직후 | **실제로 점수가 바뀌는 쪽** |
+
+[2.6의 비동기 실행](#비동기-실행)대로 추출이 응답 뒤에 돌기 때문에, 갱신된 점수는 그 턴의
+HTTP 응답보다 늦게 도착한다. 어느 쪽이든 최신 점수를 다시 읽어 발행하므로 같은 값을 두 번
+받는 턴(`TOO_VAGUE` 등)이 있을 수 있으나, 화면이 다시 그릴 뿐이라 무해하다. 구독자가 없는
+거래는 발행 자체가 비용 없이 버려진다.
 
 **상태(`status`)는 여전히 이 스트림에 없다.** 상담사 반환 여부(`HANDOFF_REQUESTED`
 전이)는 위 폴링 경로로만 확인한다 — 점수 스트림을 상태 변경 알림으로 확장하는 것은
@@ -677,7 +723,7 @@ response = assemble(augmented, guidance)
 | `POST /chat/{chat_session_id}/verify` | 출생연도 4자리 본인인증. **고객이 처음 접속할 때 부르는 경로**이며 첫 진입이면 최초 알림을 만들어 함께 돌려준다 | [2.2](#22-채팅-접속-및-본인인증), [2.3](#23-최초-알림-메시지와-버튼) |
 | `GET /chat/{chat_session_id}` | 세션 상태와 대화 이력 조회. 인증을 마친 화면의 **새로고침·재접속 전용**이라 최초 알림을 만들지 않는다 | [2.2](#22-채팅-접속-및-본인인증) |
 | `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
-| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
+| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다. 사기 정황 추출은 응답 뒤 백그라운드로 돈다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
 | `GET /transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 담당자 화면이 폴링하는 경로. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 | `GET /transactions/{transaction_id}/chat-session/score-events` | 사기 정황 점수 실시간 스트림(SSE, `text/event-stream`). 정황이 추출될 때마다 `chat_score_updated` 이벤트로 `type_scores` 전체를 다시 밀어준다. `status`는 포함하지 않는다 | [2.7](#사기-정황-점수-실시간-스트림-sse) |
 | `GET /transactions/{transaction_id}/chat-session/detail` | 거래별 상담 내역 조회. 대화 전문 + 유형별 점수. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |

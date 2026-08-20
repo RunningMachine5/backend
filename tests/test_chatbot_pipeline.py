@@ -31,20 +31,17 @@ from app.domain.fraud_type_codes import (
 from app.dto.chatbot import (
     AnswerQualityVerdict,
     ChatButtonAction,
-    ExtractedFraudCircumstance,
     ExtractedGuideSearchQuery,
-    FraudCircumstanceExtractionResult,
+    FraudCircumstanceExtractionTask,
     GuideSearchQueryExtractionResult,
 )
 from app.pipelines.customer_chatbot_pipeline import (
     ChatTurnRejectedError,
     CustomerChatbotPipeline,
 )
+from app.repositories.chat_session import ChatSessionRepository
 from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
-from app.services.chatbot.extractors import (
-    FraudCircumstanceExtractionError,
-    GuideSearchQueryExtractionError,
-)
+from app.services.chatbot.extractors import GuideSearchQueryExtractionError
 from app.services.chatbot.guide_responder import GuideResponse
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
@@ -79,21 +76,6 @@ class FakeGuideSearchQueryExtractor:
     def __init__(self, result=None, error: Exception | None = None) -> None:
         self.result = result or GuideSearchQueryExtractionResult(
             guide_search_queries=[]
-        )
-        self.error = error
-        self.calls = 0
-
-    def extract(self, *, user_answers: str):
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-
-class FakeFraudCircumstanceExtractor:
-    def __init__(self, result=None, error: Exception | None = None) -> None:
-        self.result = result or FraudCircumstanceExtractionResult(
-            fraud_circumstances=[]
         )
         self.error = error
         self.calls = 0
@@ -172,7 +154,6 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         options = {
             "evaluator": FakeEvaluator(AnswerQualityVerdict.SUFFICIENT),
             "guide_search_query_extractor": FakeGuideSearchQueryExtractor(),
-            "fraud_circumstance_extractor": FakeFraudCircumstanceExtractor(),
             "guide_responder": FakeGuideResponder(),
         }
         options.update(overrides)
@@ -262,7 +243,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     # -- 2.4 판정별 분기 ----------------------------------------------
 
-    def test_sufficient_runs_extraction_and_asks_next_question(self) -> None:
+    def test_sufficient_answers_guide_and_schedules_extraction(self) -> None:
         guide_extractor = FakeGuideSearchQueryExtractor(
             GuideSearchQueryExtractionResult(
                 guide_search_queries=[
@@ -274,27 +255,15 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
                 ]
             )
         )
-        circumstance_extractor = FakeFraudCircumstanceExtractor(
-            FraudCircumstanceExtractionResult(
-                fraud_circumstances=[
-                    ExtractedFraudCircumstance(
-                        type=CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
-                        evidence="검찰이라고 전화가 왔어요",
-                    )
-                ]
-            )
-        )
         responder = FakeGuideResponder()
         pipeline = self._start_chat(
             evaluator=FakeEvaluator(AnswerQualityVerdict.SUFFICIENT),
             guide_search_query_extractor=guide_extractor,
-            fraud_circumstance_extractor=circumstance_extractor,
             guide_responder=responder,
         )
 
-        result = pipeline.handle_message(
-            "검찰이라고 전화가 왔어요 그리고 문자로 온 링크를 눌렀어요"
-        )
+        message_text = "검찰이라고 전화가 왔어요 그리고 문자로 온 링크를 눌렀어요"
+        result = pipeline.handle_message(message_text)
 
         # 가이드 응답 → 다음 질문 순서로 나간다.
         self.assertEqual(
@@ -311,10 +280,21 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
         stored_queries = self.session.exec(select(ChatGuideSearchQuery)).all()
         self.assertEqual(len(stored_queries), 1)
-        stored_circumstances = self.session.exec(
-            select(ChatFraudCircumstance)
-        ).all()
-        self.assertEqual(len(stored_circumstances), 1)
+
+        # 사기 정황 추출은 이 턴에서 돌지 않고 백그라운드 작업으로 예약만 된다.
+        self.assertEqual(
+            result.pending_extraction,
+            FraudCircumstanceExtractionTask(
+                chat_session_id=self.chat_session.chat_session_id,
+                transaction_id=self.transaction.id,
+                answer_id=answer.answer_id,
+                message_text=message_text,
+            ),
+        )
+        self.assertEqual(
+            self.session.exec(select(ChatFraudCircumstance)).all(),
+            [],
+        )
 
     def test_sufficient_sends_no_guide_message_when_no_search_query(self) -> None:
         responder = FakeGuideResponder()
@@ -326,59 +306,20 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         self.assertEqual(result.messages, (FOLLOW_UP_QUESTION,))
         self.assertEqual(responder.calls, 0)
 
-    def test_extraction_failure_does_not_block_the_other_path(self) -> None:
+    def test_guide_extraction_failure_still_schedules_circumstances(self) -> None:
+        """가이드 분해가 실패해도 사기 정황 추출 예약은 남는다(경로가 독립적이다)."""
+
         guide_extractor = FakeGuideSearchQueryExtractor(
             error=GuideSearchQueryExtractionError("boom")
         )
-        circumstance_extractor = FakeFraudCircumstanceExtractor(
-            FraudCircumstanceExtractionResult(
-                fraud_circumstances=[
-                    ExtractedFraudCircumstance(
-                        type=CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
-                        evidence="검찰이라고 전화가 왔어요",
-                    )
-                ]
-            )
-        )
         pipeline = self._start_chat(
             guide_search_query_extractor=guide_extractor,
-            fraud_circumstance_extractor=circumstance_extractor,
         )
 
         result = pipeline.handle_message("검찰이라고 전화가 왔어요")
 
         self.assertEqual(result.messages, (FOLLOW_UP_QUESTION,))
-        self.assertEqual(
-            len(self.session.exec(select(ChatFraudCircumstance)).all()),
-            1,
-        )
-
-    def test_circumstance_failure_does_not_block_guide_response(self) -> None:
-        guide_extractor = FakeGuideSearchQueryExtractor(
-            GuideSearchQueryExtractionResult(
-                guide_search_queries=[
-                    ExtractedGuideSearchQuery(
-                        title="의심스러운 링크를 열었을 때",
-                        search_query="문자 링크를 클릭했을 때 어떻게 해야 하나요?",
-                        evidence="문자로 온 링크를 눌렀어요",
-                    )
-                ]
-            )
-        )
-        pipeline = self._start_chat(
-            guide_search_query_extractor=guide_extractor,
-            fraud_circumstance_extractor=FakeFraudCircumstanceExtractor(
-                error=FraudCircumstanceExtractionError("boom")
-            ),
-        )
-
-        result = pipeline.handle_message("문자로 온 링크를 눌렀어요")
-
-        self.assertEqual(len(result.messages), 2)
-        self.assertEqual(
-            len(self.session.exec(select(ChatGuideSearchQuery)).all()),
-            1,
-        )
+        self.assertIsNotNone(result.pending_extraction)
 
     def test_too_vague_reasks_without_advancing_question_step(self) -> None:
         pipeline = self._start_chat(
@@ -447,33 +388,33 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     # -- 2.6 종료와 채점 집계 ------------------------------------------
 
-    def test_extraction_updates_score_immediately_not_only_at_want_end(self) -> None:
+    def test_want_end_rescoring_includes_background_extraction_result(self) -> None:
+        """종료 턴의 안전망 재계산은 백그라운드가 저장해 둔 정황까지 합산한다."""
+
         pipeline = self._start_chat(
             evaluator=FakeEvaluator(
                 AnswerQualityVerdict.SUFFICIENT,
                 AnswerQualityVerdict.WANT_END,
             ),
-            fraud_circumstance_extractor=FakeFraudCircumstanceExtractor(
-                FraudCircumstanceExtractionResult(
-                    fraud_circumstances=[
-                        ExtractedFraudCircumstance(
-                            type=CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
-                            evidence="검찰이라고 전화가 왔어요",
-                        )
-                    ]
-                )
+        )
+        first_turn = pipeline.handle_message("검찰이라고 전화가 왔어요")
+
+        # 추출 자체는 턴 밖에서 돌기 때문에 이 시점에는 아직 점수 행이 없다.
+        self.assertEqual(
+            self.session.exec(select(FraudTypeScoreAfterChat)).all(),
+            [],
+        )
+
+        # 백그라운드 작업이 정황을 저장한 상황을 재현한다.
+        ChatSessionRepository(self.session).add_fraud_circumstance(
+            self.chat_session,
+            circumstance_code=CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
+            evidence="검찰이라고 전화가 왔어요",
+            source_answer=self.session.get(
+                ChatAnswer, first_turn.pending_extraction.answer_id
             ),
         )
-        pipeline.handle_message("검찰이라고 전화가 왔어요")
-
-        # WANT_END(상담 종료) 전, 정황이 추출된 직후에 이미 점수가 갱신되어 있어야 한다.
-        scores_after_extraction = self.session.exec(
-            select(FraudTypeScoreAfterChat)
-        ).all()
-        self.assertEqual(len(scores_after_extraction), 1)
-        self.assertGreater(
-            scores_after_extraction[0].type_scores[VOICE_PHISHING], 0
-        )
+        self.session.commit()
 
         result = pipeline.handle_message("종료할게요")
 
@@ -481,7 +422,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         self.assertEqual(result.status, ChatSessionStatus.DONE)
         self.assertIsNotNone(self.chat_session.completed_at)
 
-        # 거래당 한 행을 유지하며 최종값도 같은 갱신 결과다(증분 집계가 아니다).
+        # 거래당 한 행을 유지하며 정황 전체를 다시 읽어 집계한다(증분 가산이 아니다).
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
         self.assertEqual(len(scores), 1)
         self.assertEqual(len(scores[0].type_scores), 4)
@@ -497,6 +438,15 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
         self.assertEqual(len(scores), 1)
         self.assertEqual(set(scores[0].type_scores.values()), {0})
+
+    def test_want_end_does_not_schedule_extraction(self) -> None:
+        pipeline = self._start_chat(
+            evaluator=FakeEvaluator(AnswerQualityVerdict.WANT_END)
+        )
+
+        result = pipeline.handle_message("그만할래요")
+
+        self.assertIsNone(result.pending_extraction)
 
     def test_want_end_does_not_adopt_the_answer(self) -> None:
         pipeline = self._start_chat(
