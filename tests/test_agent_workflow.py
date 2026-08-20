@@ -350,6 +350,47 @@ class AgentWorkflowTest(unittest.TestCase):
         self.assertEqual(policy_repository.requested_fraud_type, "MESSENGER_PHISHING")
         self.assertEqual(guide_search.last_request.fraud_type, "MESSENGER_PHISHING")
 
+    def test_no_rule_evidence_uses_unclassified_plan_without_similar_search(self) -> None:
+        rule_result = FraudTypeScoreResultDTO(
+            fraud_type_score_result_id=7,
+            rule_filter_status=RuleFilterStatus.APPLIED,
+            primary_fraud_type=None,
+            type_scores={
+                "VOICE_PHISHING": 0.0,
+                "MESSENGER_PHISHING": 0.0,
+                "ACCOUNT_TAKEOVER": 0.0,
+                "FRAUD_USED_ACCOUNT": 0.0,
+            },
+            matched_components=[],
+        )
+        investigator = FakeInvestigator("ACCOUNT_TAKEOVER")
+        policy_repository = FakePolicyRepository()
+        guide_search = FakeGuideSearchService()
+        finder = FakeDashboardSimilarCaseFinder()
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(rule_result),  # type: ignore[arg-type]
+            policy_repository=policy_repository,
+            guide_search_service=guide_search,  # type: ignore[arg-type]
+            investigator=investigator,
+            dashboard_similar_case_finder=finder,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(
+            response.investigation_result.classification_status,
+            ClassificationStatus.UNCLASSIFIED,
+        )
+        self.assertEqual(
+            response.response_result.applied_fraud_type,
+            "UNCLASSIFIED",
+        )
+        self.assertEqual(response.similar_case_results, [])
+        self.assertEqual(investigator.call_count, 0)
+        self.assertEqual(finder.call_count, 0)
+        self.assertIsNone(policy_repository.requested_fraud_type)
+        self.assertIsNone(guide_search.last_request)
+
     def test_existing_case_returns_without_running_followup_nodes(self) -> None:
         case_service = FakeCaseService(
             self._rule_result(0.80, 0.40),

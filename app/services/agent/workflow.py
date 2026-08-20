@@ -9,14 +9,20 @@ from typing import Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.domain.agent_status import ClassificationStatus, InvestigationStatus
+from app.domain.agent_status import (
+    ClassificationStatus,
+    InformationStatus,
+    InvestigationStatus,
+)
 from app.domain.response_policy import PolicyRepository, ResponsePolicy
 from app.dto.agent import (
     AgentInputDTO,
     AgentResponseDTO,
+    ChecklistItemDTO,
     FraudAlertEmailCommand,
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
+    RecommendedActionDTO,
     ResponsePlanDTO,
     SimilarCaseResultDTO,
 )
@@ -189,6 +195,9 @@ class AgentWorkflow:
         graph.add_node("investigate_type", self._safe(self._investigate_type))
         graph.add_node("build_email_command", self._safe(self._build_email_command))
         graph.add_node("send_alert_email", self._send_alert_email)
+        graph.add_node(
+            "build_unclassified_plan", self._safe(self._build_unclassified_plan)
+        )
         graph.add_node("load_policy", self._safe(self._load_policy))
         graph.add_node("search_guides", self._safe(self._search_guides))
         graph.add_node("generate_plan", self._safe(self._generate_plan))
@@ -209,11 +218,15 @@ class AgentWorkflow:
         self._add_failure_route(graph, "build_email_command", "send_alert_email")
         graph.add_conditional_edges(
             "send_alert_email",
-            self._route_by_confidence,
+            self._route_after_email,
             {
                 "confident": "use_rule_type",
                 "ambiguous": "investigate_type",
+                "unclassified": "build_unclassified_plan",
             },
+        )
+        self._add_failure_route(
+            graph, "build_unclassified_plan", "complete_case"
         )
         self._add_failure_route(graph, "use_rule_type", "load_policy")
         self._add_failure_route(graph, "investigate_type", "load_policy")
@@ -302,6 +315,57 @@ class AgentWorkflow:
             "investigation_result": result,
             "applied_fraud_type": applied_type,
             "investigation_metrics": metrics,
+        }
+
+    @staticmethod
+    def _build_unclassified_plan(state: AgentGraphState) -> dict[str, object]:
+        """Rule 근거가 없는 ML 이상거래에는 유형별 정책을 적용하지 않는다."""
+
+        confidence = state["type_confidence"]
+        return {
+            "applied_fraud_type": "UNCLASSIFIED",
+            "investigation_result": InvestigationResultDTO(
+                classification_status=ClassificationStatus.UNCLASSIFIED,
+                score_margin=confidence.score_margin,
+                investigation_status=InvestigationStatus.NOT_REQUIRED,
+                recommended_fraud_type=None,
+                recommendation_reason=(
+                    "적중한 Rule 근거가 없어 특정 사기 유형을 적용하지 않았다."
+                ),
+                best_similarity_score=None,
+                common_evidence_codes=[],
+                confirmed_case_count=0,
+            ),
+            "retrieved_guides": [],
+            "similar_case_results": [],
+            "response_plan": ResponsePlanDTO(
+                applied_fraud_type="UNCLASSIFIED",
+                information_status=InformationStatus.INSUFFICIENT,
+                summary=(
+                    "ML 이상거래로 탐지되었지만 유형별 Rule 근거가 없어 "
+                    "유형 미분류 상태로 담당자 검토가 필요한 사건이다."
+                ),
+                recommended_actions=[
+                    RecommendedActionDTO(
+                        priority=1,
+                        action_code="ESCALATE_MONITORING_REVIEW",
+                        action="담당자에게 거래 정황 재검토를 요청한다.",
+                        reason="특정 사기 유형을 뒷받침하는 Rule 근거가 없다.",
+                        required=True,
+                        procedure_steps=[],
+                        cautions=[
+                            "유형별 대응 가이드를 확정된 사실처럼 적용하지 않는다."
+                        ],
+                    )
+                ],
+                checklist=[
+                    ChecklistItemDTO(
+                        item_code="CHECK_RULE_EVIDENCE",
+                        label="유형별 Rule 근거 및 원본 거래 정황 재확인",
+                        required=True,
+                    )
+                ],
+            ),
         }
 
     @staticmethod
@@ -428,9 +492,7 @@ class AgentWorkflow:
             response_result=state["response_plan"],
             generation_metadata={
                 "workflow_version": "1.0",
-                "classification_status": state[
-                    "type_confidence"
-                ].classification_status.value,
+                "classification_status": state["investigation_result"].classification_status.value,
                 "retrieved_guide_count": len(state["retrieved_guides"]),
                 **metrics,
             },
@@ -483,7 +545,14 @@ class AgentWorkflow:
         return "continue"
 
     @staticmethod
-    def _route_by_confidence(state: AgentGraphState) -> str:
+    def _route_after_email(state: AgentGraphState) -> str:
+        rule_result = state["rule_result"]
+        if (
+            rule_result.primary_fraud_type is None
+            and not rule_result.matched_components
+            and not any(rule_result.type_scores.values())
+        ):
+            return "unclassified"
         status = state["type_confidence"].classification_status
         return (
             "ambiguous"
