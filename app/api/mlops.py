@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import UTC, date, datetime, timedelta
-from pathlib import PurePosixPath
 from time import perf_counter
 from typing import Annotated, Any
 
@@ -109,6 +108,7 @@ DATASET_VERSION_DIRECTORY = "versions"
 
 
 def _new_labeled_dataset_target(
+    version_number: int,
     period_start: date,
     period_end: date,
     normal_count: int,
@@ -117,11 +117,10 @@ def _new_labeled_dataset_target(
     """기간과 라벨 수를 이름에 넣어 DB 컬럼 없이도 다시 표시한다."""
 
     source = parse_gcs_uri(MLOPS_BASE_DATASET_URI)
-    source_name = PurePosixPath(source.name).stem
     created_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     period = f"{period_start:%Y%m%d}-{period_end:%Y%m%d}"
     version = (
-        f"{source_name}-labeled-{period}"
+        f"train_v{version_number}-labeled-{period}"
         f"-n{normal_count}-f{fraud_count}-{created_at}"
     )
     gcs_uri = f"gs://{source.bucket}/{DATASET_VERSION_DIRECTORY}/{version}.csv"
@@ -357,20 +356,30 @@ def build_labeled_dataset_version(
     if summary.labeled_count == 0:
         raise HTTPException(status_code=422, detail="반영할 확정 거래 라벨이 없습니다.")
 
+    # DB가 부여하는 ID를 v1, v2 버전 번호로 사용한다.
+    reservation = secrets.token_hex(8)
+    source = parse_gcs_uri(MLOPS_BASE_DATASET_URI)
+    dataset = DatasetVersion(
+        version=f"pending-{reservation}",
+        gcs_uri=(
+            f"gs://{source.bucket}/{DATASET_VERSION_DIRECTORY}/"
+            f"pending-{reservation}.csv"
+        ),
+        row_count=0,
+    )
+    session.add(dataset)
+    session.flush()
+    assert dataset.id is not None
+
     version, gcs_uri = _new_labeled_dataset_target(
+        dataset.id,
         payload.period_start,
         payload.period_end,
         summary.normal_count,
         summary.fraud_count,
     )
-    existing_version = session.exec(
-        select(DatasetVersion).where(DatasetVersion.version == version)
-    ).first()
-    if existing_version is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="이미 존재하는 데이터셋 버전입니다.",
-        )
+    dataset.version = version
+    dataset.gcs_uri = gcs_uri
 
     try:
         result = builder.build(
@@ -380,16 +389,13 @@ def build_labeled_dataset_version(
             period_end=payload.period_end,
         )
     except DatasetStorageError as exc:
+        session.rollback()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except DatasetBuildError as exc:
+        session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    dataset = DatasetVersion(
-        version=version,
-        gcs_uri=gcs_uri,
-        row_count=result.output_row_count,
-    )
-    session.add(dataset)
+    dataset.row_count = result.output_row_count
     try:
         session.commit()
     except IntegrityError as exc:

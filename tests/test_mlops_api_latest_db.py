@@ -153,7 +153,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         created = response.json()
         self.assertRegex(
             created["version"],
-            r"^train1-labeled-20260801-20260831-n9-f3-\d{8}T\d{6}Z$",
+            r"^train_v1-labeled-20260801-20260831-n9-f3-\d{8}T\d{6}Z$",
         )
         self.assertEqual(
             created["gcs_uri"],
@@ -170,6 +170,43 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(created["period_end"], "2026-08-31")
         self.assertEqual(created["period_normal_count"], 9)
         self.assertEqual(created["period_fraud_count"], 3)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_dataset_build_increments_version_number(self) -> None:
+        with Session(self.engine) as session:
+            session.add(
+                DatasetVersion(
+                    version="legacy-dataset",
+                    gcs_uri="gs://bucket/legacy.csv",
+                    row_count=100,
+                )
+            )
+            session.commit()
+
+        self.dataset_builder.label_summary.return_value = DatasetLabelSummary(
+            normal_count=1,
+            fraud_count=1,
+        )
+        self.dataset_builder.build.return_value = DatasetBuildResult(
+            source_row_count=100,
+            output_row_count=102,
+            confirmed_label_count=2,
+            appended_label_count=2,
+            normal_count=1,
+            fraud_count=1,
+        )
+
+        response = self.client.post(
+            "/mlops/datasets/build",
+            headers=self.headers,
+            json={"period_start": "2026-08-01", "period_end": "2026-08-20"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertRegex(
+            response.json()["version"],
+            r"^train_v2-labeled-20260801-20260820-n1-f1-\d{8}T\d{6}Z$",
+        )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_dataset_preview_returns_period_label_counts(self) -> None:
