@@ -1,8 +1,9 @@
-"""Cloud Monitoring에서 ML Serving의 운영 지표를 조회한다."""
+"""Cloud Monitoring에서 모델 운영에 필요한 서버 지표를 조회한다."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from threading import Lock
@@ -17,17 +18,28 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from app.core.config import (
     CLOUD_RUN_ADMIN_TIMEOUT_SECONDS,
     CLOUD_RUN_SERVING_SERVICE,
+    CLOUD_RUN_TRAINING_JOB,
     GCP_PROJECT_ID,
     GCP_REGION,
 )
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
-ALIGNMENT_SECONDS = 60
-MONITORING_DATA_DELAY_SECONDS = 120
+CLOUD_RUN_DATA_DELAY_SECONDS = 120
+COMPUTE_DATA_DELAY_SECONDS = 240
+GCE_METADATA_URL = "http://metadata.google.internal/computeMetadata/v1"
 
 
 class CloudMonitoringError(RuntimeError):
     """Cloud Monitoring 인증 또는 시계열 조회 실패."""
+
+
+@dataclass(frozen=True)
+class GceInstanceIdentity:
+    """현재 Backend가 실행 중인 Compute Engine VM 식별자."""
+
+    instance_id: str
+    instance_name: str
+    zone: str
 
 
 class MonitoringAccessTokenProvider:
@@ -59,8 +71,46 @@ def _monitoring_access_token_provider() -> MonitoringAccessTokenProvider:
     return MonitoringAccessTokenProvider()
 
 
+@lru_cache
+def _gce_instance_identity() -> GceInstanceIdentity:
+    """운영 VM의 메타데이터는 한 번만 읽어 이후 지표 조회에 재사용한다."""
+
+    headers = {"Metadata-Flavor": "Google"}
+
+    def read(path: str) -> str:
+        try:
+            response = httpx.get(
+                f"{GCE_METADATA_URL}/{path}",
+                headers=headers,
+                timeout=2,
+            )
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+            raise CloudMonitoringError(
+                "운영 VM 정보를 확인하지 못했습니다."
+            ) from exc
+        return response.text.strip()
+
+    zone = read("instance/zone").rsplit("/", 1)[-1]
+    return GceInstanceIdentity(
+        instance_id=read("instance/id"),
+        instance_name=read("instance/name"),
+        zone=zone,
+    )
+
+
+def monitoring_alignment_seconds(window_minutes: int) -> int:
+    """긴 조회에서도 차트 점 수가 과도하게 늘어나지 않도록 묶는다."""
+
+    if window_minutes <= 60:
+        return 60
+    if window_minutes <= 360:
+        return 300
+    return 900
+
+
 class CloudMonitoringClient:
-    """Cloud Run ML Serving의 최근 시계열을 1분 단위로 정리한다."""
+    """Serving, Training Job, 운영 VM의 시계열을 같은 형식으로 조회한다."""
 
     def __init__(
         self,
@@ -68,18 +118,24 @@ class CloudMonitoringClient:
         project_id: str = GCP_PROJECT_ID,
         region: str = GCP_REGION,
         serving_service: str = CLOUD_RUN_SERVING_SERVICE,
+        training_job: str = CLOUD_RUN_TRAINING_JOB,
         timeout_seconds: float = CLOUD_RUN_ADMIN_TIMEOUT_SECONDS,
         token_provider: Callable[[], str] | None = None,
+        instance_identity_provider: Callable[[], GceInstanceIdentity] | None = None,
         api_base_url: str = "https://monitoring.googleapis.com/v3",
         http_client: httpx.Client | None = None,
     ) -> None:
-        if not project_id or not region or not serving_service:
+        if not project_id or not region or not serving_service or not training_job:
             raise ValueError("Cloud Monitoring 조회 설정이 비어 있습니다.")
         self.project_id = project_id
         self.region = region
         self.serving_service = serving_service
+        self.training_job = training_job
         self.timeout_seconds = timeout_seconds
         self._token_provider = token_provider or _monitoring_access_token_provider()
+        self._instance_identity_provider = (
+            instance_identity_provider or _gce_instance_identity
+        )
         self.api_base_url = api_base_url.rstrip("/")
         self._http_client = http_client
 
@@ -91,17 +147,22 @@ class CloudMonitoringClient:
         self,
         *,
         metric_type: str,
+        resource_type: str,
+        resource_labels: dict[str, str],
         start: datetime,
         end: datetime,
+        alignment_seconds: int,
         aligner: str,
         reducer: str,
         metric_label_filter: str | None = None,
     ) -> list[dict[str, Any]]:
         filters = [
             f'metric.type = "{metric_type}"',
-            'resource.type = "cloud_run_revision"',
-            f'resource.labels.service_name = "{self.serving_service}"',
-            f'resource.labels.location = "{self.region}"',
+            f'resource.type = "{resource_type}"',
+            *[
+                f'resource.labels.{name} = "{value}"'
+                for name, value in resource_labels.items()
+            ],
         ]
         if metric_label_filter:
             filters.append(metric_label_filter)
@@ -109,7 +170,7 @@ class CloudMonitoringClient:
             "filter": " AND ".join(filters),
             "interval.startTime": start.isoformat().replace("+00:00", "Z"),
             "interval.endTime": end.isoformat().replace("+00:00", "Z"),
-            "aggregation.alignmentPeriod": f"{ALIGNMENT_SECONDS}s",
+            "aggregation.alignmentPeriod": f"{alignment_seconds}s",
             "aggregation.perSeriesAligner": aligner,
             "aggregation.crossSeriesReducer": reducer,
             "view": "FULL",
@@ -146,6 +207,11 @@ class CloudMonitoringClient:
         return points[-1]["value"] if points else None
 
     @staticmethod
+    def _latest_timestamp(*series: list[dict[str, Any]]) -> str | None:
+        timestamps = [points[-1]["timestamp"] for points in series if points]
+        return max(timestamps) if timestamps else None
+
+    @staticmethod
     def _percent_points(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
             {"timestamp": point["timestamp"], "value": point["value"] * 100}
@@ -170,12 +236,26 @@ class CloudMonitoringClient:
             for point in requests
         ]
 
-    def get_serving_metrics(self, window_minutes: int) -> dict[str, Any]:
-        """지정 구간의 Cloud Run 운영 지표와 최신 값을 반환한다."""
-
+    @staticmethod
+    def _window(window_minutes: int) -> tuple[datetime, datetime, int]:
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=window_minutes)
-        common = {"start": start, "end": end}
+        return start, end, monitoring_alignment_seconds(window_minutes)
+
+    def get_serving_metrics(self, window_minutes: int) -> dict[str, Any]:
+        """Cloud Run Serving의 요청과 응답 자원 지표를 반환한다."""
+
+        start, end, alignment_seconds = self._window(window_minutes)
+        common = {
+            "resource_type": "cloud_run_revision",
+            "resource_labels": {
+                "service_name": self.serving_service,
+                "location": self.region,
+            },
+            "start": start,
+            "end": end,
+            "alignment_seconds": alignment_seconds,
+        }
         requests = self._query_points(
             metric_type="run.googleapis.com/request_count",
             aligner="ALIGN_SUM",
@@ -189,8 +269,20 @@ class CloudMonitoringClient:
             metric_label_filter='metric.labels.response_code_class = "5xx"',
             **common,
         )
-        latency = self._query_points(
+        p95_latency = self._query_points(
             metric_type="run.googleapis.com/request_latencies",
+            aligner="ALIGN_PERCENTILE_95",
+            reducer="REDUCE_PERCENTILE_95",
+            **common,
+        )
+        p99_latency = self._query_points(
+            metric_type="run.googleapis.com/request_latencies",
+            aligner="ALIGN_PERCENTILE_99",
+            reducer="REDUCE_PERCENTILE_99",
+            **common,
+        )
+        pending_latency = self._query_points(
+            metric_type="run.googleapis.com/request_latency/pending",
             aligner="ALIGN_PERCENTILE_95",
             reducer="REDUCE_PERCENTILE_95",
             **common,
@@ -226,40 +318,189 @@ class CloudMonitoringClient:
             )
         )
         error_rates = self._error_rate_points(requests, errors)
-        latest_timestamps = [
-            points[-1]["timestamp"]
-            for points in (requests, latency, active_instances, cpu, memory)
-            if points
-        ]
         request_count = sum(point["value"] for point in requests)
         error_count = sum(point["value"] for point in errors)
 
         return {
             "window_minutes": window_minutes,
-            "alignment_seconds": ALIGNMENT_SECONDS,
-            "data_delay_seconds": MONITORING_DATA_DELAY_SECONDS,
+            "alignment_seconds": alignment_seconds,
+            "data_delay_seconds": CLOUD_RUN_DATA_DELAY_SECONDS,
             "service_name": self.serving_service,
             "region": self.region,
             "queried_at": end,
-            "latest_sample_at": max(latest_timestamps) if latest_timestamps else None,
+            "latest_sample_at": self._latest_timestamp(
+                requests,
+                p95_latency,
+                active_instances,
+                cpu,
+                memory,
+            ),
             "summary": {
                 "request_count": round(request_count),
                 "error_rate_percent": (
                     error_count / request_count * 100 if request_count else 0
                 ),
-                "p95_latency_ms": self._latest(latency),
+                "p95_latency_ms": self._latest(p95_latency),
+                "p99_latency_ms": self._latest(p99_latency),
+                "pending_p95_latency_ms": self._latest(pending_latency),
                 "active_instances": self._latest(active_instances),
                 "idle_instances": self._latest(idle_instances),
                 "cpu_utilization_percent": self._latest(cpu),
                 "memory_utilization_percent": self._latest(memory),
             },
             "series": {
-                "requests_per_minute": requests,
+                "request_count": requests,
                 "error_rate_percent": error_rates,
-                "p95_latency_ms": latency,
+                "p95_latency_ms": p95_latency,
+                "p99_latency_ms": p99_latency,
+                "pending_p95_latency_ms": pending_latency,
                 "active_instances": active_instances,
                 "cpu_utilization_percent": cpu,
                 "memory_utilization_percent": memory,
+            },
+        }
+
+    def get_training_metrics(self, window_minutes: int) -> dict[str, Any]:
+        """Cloud Run Training Job의 실행 수와 자원 사용량을 반환한다."""
+
+        start, end, alignment_seconds = self._window(window_minutes)
+        common = {
+            "resource_type": "cloud_run_job",
+            "resource_labels": {
+                "job_name": self.training_job,
+                "location": self.region,
+            },
+            "start": start,
+            "end": end,
+            "alignment_seconds": alignment_seconds,
+        }
+        running = self._query_points(
+            metric_type="run.googleapis.com/job/running_executions",
+            aligner="ALIGN_MAX",
+            reducer="REDUCE_MAX",
+            **common,
+        )
+        completed = self._query_points(
+            metric_type="run.googleapis.com/job/completed_execution_count",
+            aligner="ALIGN_SUM",
+            reducer="REDUCE_SUM",
+            **common,
+        )
+        cpu = self._percent_points(
+            self._query_points(
+                metric_type="run.googleapis.com/container/cpu/utilizations",
+                aligner="ALIGN_PERCENTILE_50",
+                reducer="REDUCE_MEAN",
+                **common,
+            )
+        )
+        memory = self._percent_points(
+            self._query_points(
+                metric_type="run.googleapis.com/container/memory/utilizations",
+                aligner="ALIGN_PERCENTILE_50",
+                reducer="REDUCE_MEAN",
+                **common,
+            )
+        )
+        billable_time = self._query_points(
+            metric_type="run.googleapis.com/container/billable_instance_time",
+            aligner="ALIGN_SUM",
+            reducer="REDUCE_SUM",
+            **common,
+        )
+
+        return {
+            "window_minutes": window_minutes,
+            "alignment_seconds": alignment_seconds,
+            "data_delay_seconds": CLOUD_RUN_DATA_DELAY_SECONDS,
+            "job_name": self.training_job,
+            "region": self.region,
+            "queried_at": end,
+            "latest_sample_at": self._latest_timestamp(
+                running,
+                completed,
+                cpu,
+                memory,
+                billable_time,
+            ),
+            "summary": {
+                "running_executions": self._latest(running),
+                "completed_executions": round(
+                    sum(point["value"] for point in completed)
+                ),
+                "cpu_utilization_percent": self._latest(cpu),
+                "memory_utilization_percent": self._latest(memory),
+                "billable_instance_seconds": round(
+                    sum(point["value"] for point in billable_time),
+                    1,
+                ),
+            },
+            "series": {
+                "running_executions": running,
+                "completed_executions": completed,
+                "cpu_utilization_percent": cpu,
+                "memory_utilization_percent": memory,
+                "billable_instance_seconds": billable_time,
+            },
+        }
+
+    def get_platform_metrics(self, window_minutes: int) -> dict[str, Any]:
+        """Backend가 실행 중인 VM의 CPU·메모리·디스크 지표를 반환한다."""
+
+        identity = self._instance_identity_provider()
+        start, end, alignment_seconds = self._window(window_minutes)
+        common = {
+            "resource_type": "gce_instance",
+            "resource_labels": {
+                "instance_id": identity.instance_id,
+                "zone": identity.zone,
+            },
+            "start": start,
+            "end": end,
+            "alignment_seconds": alignment_seconds,
+        }
+        cpu = self._percent_points(
+            self._query_points(
+                metric_type="compute.googleapis.com/instance/cpu/utilization",
+                aligner="ALIGN_MEAN",
+                reducer="REDUCE_MEAN",
+                **common,
+            )
+        )
+        memory = self._query_points(
+            metric_type="agent.googleapis.com/memory/percent_used",
+            aligner="ALIGN_MEAN",
+            reducer="REDUCE_MAX",
+            metric_label_filter='metric.labels.state = "used"',
+            **common,
+        )
+        disk = self._query_points(
+            metric_type="agent.googleapis.com/disk/percent_used",
+            aligner="ALIGN_MEAN",
+            reducer="REDUCE_MAX",
+            metric_label_filter='metric.labels.state = "used"',
+            **common,
+        )
+
+        return {
+            "window_minutes": window_minutes,
+            "alignment_seconds": alignment_seconds,
+            "data_delay_seconds": COMPUTE_DATA_DELAY_SECONDS,
+            "instance_id": identity.instance_id,
+            "instance_name": identity.instance_name,
+            "zone": identity.zone,
+            "queried_at": end,
+            "latest_sample_at": self._latest_timestamp(cpu, memory, disk),
+            "ops_agent_available": bool(memory or disk),
+            "summary": {
+                "cpu_utilization_percent": self._latest(cpu),
+                "memory_utilization_percent": self._latest(memory),
+                "disk_utilization_percent": self._latest(disk),
+            },
+            "series": {
+                "cpu_utilization_percent": cpu,
+                "memory_utilization_percent": memory,
+                "disk_utilization_percent": disk,
             },
         }
 
@@ -278,5 +519,7 @@ __all__ = [
     "CloudMonitoringClient",
     "CloudMonitoringClientDep",
     "CloudMonitoringError",
+    "GceInstanceIdentity",
     "get_cloud_monitoring_client",
+    "monitoring_alignment_seconds",
 ]

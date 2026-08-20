@@ -198,6 +198,8 @@ class ServingMonitoringSummaryResponse(StrictMLOpsDTO):
     request_count: int
     error_rate_percent: float
     p95_latency_ms: float | None
+    p99_latency_ms: float | None
+    pending_p95_latency_ms: float | None
     active_instances: float | None
     idle_instances: float | None
     cpu_utilization_percent: float | None
@@ -205,9 +207,11 @@ class ServingMonitoringSummaryResponse(StrictMLOpsDTO):
 
 
 class ServingMonitoringSeriesResponse(StrictMLOpsDTO):
-    requests_per_minute: list[MonitoringPointResponse]
+    request_count: list[MonitoringPointResponse]
     error_rate_percent: list[MonitoringPointResponse]
     p95_latency_ms: list[MonitoringPointResponse]
+    p99_latency_ms: list[MonitoringPointResponse]
+    pending_p95_latency_ms: list[MonitoringPointResponse]
     active_instances: list[MonitoringPointResponse]
     cpu_utilization_percent: list[MonitoringPointResponse]
     memory_utilization_percent: list[MonitoringPointResponse]
@@ -225,6 +229,87 @@ class ServingMonitoringResponse(StrictMLOpsDTO):
     latest_sample_at: datetime | None
     summary: ServingMonitoringSummaryResponse
     series: ServingMonitoringSeriesResponse
+
+
+class TrainingMonitoringSummaryResponse(StrictMLOpsDTO):
+    running_executions: float | None
+    completed_executions: int
+    cpu_utilization_percent: float | None
+    memory_utilization_percent: float | None
+    billable_instance_seconds: float
+
+
+class TrainingMonitoringSeriesResponse(StrictMLOpsDTO):
+    running_executions: list[MonitoringPointResponse]
+    completed_executions: list[MonitoringPointResponse]
+    cpu_utilization_percent: list[MonitoringPointResponse]
+    memory_utilization_percent: list[MonitoringPointResponse]
+    billable_instance_seconds: list[MonitoringPointResponse]
+
+
+class TrainingMonitoringResponse(StrictMLOpsDTO):
+    """Cloud Monitoring에서 조회한 Cloud Run Training Job 지표."""
+
+    window_minutes: int
+    alignment_seconds: int
+    data_delay_seconds: int
+    job_name: str
+    region: str
+    queried_at: datetime
+    latest_sample_at: datetime | None
+    summary: TrainingMonitoringSummaryResponse
+    series: TrainingMonitoringSeriesResponse
+
+
+class PlatformMonitoringSummaryResponse(StrictMLOpsDTO):
+    cpu_utilization_percent: float | None
+    memory_utilization_percent: float | None
+    disk_utilization_percent: float | None
+
+
+class PlatformMonitoringSeriesResponse(StrictMLOpsDTO):
+    cpu_utilization_percent: list[MonitoringPointResponse]
+    memory_utilization_percent: list[MonitoringPointResponse]
+    disk_utilization_percent: list[MonitoringPointResponse]
+
+
+class PlatformMonitoringResponse(StrictMLOpsDTO):
+    """Backend가 실행 중인 Compute Engine VM의 운영 지표."""
+
+    window_minutes: int
+    alignment_seconds: int
+    data_delay_seconds: int
+    instance_id: str
+    instance_name: str
+    zone: str
+    queried_at: datetime
+    latest_sample_at: datetime | None
+    ops_agent_available: bool
+    summary: PlatformMonitoringSummaryResponse
+    series: PlatformMonitoringSeriesResponse
+
+
+class PlatformStatusResponse(StrictMLOpsDTO):
+    backend_status: Literal["UP"] = "UP"
+    database_status: Literal["UP", "DOWN"]
+    database_latency_ms: float | None
+
+
+class TrainingExecutionResponse(StrictMLOpsDTO):
+    """학습 Run과 연결된 Cloud Run Execution의 핵심 상태."""
+
+    name: str
+    outcome: Literal["RUNNING", "SUCCEEDED", "FAILED", "UNKNOWN"]
+    create_time: datetime | None
+    start_time: datetime | None
+    completion_time: datetime | None
+    running_count: int
+    succeeded_count: int
+    failed_count: int
+    cancelled_count: int
+    retried_count: int
+    log_uri: str | None
+    failure_reason: str | None
 
 
 class CloudRunOperationResponse(BaseModel):
@@ -273,6 +358,10 @@ __all__ = [
     "MLflowModelDetails",
     "ModelPromotionRequest",
     "MonitoringPointResponse",
+    "PlatformMonitoringResponse",
+    "PlatformMonitoringSeriesResponse",
+    "PlatformMonitoringSummaryResponse",
+    "PlatformStatusResponse",
     "ServingMonitoringResponse",
     "ServingMonitoringSeriesResponse",
     "ServingMonitoringSummaryResponse",
@@ -280,6 +369,10 @@ __all__ = [
     "TrainingDecisionRequest",
     "TrainingResultRequest",
     "TrainingResultStatus",
+    "TrainingExecutionResponse",
+    "TrainingMonitoringResponse",
+    "TrainingMonitoringSeriesResponse",
+    "TrainingMonitoringSummaryResponse",
     "TrainingRunRequest",
     "TrainingRunResponse",
     "TrainingRunStartResponse",
