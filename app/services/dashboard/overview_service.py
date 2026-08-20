@@ -17,13 +17,16 @@ from app.repositories.dashboard_overview import (
     DashboardOverviewRepository,
     DashboardSuspiciousRow,
 )
+from app.repositories.dashboard_insight import DashboardInsightRepository
 
 class DashboardOverviewService:
     def __init__(
         self,
-        repository: DashboardOverviewRepository
+        repository: DashboardOverviewRepository,
+        insight_repository: DashboardInsightRepository,
     ) -> None:
         self.repository = repository
+        self.insight_repository = insight_repository
 
     # 메인화면 맨 위 카드 값들임
     def get_overview(
@@ -53,8 +56,11 @@ class DashboardOverviewService:
             period_end=period_end,
         )
 
-        # 대시보드 에이전트 최근 분석 값
-        latest_insight = self.repository.get_latest_agent_insight()
+        # 현재 조회 기간과 일치하는 대시보드 에이전트 분석 값
+        latest_insight = self.insight_repository.get_latest_for_period(
+            period_start=period_start,
+            period_end=period_end,
+        )
 
         return DashboardOverviewResponse(
             period=DashboardOverviewPeriod(

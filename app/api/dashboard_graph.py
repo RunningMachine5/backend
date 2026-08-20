@@ -16,6 +16,7 @@ from app.dto.dashboard import DashboardOverviewResponse
 from app.repositories.dashboard_overview import (
     DashboardOverviewRepository,
 )
+from app.repositories.dashboard_insight import DashboardInsightRepository
 from app.services.dashboard.overview_service import (
     DashboardOverviewService,
 )
@@ -79,7 +80,11 @@ def get_dashboard_overview(
     period_end: datetime = Query(...),
 ) -> ApiResponse[DashboardOverviewResponse]:
     repository = DashboardOverviewRepository(session)
-    service = DashboardOverviewService(repository)
+    insight_repository = DashboardInsightRepository(session)
+    service = DashboardOverviewService(
+        repository,
+        insight_repository,
+    )
 
     try:
         overview = service.get_overview(

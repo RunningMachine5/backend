@@ -14,7 +14,7 @@ from sqlalchemy import func
 
 from app.data.model.transaction import Transaction
 from app.data.model.fraud_rule import FraudTypeScoreResult
-from app.data.model.agent import AgentDashboardInsight, AgentCase
+from app.data.model.agent import AgentCase
 
 # 프론트 응답 DTO 아니고, 내부 전달용 row 객체
 @dataclass(frozen=True)
@@ -127,15 +127,3 @@ class DashboardOverviewRepository:
         )
             for transaction, score_result, agent_case in rows
         ]
-
-    # 가장 최근 생성된 대시보드 에이전트 인사이트 1개 가져오기
-    def get_latest_agent_insight(
-            self,
-    ) -> AgentDashboardInsight | None:
-        statement = (
-            select(AgentDashboardInsight)
-            .order_by(AgentDashboardInsight.created_at.desc())
-            .limit(1)
-        )
-
-        return self.session.exec(statement).first()

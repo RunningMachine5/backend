@@ -63,6 +63,23 @@ class GuideSearchEvaluationReport:
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
+    def to_csv_rows(self) -> list[dict[str, object]]:
+        """검색 전략·유형별 집계 지표를 CSV 행으로 변환한다."""
+        rows = [
+            _metrics_to_row(scope="ALL", strategy="BASELINE", metrics=self.baseline),
+            _metrics_to_row(scope="ALL", strategy="FILTERED", metrics=self.filtered),
+        ]
+        for fraud_type, metrics_by_strategy in self.by_fraud_type.items():
+            for strategy, metrics in metrics_by_strategy.items():
+                rows.append(
+                    _metrics_to_row(
+                        scope=fraud_type,
+                        strategy=strategy.upper(),
+                        metrics=metrics,
+                    )
+                )
+        return rows
+
 
 class _EvaluationCaseSchema(BaseModel):
     model_config = ConfigDict(
@@ -226,6 +243,15 @@ def _unique_document_ids(results: list[RetrievedGuideChunkDTO]) -> list[str]:
     """같은 문서의 여러 Chunk가 평가 순위를 중복 점유하지 않게 한다."""
 
     return list(dict.fromkeys(result.document_id for result in results))
+
+
+def _metrics_to_row(
+    *,
+    scope: str,
+    strategy: str,
+    metrics: RetrievalMetrics,
+) -> dict[str, object]:
+    return {"scope": scope, "strategy": strategy, **asdict(metrics)}
 
 
 __all__ = [

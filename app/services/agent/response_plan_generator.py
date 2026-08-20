@@ -263,6 +263,8 @@ class RagResponsePlanGenerator:
         return sha256(serialized.encode("utf-8")).hexdigest()
 
     def _get_cached(self, cache_key: str) -> ResponsePlanDTO | None:
+        if self.cache_size <= 0:
+            return None
         with self._cache_lock:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -270,6 +272,8 @@ class RagResponsePlanGenerator:
             return cached
 
     def _store_cached(self, cache_key: str, plan: ResponsePlanDTO) -> None:
+        if self.cache_size <= 0:
+            return
         with self._cache_lock:
             self._cache[cache_key] = plan
             self._cache.move_to_end(cache_key)

@@ -4,6 +4,7 @@
 from datetime import datetime
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlmodel import Session, select
 
 from app.data.model.agent import (
@@ -15,6 +16,7 @@ from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.transaction import Transaction
 from app.dto.dashboard_insight import (
     DashboardInsightChartSpec,
+    DashboardInsightPeriod,
     DashboardInsightSourceRecord,
 )
 
@@ -102,6 +104,38 @@ class DashboardInsightRepository:
         )
 
         return self.session.exec(statement).first()
+
+    def get_latest_for_period(
+        self,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> AgentDashboardInsight | None:
+        """요청 기간과 정확히 일치하는 최신 insight를 조회한다."""
+        statement = (
+            select(AgentDashboardInsight)
+            .order_by(AgentDashboardInsight.created_at.desc())
+        )
+
+        insights = self.session.exec(statement).all()
+
+        for insight in insights:
+            if insight.chart_spec is None:
+                continue
+
+            try:
+                period = DashboardInsightPeriod.model_validate(
+                    insight.chart_spec.get("period")
+                )
+            except ValidationError:
+                continue
+
+            if (
+                period.current_start == period_start
+                and period.current_end == period_end
+            ):
+                return insight
+
+        return None
 
     @staticmethod
     def _to_source_record(
