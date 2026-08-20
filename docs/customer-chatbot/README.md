@@ -616,6 +616,31 @@ response = assemble(augmented, guidance)
 전체 `HANDOFF_REQUESTED` 세션 스냅샷을 돌려주는 경로는 두지 않는다. 서버는 상태를 보관만
 하고 갱신 시점은 화면이 정한다.
 
+#### 사기 정황 점수 실시간 스트림 (SSE)
+
+**위 폴링 방침은 `status`에만 해당한다.** 유형별 점수(`type_scores`)는 별도로
+`GET /transactions/{transaction_id}/chat-session/score-events`가 SSE로 밀어준다.
+[2.6](#26-사기-정황-추출과-채점-4-2)대로 사기 정황이 추출될 때마다(`SUFFICIENT`
+판정 턴마다) 서버가 `type_scores` 전체를 다시 계산해 upsert하는데, 그 갱신을 담당자
+화면이 폴링 없이 그 자리에서 받아볼 수 있게 하는 경로다. 이벤트 이름은
+`chat_score_updated`이고, `data`는 상세 조회(`.../chat-session/detail`)의
+`type_scores`와 같은 형태(`type_code`/`display_name`/`score` 목록, 점수 내림차순)에
+`transaction_id`를 더한 것이다.
+
+구현은 [chat_score_event_broker.py](../../app/services/chatbot/chat_score_event_broker.py)로,
+대시보드 SSE([dashboard_event_broker.py](../../app/services/dashboard/dashboard_event_broker.py))와
+같은 큐 기반 브로커 패턴을 쓰되 **거래 단위로 구독을 나눈다** — 동시에 여러 상담이
+진행되므로 전체 브로드캐스트가 아니라 담당자가 연 거래의 점수만 받아야 하기 때문이다.
+발행은 `POST /chat/{chat_session_id}/messages` 턴이 커밋된 뒤 라우터가 호출한다
+(대시보드 SSE와 같은 방침 — 파이프라인이 아니라 커밋을 소유한 라우터가 발행한다).
+어떤 판정이었는지와 무관하게 매 턴 최신 점수를 다시 읽어 발행하므로, 점수가 그대로인
+턴(`TOO_VAGUE` 등)도 같은 값을 다시 받을 뿐이라 무해하다. 구독자가 없는 거래는 발행
+자체가 비용 없이 버려진다.
+
+**상태(`status`)는 여전히 이 스트림에 없다.** 상담사 반환 여부(`HANDOFF_REQUESTED`
+전이)는 위 폴링 경로로만 확인한다 — 점수 스트림을 상태 변경 알림으로 확장하는 것은
+범위 밖이다.
+
 #### 상담 내역 조회
 
 담당자가 목록에서 건 하나를 **열었을 때**는 상태만으로 부족하다. 대화 전문과 함께 유형별
@@ -653,6 +678,7 @@ response = assemble(augmented, guidance)
 | `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
 | `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
 | `GET /transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 담당자 화면이 폴링하는 경로. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
+| `GET /transactions/{transaction_id}/chat-session/score-events` | 사기 정황 점수 실시간 스트림(SSE, `text/event-stream`). 정황이 추출될 때마다 `chat_score_updated` 이벤트로 `type_scores` 전체를 다시 밀어준다. `status`는 포함하지 않는다 | [2.7](#사기-정황-점수-실시간-스트림-sse) |
 | `GET /transactions/{transaction_id}/chat-session/detail` | 거래별 상담 내역 조회. 대화 전문 + 유형별 점수. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 
 - 응답은 레포 공통 봉투 `ApiResponse`(`success`/`data`/`error`)를 쓴다.

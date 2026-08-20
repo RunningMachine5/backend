@@ -17,9 +17,13 @@
 세션 TTL 은 MVP 범위 밖이다(PRD 3.3).
 """
 
+import json
+from collections.abc import Iterator
+from queue import Empty
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, status
+from fastapi.responses import StreamingResponse
 
 from app.core.common_response import ApiResponse, success_response
 from app.core.db import SessionDep
@@ -47,6 +51,7 @@ from app.pipelines.customer_chatbot_pipeline import (
     CustomerChatbotPipeline,
 )
 from app.repositories.chat_session import ChatSessionRepository
+from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
 from app.services.chatbot.identity_verifier import verify_birth_year
 
 
@@ -276,6 +281,7 @@ def send_chat_message(
             payload.message_text
         )
     )
+    _publish_score_update(session, chat_session.transaction_id)
     return success_response(_turn_response(chat_session_id, result))
 
 
@@ -316,6 +322,60 @@ def get_transaction_chat_session_status(
             chat_session_id=chat_session.chat_session_id,
             status=chat_session.status,
         )
+    )
+
+
+@transaction_chat_router.get("/{transaction_id}/chat-session/score-events")
+def stream_transaction_chat_score_events(
+    transaction_id: TransactionIdPath,
+) -> StreamingResponse:
+    """거래의 사기 정황 점수가 갱신될 때마다 SSE로 내보낸다(PRD 2.6~2.7).
+
+    사기 정황이 추출될 때마다(매 `SUFFICIENT` 판정 턴) 서버가 `type_scores` 전체를
+    다시 계산해 이 스트림으로 밀어준다. 담당자 화면이 상담 도중에도 점수 변화를
+    폴링 없이 바로 볼 수 있게 하기 위한 경로다.
+
+    **세션 상태(`status`)는 이 스트림에 포함되지 않는다** — 상태는 여전히
+    [2.7](README.md#27-상담사-반환-경로-거래별-상태-조회)의 폴링 경로
+    (`GET /transactions/{transaction_id}/chat-session`)로만 확인한다. 이 스트림은
+    점수 전용이다.
+
+    세션이 아직 없거나 정황이 한 번도 추출되지 않은 거래에 연결해도 200으로 연결을
+    유지한다 — 이후 정황이 추출되면 그때 첫 이벤트가 온다.
+    """
+
+    def event_stream() -> Iterator[str]:
+        subscriber_queue = chat_score_event_broker.subscribe(transaction_id)
+
+        try:
+            # 브라우저가 SSE 연결이 끊겼을 때 3초 후 재연결
+            yield "retry: 3000\n\n"
+
+            while True:
+                try:
+                    chat_score_event = subscriber_queue.get(timeout=15)
+                except Empty:
+                    # 연결 유지용 메시지
+                    yield ": keep-alive\n\n"
+                    continue
+
+                data = json.dumps(chat_score_event.data, ensure_ascii=False)
+                yield (
+                    f"event: {chat_score_event.event}\n"
+                    f"data: {data}\n\n"
+                )
+
+        finally:
+            chat_score_event_broker.unsubscribe(transaction_id, subscriber_queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -419,6 +479,32 @@ def _transaction_session_detail(
         type_scores=_type_score_responses(
             repository.get_fraud_type_scores(transaction_id)
         ),
+    )
+
+
+def _publish_score_update(session: SessionDep, transaction_id: int) -> None:
+    """턴 커밋 뒤 최신 사기 정황 점수를 SSE 구독자에게 발행한다.
+
+    구독자가 없는 거래는 브로커가 즉시 버리므로 SSE를 아무도 안 듣는 상담이
+    다수여도 비용이 없다. 턴마다(판정 종류와 무관하게) 부르는 이유는 라우터가
+    이번 턴에서 실제로 정황이 추출됐는지 알지 못하기 때문이다 — 값이 그대로면
+    구독자가 같은 값을 다시 받을 뿐이라 무해하다.
+    """
+
+    scores = ChatSessionRepository(session).get_fraud_type_scores(transaction_id)
+    if scores is None:
+        return
+
+    chat_score_event_broker.publish(
+        transaction_id,
+        event="chat_score_updated",
+        data={
+            "transaction_id": transaction_id,
+            "type_scores": [
+                response.model_dump()
+                for response in _type_score_responses(scores)
+            ],
+        },
     )
 
 
