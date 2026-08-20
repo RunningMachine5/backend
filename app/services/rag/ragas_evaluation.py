@@ -28,6 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from langchain_core.callbacks import get_usage_metadata_callback
 from sqlmodel import Session
 
 from app.dto.chatbot import ExtractedGuideSearchQuery, RetrievedChatbotGuideChunkDTO
@@ -41,6 +42,7 @@ from app.services.chatbot.messages import UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
 from app.services.rag.chatbot_retriever import retriever_source
 from app.services.rag.golden_dataset import ANSWERABLE_CATEGORIES, GoldenCase
 from app.services.rag.ragas_judge import build_judge_llm
+from app.services.rag.token_pricing import format_usage_summary
 
 logger = logging.getLogger(__name__)
 
@@ -452,7 +454,9 @@ def evaluate_rag(
             on_phase(message)
 
     notify(f"[1/3] 파이프라인 실행 ({len(cases)}건) — 질의 분해·검색·응답 생성")
-    results = run_cases(cases, session, top_k=top_k, on_case=on_case)
+    with get_usage_metadata_callback() as usage_callback:
+        results = run_cases(cases, session, top_k=top_k, on_case=on_case)
+    notify(format_usage_summary(usage_callback.usage_metadata))
 
     notify(f"[2/3] RAGAS 채점 ({len(cases)}건 x 지표 6개) — 심판 LLM 호출")
     scores = score_with_ragas(results)
