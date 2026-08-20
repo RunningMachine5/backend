@@ -23,6 +23,8 @@ from app.dto.agent import (
 )
 from app.dto.agent_guide import RetrievedGuideChunkDTO
 from app.services.agent.case_service import AgentCaseStartResult
+from app.services.agent.response_plan_generator import PolicyResponsePlanGenerator
+from app.services.agent.response_policy import get_default_policy_repository
 from app.services.agent.type_confidence import calculate_type_confidence
 from app.services.agent.workflow import AgentWorkflow
 
@@ -435,6 +437,52 @@ class AgentWorkflowTest(unittest.TestCase):
 
         self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
         self.assertEqual(response.similar_case_results, [])
+
+    def test_fraud_used_account_plan_is_generated_from_policy_without_ml(self) -> None:
+        """ML 게이트와 별개로 사기이용계좌 Agent 대응을 검증한다."""
+        rule_result = FraudTypeScoreResultDTO(
+            fraud_type_score_result_id=7,
+            rule_filter_status=RuleFilterStatus.APPLIED,
+            primary_fraud_type="FRAUD_USED_ACCOUNT",
+            type_scores={
+                "FRAUD_USED_ACCOUNT": 0.70,
+                "VOICE_PHISHING": 0.25,
+                "ACCOUNT_TAKEOVER": 0.10,
+                "MESSENGER_PHISHING": 0.05,
+            },
+            matched_components=[],
+        )
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(rule_result),  # type: ignore[arg-type]
+            policy_repository=get_default_policy_repository(),
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            response_plan_generator=PolicyResponsePlanGenerator(),
+            dashboard_similar_case_finder=FakeDashboardSimilarCaseFinder(),
+        )
+
+        response = workflow.run(
+            AgentInputDTO(
+                transaction_id=1,
+                fraud_type_score_result_id=7,
+                risk_score=84,
+                risk_grade=RiskGrade.HIGH,
+            )
+        )
+
+        self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
+        self.assertEqual(
+            response.response_result.applied_fraud_type,
+            "FRAUD_USED_ACCOUNT",
+        )
+        self.assertEqual(
+            [action.action_code for action in response.response_result.recommended_actions],
+            ["PRIORITY_ACCOUNT_FLOW_REVIEW", "REQUEST_ACCOUNT_RISK_REVIEW"],
+        )
+        self.assertEqual(
+            [item.item_code for item in response.response_result.checklist],
+            ["CHECK_ACCOUNT_FLOW_SIGNAL", "CHECK_LINKED_ACCOUNT_RISK"],
+        )
+        self.assertEqual(len(response.similar_case_results), 1)
 
     @staticmethod
     def _input() -> AgentInputDTO:
