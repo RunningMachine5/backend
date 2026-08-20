@@ -372,12 +372,10 @@ class LabeledDatasetBuilder:
 
     @staticmethod
     def _csv_feature_value(field_name: str, value: object) -> object:
-        """새 행의 날짜를 기존 학습 CSV와 동일한 형식으로 직렬화한다."""
+        """새 행의 피처를 기존 학습 CSV와 동일한 형식으로 직렬화한다."""
 
         if value is None:
             return ""
-        if isinstance(value, bool):
-            return int(value)
         if field_name == "mac_address" and isinstance(value, str):
             return value.replace("-", ":").lower()
         if (
