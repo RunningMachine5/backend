@@ -660,7 +660,7 @@ def decide_training_run(
     mlflow: MLflowRegistryClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
-    """학습 실행을 거절하거나 MLflow가 확인한 후보를 0%로 staging한다."""
+    """학습 실행을 거절하거나 같은 Serving 이미지로 0% 후보를 만든다."""
 
     run = _get_training_run_for_update_or_404(run_id, session)
     initial_decision = run.status == "CANDIDATE" and not payload.restage
@@ -691,11 +691,10 @@ def decide_training_run(
         return {"training_run": _training_run_payload(run), "operation": None}
 
     try:
-        result = client.verify_staged_model_revision(model_version)
+        result = client.stage_model_revision(model_version)
     except CloudRunAdminError as exc:
         raise _upstream_error(exc) from exc
-    # 승인 태그는 CD 후보 리비전 검증이 성공한 뒤에만 기록한다. 그렇지 않으면
-    # MLflow는 승인됐지만 Backend는 CANDIDATE인 분리 상태가 남는다.
+    # Cloud Run이 후보 생성 요청을 받은 뒤에만 관리자 결정을 기록한다.
     try:
         mlflow.set_model_version_tags(
             run.model_key,
