@@ -567,10 +567,25 @@ response = assemble(augmented, guidance)
 1. 가이드 검색 질의는 `chat_guide_search_queries`에 답변별 위치로 저장하고, 사기 정황은
    `chat_fraud_circumstances`의 `UNIQUE (chat_session_id, circumstance_code)`로
    세션당 enum 1행만 저장한다.
-2. 점수 계산은 매 턴 더하지 않고, **상담 종료 시점(`WANT_END` 판정)에
-   `chat_fraud_circumstances` 행 전체를 읽어 한 번만 집계**해
-   `fraud_type_score_after_chat`에 기록한다. 집계는 `DONE` 전이보다
-   먼저 끝나야 담당자가 화면에서 채점 결과를 볼 수 있다.
+2. 점수 계산은 매 턴 더하지 않는다. **사기 정황이 추출될 때마다(`SUFFICIENT` 판정으로
+   `_process_sufficient_answer`가 실행될 때마다) `chat_fraud_circumstances` 행 전체를
+   다시 읽어 처음부터 다시 집계**해 `fraud_type_score_after_chat`에 upsert한다
+   (`ON CONFLICT (transaction_id) DO UPDATE`). 증분 가산이 아니라 매번 전체 재계산이므로
+   같은 정황이 여러 턴에 걸쳐 다시 추출돼도 이중 가산되지 않는다.
+   구현은 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)의
+   `_update_fraud_type_scores`다.
+
+담당자 화면은 상담이 끝나기 전에도 그때까지의 집계 결과를 볼 수 있다. `WANT_END`
+전이(`_finish`) 시점에도 같은 재계산을 한 번 더 부르는데, 이는 한 번도 정황이 추출되지
+않은 세션(첫 질문에서 바로 종료 의사를 밝힌 경우)도 0점 행을 남기기 위한 안전망이다 —
+정상적으로 정황이 추출된 세션은 이미 마지막 추출 시점에 최신값으로 갱신돼 있어 이 호출이
+값을 바꾸지 않는다.
+
+**계산 비용**: 매 턴 다시 읽어 집계하더라도 세션당 정황은 최대 20종
+(`FINAL_FRAUD_CIRCUMSTANCE_CODES`)으로 상한이 있어 조회·합산·upsert 모두 인메모리 수준의
+비용이다. LLM 호출이 추가되는 것이 아니라(추출 LLM 호출은 기존과 동일하게 `SUFFICIENT`
+판정마다 한 번뿐이다) 그 결과를 반영하는 시점만 상담 종료에서 매 추출 시점으로 앞당긴
+것이므로, 턴당 지연에 유의미한 영향을 주지 않는다.
 
 집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
 상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat)).
@@ -614,8 +629,9 @@ response = assemble(augmented, guidance)
 
 - 세션이 없는 거래도 **404가 아니라 빈 값**이다. 상태 조회와 같은 이유로, 세션이 없는 거래도
   담당자 목록에는 그대로 남아야 한다.
-- `type_scores`는 상담 종료 시점에 한 번만 집계하므로([2.6](#26-사기-정황-추출과-채점-4-2))
-  그 전에 조회하면 빈 배열이다.
+- `type_scores`는 사기 정황이 추출될 때마다 갱신되므로([2.6](#26-사기-정황-추출과-채점-4-2))
+  상담 도중에도 그때까지의 집계 결과를 볼 수 있다. 정황이 한 번도 추출되지 않았으면
+  빈 배열이다.
 - 사기유형 점수는 4개 유형을 전부 담고 대표 유형을 고르지 않는다. 순위는 화면이 정한다.
 - **화면이 쓰지 않는 값은 담지 않는다.** 고령자 UI 분기(`is_older`)와 질문 진행
   (`question_step`)은 고객 화면의 관심사이고, 추출된 사기 정황 원본(`chat_fraud_circumstances`)은

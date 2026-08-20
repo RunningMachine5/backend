@@ -133,8 +133,9 @@ FDS·Agent 결합.
   (부분 유니크 인덱스 준수). `WANT_END`, 재질문 중인 응답, 평가 LLM 실패는 채택하지 않는다
 - [x] 추출 결과 저장 — `ON CONFLICT DO NOTHING`으로 세션당 enum 1행, 저장 직전
   `code in FINAL_*_CODES` 재검증(불통과 항목만 걸러냄)
-- [x] 종료 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
-  `fraud_type_score_after_chat` 저장(`ON CONFLICT DO NOTHING`, 거래당 1행)
+- [x] 집계용 조회 — 세션의 `chat_fraud_circumstances` 전체 읽기,
+  `fraud_type_score_after_chat` upsert(`ON CONFLICT (transaction_id) DO UPDATE`,
+  거래당 1행을 정황 추출마다 재계산해 덮어씀)
 - [x] 거래별 세션 상태 조회 — `transaction_id`로 해당 세션의 현재 `status` 조회 (PRD 2.7)
 - [x] 테스트 `tests/test_chatbot_repository.py`: 멱등 생성, 채택 답변 유일성, enum 중복 무시
 
@@ -179,7 +180,8 @@ FDS·Agent 결합.
   - 검색·생성 실패 폴백을 확정하고 README 2.5에 반영했다(요구별 검색 실패는 그 요구만 0건,
     Generate 실패·전원 빈 안내도 B.5로 채우고 상담 계속)
   - B.5 문구는 [messages.py](../../app/services/chatbot/messages.py)로 옮겼다(B.1~B.4·B.6은 6단계)
-- [x] [chat_scoring.py](../../app/services/chatbot/chat_scoring.py) — 상담 종료 시 1회 집계:
+- [x] [chat_scoring.py](../../app/services/chatbot/chat_scoring.py) — 사기 정황이 추출될 때마다
+  재집계(증분 가산이 아니라 매번 전체 재계산):
   `chat_fraud_circumstances` 전체 × `FRAUD_CIRCUMSTANCE_SCORES` → 4개 유형 점수 전부
   `type_scores`로. 대표 유형·동점·정황 없음은 저장하지 않는다 (스키마 3.7)
 - [x] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")

@@ -447,7 +447,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     # -- 2.6 종료와 채점 집계 ------------------------------------------
 
-    def test_want_end_scores_once_and_completes_session(self) -> None:
+    def test_extraction_updates_score_immediately_not_only_at_want_end(self) -> None:
         pipeline = self._start_chat(
             evaluator=FakeEvaluator(
                 AnswerQualityVerdict.SUFFICIENT,
@@ -466,16 +466,25 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         )
         pipeline.handle_message("검찰이라고 전화가 왔어요")
 
+        # WANT_END(상담 종료) 전, 정황이 추출된 직후에 이미 점수가 갱신되어 있어야 한다.
+        scores_after_extraction = self.session.exec(
+            select(FraudTypeScoreAfterChat)
+        ).all()
+        self.assertEqual(len(scores_after_extraction), 1)
+        self.assertGreater(
+            scores_after_extraction[0].type_scores[VOICE_PHISHING], 0
+        )
+
         result = pipeline.handle_message("종료할게요")
 
         self.assertEqual(result.messages, (WANT_END_MESSAGE,))
         self.assertEqual(result.status, ChatSessionStatus.DONE)
         self.assertIsNotNone(self.chat_session.completed_at)
 
+        # 거래당 한 행을 유지하며 최종값도 같은 갱신 결과다(증분 집계가 아니다).
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
         self.assertEqual(len(scores), 1)
         self.assertEqual(len(scores[0].type_scores), 4)
-        # 집계는 전이보다 먼저 끝나야 한다(PRD 2.6).
         self.assertGreater(scores[0].type_scores[VOICE_PHISHING], 0)
 
     def test_want_end_with_no_circumstance_stores_zero_scores(self) -> None:
