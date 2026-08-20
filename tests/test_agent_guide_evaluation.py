@@ -8,6 +8,8 @@ from app.domain.fraud_type_codes import FINAL_FRAUD_TYPE_CODES
 from app.services.agent.guide_corpus import DEFAULT_CORPUS_ROOT, load_guide_corpus
 from app.services.agent.guide_evaluation import (
     DEFAULT_GUIDE_EVALUATION_PATH,
+    GuideSearchEvaluationReport,
+    RetrievalMetrics,
     load_guide_evaluation_cases,
 )
 from app.services.agent.response_policy import (
@@ -82,6 +84,18 @@ class AgentGuideEvaluationTest(unittest.TestCase):
                 "query_id가 중복",
             ):
                 load_guide_evaluation_cases(path)
+
+    def test_report_can_be_flattened_to_csv_rows(self) -> None:
+        metrics = RetrievalMetrics(2, 0.5, 1.0, 1.0, 0.75)
+        rows = GuideSearchEvaluationReport(
+            baseline=metrics,
+            filtered=metrics,
+            by_fraud_type={"VOICE_PHISHING": {"baseline": metrics}},
+        ).to_csv_rows()
+
+        self.assertEqual(rows[0]["scope"], "ALL")
+        self.assertEqual(rows[1]["strategy"], "FILTERED")
+        self.assertEqual(rows[2]["scope"], "VOICE_PHISHING")
 
 
 if __name__ == "__main__":

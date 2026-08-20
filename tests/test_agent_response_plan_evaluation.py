@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 from app.domain.agent_status import InformationStatus
@@ -129,7 +130,20 @@ cases:
         cases = load_response_plan_evaluation_cases()
         repository = get_default_policy_repository()
 
-        self.assertEqual(len(cases), 8)
+        self.assertEqual(len(cases), 16)
+        self.assertEqual(
+            Counter((case.fraud_type, case.risk_grade) for case in cases),
+            {
+                (fraud_type, risk_grade): 1
+                for fraud_type in (
+                    "VOICE_PHISHING",
+                    "MESSENGER_PHISHING",
+                    "ACCOUNT_TAKEOVER",
+                    "FRAUD_USED_ACCOUNT",
+                )
+                for risk_grade in ("LOW", "MEDIUM", "HIGH", "VERY_HIGH")
+            },
+        )
         for case in cases:
             policy = repository.get_response_policy(
                 fraud_type=case.fraud_type,

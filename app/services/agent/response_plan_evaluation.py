@@ -54,6 +54,7 @@ class ResponsePlanEvaluationResult:
     guide_context_char_count: int
     search_latency_ms: int
     generation_latency_ms: int
+    total_latency_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,9 +69,14 @@ class ResponsePlanEvaluationMetrics:
     output_contract_pass_rate: float
     fallback_rate: float
     average_search_latency_ms: float
+    search_latency_p50_ms: int
+    search_latency_p95_ms: int
     average_generation_latency_ms: float
     generation_latency_p50_ms: int
     generation_latency_p95_ms: int
+    average_total_latency_ms: float
+    total_latency_p50_ms: int
+    total_latency_p95_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +89,10 @@ class ResponsePlanEvaluationReport:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    def to_csv_rows(self) -> list[dict[str, object]]:
+        """사례별 측정값을 CSV 보고서로 저장할 수 있게 평탄화한다."""
+        return [asdict(result) for result in self.results]
 
 
 class GuideSearcher(Protocol):
@@ -246,13 +256,16 @@ def _generate_and_measure(
         guide_context_char_count=sum(len(guide.content) for guide in guides),
         search_latency_ms=search_latency_ms,
         generation_latency_ms=generation_latency_ms,
+        total_latency_ms=search_latency_ms + generation_latency_ms,
     )
 
 
 def _calculate_metrics(
     results: tuple[ResponsePlanEvaluationResult, ...],
 ) -> ResponsePlanEvaluationMetrics:
+    search_latencies = sorted(r.search_latency_ms for r in results)
     generation_latencies = sorted(r.generation_latency_ms for r in results)
+    total_latencies = sorted(r.total_latency_ms for r in results)
     return ResponsePlanEvaluationMetrics(
         case_count=len(results),
         required_action_coverage=round(
@@ -266,11 +279,16 @@ def _calculate_metrics(
         ),
         fallback_rate=round(mean(r.fallback_used for r in results), 4),
         average_search_latency_ms=round(mean(r.search_latency_ms for r in results), 2),
+        search_latency_p50_ms=_percentile(search_latencies, 0.50),
+        search_latency_p95_ms=_percentile(search_latencies, 0.95),
         average_generation_latency_ms=round(
             mean(r.generation_latency_ms for r in results), 2
         ),
         generation_latency_p50_ms=_percentile(generation_latencies, 0.50),
         generation_latency_p95_ms=_percentile(generation_latencies, 0.95),
+        average_total_latency_ms=round(mean(r.total_latency_ms for r in results), 2),
+        total_latency_p50_ms=_percentile(total_latencies, 0.50),
+        total_latency_p95_ms=_percentile(total_latencies, 0.95),
     )
 
 
