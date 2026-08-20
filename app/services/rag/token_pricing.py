@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.messages.ai import UsageMetadata
 
@@ -95,6 +96,43 @@ def estimate_costs(
     return sorted(estimates, key=lambda e: e.model_name)
 
 
+def build_usage_report(
+    usage_by_model: dict[str, UsageMetadata],
+    *,
+    case_count: int | None = None,
+) -> dict[str, Any]:
+    """모델별 토큰·비용을 리포트 JSON 에 그대로 넣을 수 있는 dict 로 만든다.
+
+    단가표에 없는 모델은 cost_usd 가 None 이라 합계에서 빠진다. 그 경우
+    total_cost_known 이 False 이므로 합계를 과소 추정으로 읽어야 한다.
+    case_count 를 주면 사례 하나당 비용도 함께 담는다(실행 규모가 달라도 비교 가능하게).
+    """
+
+    estimates = estimate_costs(usage_by_model)
+    total_cost = sum(e.cost_usd for e in estimates if e.cost_usd is not None)
+
+    report: dict[str, Any] = {
+        "by_model": [
+            {
+                "model": e.model_name,
+                "input_tokens": e.input_tokens,
+                "output_tokens": e.output_tokens,
+                "cached_input_tokens": e.cached_input_tokens,
+                "cost_usd": None if e.cost_usd is None else round(e.cost_usd, 6),
+            }
+            for e in estimates
+        ],
+        "input_tokens": sum(e.input_tokens for e in estimates),
+        "output_tokens": sum(e.output_tokens for e in estimates),
+        "cached_input_tokens": sum(e.cached_input_tokens for e in estimates),
+        "total_cost_usd": round(total_cost, 6),
+        "total_cost_known": all(e.cost_usd is not None for e in estimates),
+    }
+    if case_count:
+        report["cost_usd_per_case"] = round(total_cost / case_count, 6)
+    return report
+
+
 def format_usage_summary(usage_by_model: dict[str, UsageMetadata]) -> str:
     """콘솔에 바로 찍을 수 있는 모델별 토큰·비용 요약 문자열."""
 
@@ -126,6 +164,7 @@ __all__ = [
     "ModelCostEstimate",
     "ModelPricing",
     "MODEL_PRICING_PER_1M",
+    "build_usage_report",
     "estimate_costs",
     "format_usage_summary",
     "resolve_pricing",

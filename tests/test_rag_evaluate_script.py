@@ -15,7 +15,11 @@ from app.scripts.evaluate_rag_ragas import (
     _ProgressPrinter,
 )
 from app.services.rag.golden_dataset import GoldenCase, GoldenContext
-from app.services.rag.ragas_evaluation import RunResult, build_report
+from app.services.rag.ragas_evaluation import (
+    RunResult,
+    build_report,
+    build_usage_section,
+)
 
 
 def _case(case_id, category, contexts=()):
@@ -132,6 +136,27 @@ class PrintSummaryTest(unittest.TestCase):
         out = buffer.getvalue()
         self.assertIn("context_precision", out)
         self.assertIn("unanswerable", out)
+
+    def test_토큰_비용이_요약에_함께_나온다(self):
+        usage = build_usage_section(
+            {"gpt-5.6-luna": {"input_tokens": 1_000_000, "output_tokens": 0}},
+            {"gpt-5.6-terra": {"input_tokens": 1_000_000, "output_tokens": 0}},
+            case_count=1,
+        )
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            _print_summary(build_report([], {}, usage=usage))
+        out = buffer.getvalue()
+        self.assertIn("파이프라인", out)
+        self.assertIn("RAGAS 심판", out)
+        self.assertIn("$0.2000", out)
+        self.assertIn("$2.2000", out)
+
+    def test_usage_가_없는_리포트도_요약이_출력된다(self):
+        buffer = io.StringIO()
+        with redirect_stderr(buffer):
+            _print_summary(build_report([], {}))
+        self.assertIn("context_precision", buffer.getvalue())
 
 
 if __name__ == "__main__":

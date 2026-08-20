@@ -387,12 +387,13 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 `title`·`search_query`의 길이 상한도 마찬가지로 스키마가 강제한다. 자세한 근거는
 [A.2 규칙을 줄인 이유](prompts.md#규칙을-줄인-이유)에 있다.
 
-`evidence`는 프롬프트의 규칙 목록에서 **답변 원문의 연속 문자열**이라고 명시하지 않는다.
+`evidence`는 프롬프트에서 **답변 원문의 연속 문자열**이라고 요구하지 않는다. 규칙 목록에도
+없고, 그렇게 안내하던 출력 형식 예시도 [스키마가 강제하는 것은 프롬프트에 쓰지
+않는다](prompts.md#네-프롬프트에-공통으로-적용한-원칙)에 따라 뺐다.
 분해 결과가 원문과 달라도 [extractors.py](../../app/services/chatbot/extractors.py)는 검색 질의를
-버리지 않으므로 RAG 응답에는 사용할 수 있다. 다만 출력 형식 예시는 `사용자 답변의 정확한
-원문`이라고 안내하고, [chat_session.py](../../app/repositories/chat_session.py)는 실제 고객
-답변에 포함된 `evidence`만 `chat_guide_search_queries`에 저장한다. 불일치한 질의는 RAG에는
-쓰이지만 감사 행은 남지 않는다. [외부 조회(추가 기능)](#외부-조회-추가-기능)은 `evidence`의
+버리지 않으므로 RAG 응답에는 사용할 수 있다. 다만
+[chat_session.py](../../app/repositories/chat_session.py)는 실제 고객 답변에 포함된 `evidence`만
+`chat_guide_search_queries`에 저장한다. 불일치한 질의는 RAG에는 쓰이지만 감사 행은 남지 않는다. [외부 조회(추가 기능)](#외부-조회-추가-기능)은 `evidence`의
 URL·전화번호·계좌를 읽는 설계이므로, 구현 전에 이 차이를 먼저 해소해야 한다.
 
 #### 검색 질의 구성
@@ -719,7 +720,9 @@ response = assemble(augmented, guidance)
 - ~~**프롬프트의 JSON 지시만으로 출력 형식을 제한한다.**~~ 해결됐다.
   평가·가이드 검색 질의 분해·사기 정황 추출·대응 가이드 생성 모두
   [build_structured_llm](../../app/services/chatbot/llm.py)과 각 Pydantic 응답 스키마로
-  구조화 출력을 강제한다. 프롬프트의 JSON 문구는 보조 지시일 뿐 유일한 검증 수단이 아니다.
+  구조화 출력을 강제한다. 스키마가 유일한 검증 수단이므로 같은 것을 요구하던 프롬프트 문구
+  (출력 형식 예시, `JSON만 반환`, enum 화이트리스트)는 뺐다
+  ([공통 원칙](prompts.md#네-프롬프트에-공통으로-적용한-원칙)).
 - ~~**리트리버가 아직 문자열을 돌려준다.**~~ 해결됐다.
   [retriever_source](../../app/services/rag/chatbot_retriever.py)가 0건을 빈 리스트로
   반환하고, 문자열을 돌려주던 옛 `retriever`와 그 유일한 호출부

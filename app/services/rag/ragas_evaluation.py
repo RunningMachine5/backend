@@ -42,7 +42,7 @@ from app.services.chatbot.messages import UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
 from app.services.rag.chatbot_retriever import retriever_source
 from app.services.rag.golden_dataset import ANSWERABLE_CATEGORIES, GoldenCase
 from app.services.rag.ragas_judge import build_judge_llm
-from app.services.rag.token_pricing import format_usage_summary
+from app.services.rag.token_pricing import build_usage_report, format_usage_summary
 
 logger = logging.getLogger(__name__)
 
@@ -358,11 +358,19 @@ def _pick_scores(row: dict) -> dict[str, float]:
 def build_report(
     results: list[RunResult],
     scores: dict[str, dict[str, float]],
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """전체 평균과 category·difficulty 슬라이스를 모은다."""
+    """전체 평균과 category·difficulty 슬라이스를 모은다.
 
-    return {
-        "case_count": len(results),
+    usage 를 주면 토큰·비용 집계(build_usage_section)를 리포트 앞쪽에 함께 담는다.
+    한 번 돌리는 데 실제 비용이 드는 실행이라, 점수와 비용을 같은 파일에 남겨야
+    "지표가 이만큼 오르는 데 얼마가 들었나"를 나중에 대조할 수 있다.
+    """
+
+    report: dict[str, Any] = {"case_count": len(results)}
+    if usage is not None:
+        report["usage"] = usage
+    report.update({
         "overall": _aggregate(results, scores),
         "by_category": {
             category: _aggregate(rows, scores)
@@ -392,6 +400,31 @@ def build_report(
             }
             for r in results
         ],
+    })
+    return report
+
+
+def build_usage_section(
+    pipeline_usage: dict[str, Any],
+    judge_usage: dict[str, Any],
+    case_count: int,
+) -> dict[str, Any]:
+    """파이프라인 비용과 RAGAS 심판 비용을 나눠 담은 usage 섹션.
+
+    둘을 합쳐 놓으면 안 된다. pipeline 은 운영에서 고객 한 턴에 실제로 나가는 비용이고,
+    judge 는 평가할 때만 드는 비용(사례당 지표 6개 호출)이라 성격이 전혀 다르다.
+    total 은 이번 실행에 실제로 청구될 금액을 확인하는 용도다.
+    """
+
+    pipeline = build_usage_report(pipeline_usage, case_count=case_count)
+    judge = build_usage_report(judge_usage, case_count=case_count)
+    return {
+        "pipeline": pipeline,
+        "judge": judge,
+        "total_cost_usd": round(
+            pipeline["total_cost_usd"] + judge["total_cost_usd"], 6
+        ),
+        "total_cost_known": pipeline["total_cost_known"] and judge["total_cost_known"],
     }
 
 
@@ -454,15 +487,26 @@ def evaluate_rag(
             on_phase(message)
 
     notify(f"[1/3] 파이프라인 실행 ({len(cases)}건) — 질의 분해·검색·응답 생성")
-    with get_usage_metadata_callback() as usage_callback:
+    with get_usage_metadata_callback() as pipeline_usage:
         results = run_cases(cases, session, top_k=top_k, on_case=on_case)
-    notify(format_usage_summary(usage_callback.usage_metadata))
+    pipeline_usage_by_model = dict(pipeline_usage.usage_metadata)
+    notify(format_usage_summary(pipeline_usage_by_model))
 
     notify(f"[2/3] RAGAS 채점 ({len(cases)}건 x 지표 6개) — 심판 LLM 호출")
-    scores = score_with_ragas(results)
+    # 심판 비용은 파이프라인 비용과 섞지 않는다. ragas 는 asyncio.run 으로 같은
+    # 스레드에서 돌아 컨텍스트 변수가 그대로 이어지므로 이 콜백에 심판 호출이 잡힌다.
+    with get_usage_metadata_callback() as judge_usage:
+        scores = score_with_ragas(results)
+    judge_usage_by_model = dict(judge_usage.usage_metadata)
 
     notify("[3/3] 리포트 집계")
-    return build_report(results, scores)
+    return build_report(
+        results,
+        scores,
+        usage=build_usage_section(
+            pipeline_usage_by_model, judge_usage_by_model, len(results)
+        ),
+    )
 
 
 __all__ = [
@@ -471,6 +515,7 @@ __all__ = [
     "PhaseCallback",
     "RunResult",
     "build_report",
+    "build_usage_section",
     "evaluate_rag",
     "run_cases",
     "score_with_ragas",

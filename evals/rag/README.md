@@ -50,6 +50,26 @@ uv run python -m unittest tests.test_rag_golden_dataset -v
 존재를 검증한다. 생성 시 100개 사례를 ID별로 설명한
 [`datasets/golden_v1_catalog.md`](datasets/golden_v1_catalog.md)도 함께 갱신된다.
 
+## 평가 리포트의 비용
+
+`app.scripts.evaluate_rag_ragas` 가 저장하는 리포트에는 지표와 함께 그 실행의
+토큰 사용량과 비용 추정치가 `usage` 로 들어간다.
+
+| 키 | 내용 |
+|---|---|
+| `usage.pipeline` | 질의 분해·임베딩·응답 생성 — 운영에서 고객 한 턴에 실제로 나가는 비용 |
+| `usage.judge` | RAGAS 심판 호출 — 평가할 때만 드는 비용 (사례당 지표 6개) |
+| `usage.total_cost_usd` | 두 몫의 합계. 이번 실행에 청구될 금액 |
+
+각 몫에 모델별 입력·출력·캐시 입력 토큰과 `cost_usd`, 사례 하나당 비용
+(`cost_usd_per_case`)이 함께 담겨 실행 규모가 달라도 리포트끼리 비교할 수 있다.
+단가는 [`app/services/rag/token_pricing.py`](../../app/services/rag/token_pricing.py)의
+표에서 온다 — OpenAI 가격이 바뀌면 손으로 갱신해야 하고, 표에 없는 모델이 섞이면
+`total_cost_known` 이 `false` 로 남아 합계가 과소 추정임을 알린다.
+
+채점 없이 파이프라인 비용만 먼저 보려면 `app.scripts.evaluate_rag_cost` 를 쓴다.
+이쪽 리포트의 `usage` 는 위 `usage.pipeline` 과 같은 형식이다.
+
 ## 검수 상태
 
 현재 100건은 모두 `review_status=DRAFT`다. PDF 근거 존재 여부는 자동 검증됐지만,
