@@ -9,7 +9,18 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
 from app.core.db import get_session
+from app.data.model.account import Account
+from app.data.model.customer import Customer
+from app.data.model.derived_features import DerivedFeatures
 from app.data.model.mlops import DatasetVersion, TrainingRun
+from app.data.model.transaction import Transaction
+from app.dto.ml_features import MLTransactionFeatures
+from app.services.features.ml_feature_assembler import (
+    build_account_fields,
+    build_customer_fields,
+    build_derived_features_fields,
+    build_transaction_fields,
+)
 from app.services.mlops.cloud_run import (
     CloudRunAdminError,
     get_cloud_run_admin_client,
@@ -33,6 +44,10 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
         DatasetVersion.__table__.create(self.engine)
         TrainingRun.__table__.create(self.engine)
+        Customer.__table__.create(self.engine)
+        Account.__table__.create(self.engine)
+        Transaction.__table__.create(self.engine)
+        DerivedFeatures.__table__.create(self.engine)
 
         def override_session():
             with Session(self.engine) as session:
@@ -49,6 +64,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         app.dependency_overrides[get_mlflow_registry_client] = lambda: self.mlflow
         self.client = TestClient(app)
         self.headers = {"X-MLOps-Admin-Token": "admin-secret"}
+        self.make_verification_transaction()
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
@@ -75,6 +91,45 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             session.refresh(run)
             assert run.id is not None
             return run.id
+
+    def make_verification_transaction(self) -> None:
+        """후보 모델 smoke에 사용할 최근 저장 거래를 만든다."""
+
+        features = MLTransactionFeatures.model_validate(valid_ml_raw_data())
+        customer = Customer(
+            id=900001,
+            name="검증 고객",
+            identification_number="verification-customer",
+            **build_customer_fields(features),
+        )
+        source = Account(
+            id=900001,
+            customer_id=customer.id,
+            account_number="verification-source",
+            **build_account_fields(features),
+        )
+        recipient = Account(
+            id=900002,
+            account_number="verification-recipient",
+        )
+        transaction = Transaction(
+            id=900001,
+            customer_id=customer.id,
+            source_account_number=source.account_number,
+            recipient_account_number=recipient.account_number,
+            **build_transaction_fields(features),
+        )
+        derived = DerivedFeatures(
+            id=transaction.id,
+            **build_derived_features_fields(features),
+        )
+        with Session(self.engine) as session:
+            session.add(customer)
+            session.add(source)
+            session.add(recipient)
+            session.add(transaction)
+            session.add(derived)
+            session.commit()
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_platform_status_checks_database_connection(self) -> None:
@@ -730,10 +785,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         missing_run = self.client.post(
             "/mlops/serving/promotions",
             headers=self.headers,
-            json={
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
-            },
+            json={},
         )
         bypass = self.client.post(
             "/mlops/serving/promotions",
@@ -741,8 +793,6 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             json={
                 "training_run_id": 1,
                 "model_version": "999",
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
             },
         )
         self.assertEqual(missing_run.status_code, 422)
@@ -768,18 +818,16 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         promoted = self.client.post(
             "/mlops/serving/promotions",
             headers=self.headers,
-            json={
-                "training_run_id": run_id,
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
-            },
+            json={"training_run_id": run_id},
         )
         self.assertEqual(promoted.status_code, 202)
         self.assertEqual(promoted.json()["training_run"]["status"], "PROMOTING")
-        self.cloud_run.promote_model_revision.assert_called_once()
+        promotion_request = self.cloud_run.promote_model_revision.call_args.kwargs
+        self.assertEqual(promotion_request["model_version"], "17")
+        self.assertEqual(promotion_request["transaction_id"], 900001)
         self.assertEqual(
-            self.cloud_run.promote_model_revision.call_args.kwargs["model_version"],
-            "17",
+            len(promotion_request["features"]),
+            len(valid_ml_raw_data()),
         )
 
         self.cloud_run.get_model_deployment_status.return_value = {
@@ -803,6 +851,29 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.mlflow.set_model_alias.assert_called_once_with(
             "fdshield-fraud-detector-v2", "champion", "17"
         )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_promotion_requires_a_stored_verification_transaction(self) -> None:
+        run_id = self.make_run("STAGED", "candidate-run")
+        self.mlflow.resolve_model_version.return_value = "17"
+        with Session(self.engine) as session:
+            derived = session.get(DerivedFeatures, 900001)
+            assert derived is not None
+            session.delete(derived)
+            session.commit()
+
+        response = self.client.post(
+            "/mlops/serving/promotions",
+            headers=self.headers,
+            json={"training_run_id": run_id},
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(
+            response.json()["detail"],
+            "자동 검증에 사용할 저장 거래가 없습니다.",
+        )
+        self.cloud_run.promote_model_revision.assert_not_called()
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_live_completion_keeps_promoting_when_traffic_is_not_ready(self) -> None:
@@ -886,11 +957,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         retried = self.client.post(
             "/mlops/serving/promotions",
             headers=self.headers,
-            json={
-                "training_run_id": run_id,
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
-            },
+            json={"training_run_id": run_id},
         )
         self.assertEqual(retried.status_code, 202)
         self.assertEqual(retried.json()["training_run"]["status"], "PROMOTING")
