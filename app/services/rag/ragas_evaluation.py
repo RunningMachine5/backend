@@ -32,7 +32,7 @@ from langchain_core.callbacks import get_usage_metadata_callback
 from sqlmodel import Session
 
 from app.dto.chatbot import ExtractedGuideSearchQuery, RetrievedChatbotGuideChunkDTO
-from app.services.chatbot.extractors import GuideSearchQueryExtractor
+from app.services.chatbot.answer_analyzer import AnswerAnalyzer
 from app.services.chatbot.guide_responder import (
     GUIDE_SEARCH_QUERY_HEADING_PREFIX,
     RETRIEVE_TOP_K,
@@ -45,6 +45,12 @@ from app.services.rag.ragas_judge import build_judge_llm
 from app.services.rag.token_pricing import build_usage_report, format_usage_summary
 
 logger = logging.getLogger(__name__)
+
+# 골든셋의 user_input을 운영 턴의 customer_answer 자리에 넣을 때 사용하는 직전 질문.
+# 답변 가능 여부와 targeted query 생성을 운영과 같은 통합 분석기로 평가한다.
+RAG_EVALUATION_QUESTION = (
+    "금융사기 대응과 관련해 겪은 상황이나 궁금한 점을 구체적으로 말씀해 주세요."
+)
 
 # 모든 지표를 답변 가능 사례에서만 평균낸다. 무근거 사례는 abstain_rate 로 본다.
 ANSWERABLE_METRICS = (
@@ -159,7 +165,7 @@ def run_cases(
     cases: tuple[GoldenCase, ...],
     session: Session,
     *,
-    extractor: GuideSearchQueryExtractor | None = None,
+    analyzer: AnswerAnalyzer | None = None,
     retriever: RetrieverCallable = retriever_source,
     responder_factory: Callable[[Any, int], Any] = _default_responder,
     top_k: int = RETRIEVE_TOP_K,
@@ -167,12 +173,12 @@ def run_cases(
 ) -> list[RunResult]:
     """골든셋 질문을 실제 RAG 경로에 태워 응답과 검색 청크를 모은다.
 
-    extractor / retriever / responder_factory 는 테스트에서 LLM·DB 호출을
+    analyzer / retriever / responder_factory 는 테스트에서 LLM·DB 호출을
     대체하려고 열어 둔다. 기본값이 곧 운영 경로다.
     on_case 는 사례가 끝날 때마다 불린다(진행 상황 출력용).
     """
 
-    extractor = extractor or GuideSearchQueryExtractor()
+    analyzer = analyzer or AnswerAnalyzer()
     total = len(cases)
     results = []
     for index, case in enumerate(cases, start=1):
@@ -180,7 +186,7 @@ def run_cases(
         result = _run_case(
             case,
             session,
-            extractor=extractor,
+            analyzer=analyzer,
             retriever=retriever,
             responder_factory=responder_factory,
             top_k=top_k,
@@ -196,7 +202,7 @@ def _run_case(
     case: GoldenCase,
     session: Session,
     *,
-    extractor: GuideSearchQueryExtractor,
+    analyzer: AnswerAnalyzer,
     retriever: RetrieverCallable,
     responder_factory: Callable[[Any, int], Any],
     top_k: int,
@@ -205,12 +211,20 @@ def _run_case(
     responder = responder_factory(recorder, top_k)
 
     try:
-        extraction = extractor.extract(user_answers=case.user_input)
-    except Exception as exc:  # 분해 실패는 그 턴 전체가 안내 없이 끝난다
-        logger.warning("질의 분해 실패: id=%s error=%s", case.id, type(exc).__name__)
-        return _empty_result(case, error=f"extract:{type(exc).__name__}")
+        analysis = analyzer.analyze(
+            question_text=RAG_EVALUATION_QUESTION,
+            customer_answer=case.user_input,
+        )
+    except Exception as exc:  # 분석 실패는 그 턴 전체가 안내 없이 끝난다
+        logger.warning("통합 분석 실패: id=%s error=%s", case.id, type(exc).__name__)
+        return _empty_result(case, error=f"analyze:{type(exc).__name__}")
 
-    queries: list[ExtractedGuideSearchQuery] = list(extraction.guide_search_queries)
+    if analysis.quality_verdict is None:
+        reason = analysis.verdict_skip_reason or "UNKNOWN"
+        logger.warning("통합 분석 실패: id=%s reason=%s", case.id, reason)
+        return _empty_result(case, error=f"analyze:{reason}")
+
+    queries: list[ExtractedGuideSearchQuery] = list(analysis.guide_search_queries)
     if not queries:
         # 분해 결과가 없는 턴은 본문이 비므로 메시지를 보내지 않는다(PRD 2.5).
         return _empty_result(case)

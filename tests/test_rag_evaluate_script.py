@@ -101,11 +101,11 @@ class ProgressPrinterTest(unittest.TestCase):
             retrieved_contexts=(),
             retrieved_locators=(),
             search_queries=(),
-            error="extract:GuideSearchQueryExtractionError",
+            error="analyze:EVALUATOR_FAILED",
         )
         line = self._emit(result)
         self.assertIn("오류", line)
-        self.assertIn("GuideSearchQueryExtractionError", line)
+        self.assertIn("EVALUATOR_FAILED", line)
 
     def test_첫_사례에서도_남은_시간이_계산된다(self):
         # index=1 일 때 0으로 나누지 않아야 한다.

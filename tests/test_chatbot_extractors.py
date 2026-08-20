@@ -5,13 +5,10 @@ from app.domain.fraud_circumstance_codes import (
     BROKEN_PHONE_OR_PC_MESSENGER_EXCUSE,
 )
 from app.services.chatbot.extractors import (
-    ChatbotExtractionError,
     FraudCircumstanceExtractor,
-    GuideSearchQueryExtractor,
 )
 from app.services.chatbot.prompts import (
     render_fraud_circumstance_extraction_prompt,
-    render_guide_search_query_extraction_prompt,
 )
 
 
@@ -26,120 +23,6 @@ class FakeStructuredLLM:
         if isinstance(result, Exception):
             raise result
         return result
-
-
-class TestGuideSearchQueryExtractor(unittest.TestCase):
-    def test_keeps_queries_whose_evidence_is_not_verbatim(self) -> None:
-        """A.2가 evidence 원문 일치를 요구하지 않으므로 질의를 버리지 않는다.
-
-        버리면 프롬프트를 줄인 만큼 질의가 통째로 사라져 가이드가 나오지 않는다.
-        검색을 이끄는 것은 search_query 이고 evidence 는 감사 기록이다.
-        """
-        answer = (
-            "오늘 ATM기에서 십만원을 입금했고 모르는 사람한테 전화가 와서 "
-            "받았어 그 사람에게 전화번호를 전송해줬어"
-        )
-        llm = FakeStructuredLLM(
-            [
-                {
-                    "guide_search_queries": [
-                        {
-                            "title": "모르는 사람의 전화 수신",
-                            "search_query": "모르는 사람의 전화를 받은 경우 보안 대응 방법",
-                            "evidence": "모르는 사람한테 전화가 와서 받았어",
-                        },
-                        {
-                            "title": "전화번호 제공",
-                            "search_query": "모르는 사람에게 전화번호를 제공한 경우 대응 방법",
-                            "evidence": "그 사람에게 전화번호를 전송해줬어",
-                        },
-                        {
-                            "title": "꾸며낸 앱 설치",
-                            "search_query": "의심 앱을 설치한 경우 대응 방법",
-                            "evidence": "앱을 설치했어",
-                        },
-                    ]
-                }
-            ]
-        )
-        extractor = GuideSearchQueryExtractor(structured_llm=llm)
-
-        # 원문에 없는 evidence("앱을 설치했어")도 버리지 않고 기록만 남긴다.
-        with self.assertLogs(
-            "app.services.chatbot.extractors",
-            level="DEBUG",
-        ) as logs:
-            result = extractor.extract(user_answers=answer)
-
-        self.assertEqual(
-            [query.title for query in result.guide_search_queries],
-            ["모르는 사람의 전화 수신", "전화번호 제공", "꾸며낸 앱 설치"],
-        )
-        self.assertTrue(
-            any("답변 원문과 다릅니다" in line for line in logs.output),
-        )
-        self.assertEqual(
-            llm.calls,
-            [render_guide_search_query_extraction_prompt(user_answers=answer)],
-        )
-
-    def test_normalizes_and_deduplicates_search_queries(self) -> None:
-        answer = "모르는 사람에게 전화번호를 보냈어요"
-        llm = FakeStructuredLLM(
-            [
-                {
-                    "guide_search_queries": [
-                        {
-                            "title": "전화번호 제공",
-                            "search_query": "  전화번호를   제공한 경우 대응 방법  ",
-                            "evidence": "전화번호를 보냈어요",
-                        },
-                        {
-                            "title": "중복 요구",
-                            "search_query": "전화번호를 제공한 경우 대응 방법",
-                            "evidence": "전화번호를 보냈어요",
-                        },
-                    ]
-                }
-            ]
-        )
-
-        result = GuideSearchQueryExtractor(structured_llm=llm).extract(
-            user_answers=answer
-        )
-
-        self.assertEqual(len(result.guide_search_queries), 1)
-        self.assertEqual(
-            result.guide_search_queries[0].search_query,
-            "전화번호를 제공한 경우 대응 방법",
-        )
-
-    def test_empty_result_is_allowed(self) -> None:
-        extractor = GuideSearchQueryExtractor(
-            structured_llm=FakeStructuredLLM([{"guide_search_queries": []}])
-        )
-
-        result = extractor.extract(user_answers="오늘 날씨가 좋네요")
-
-        self.assertEqual(result.guide_search_queries, [])
-
-    def test_extraction_failure_retries_then_raises_service_error(self) -> None:
-        llm = FakeStructuredLLM(
-            [TimeoutError("timeout"), ConnectionError("disconnected")]
-        )
-        extractor = GuideSearchQueryExtractor(
-            structured_llm=llm,
-            max_attempts=2,
-        )
-
-        with self.assertLogs(
-            "app.services.chatbot.extractors",
-            level="WARNING",
-        ):
-            with self.assertRaises(ChatbotExtractionError):
-                extractor.extract(user_answers="답변")
-
-        self.assertEqual(len(llm.calls), 2)
 
 
 class TestFraudCircumstanceExtractor(unittest.TestCase):

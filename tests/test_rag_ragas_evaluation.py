@@ -7,14 +7,16 @@ ragas 자체(지표 계산)는 eval 전용 의존성이라 여기서 부르지 �
 import unittest
 
 from app.dto.chatbot import (
+    AnswerQualityVerdict,
     ExtractedGuideSearchQuery,
-    GuideSearchQueryExtractionResult,
     RetrievedChatbotGuideChunkDTO,
 )
+from app.services.chatbot.answer_analyzer import AnswerAnalysisOutcome
 from app.services.chatbot.guide_responder import GuideResponse
 from app.services.chatbot.messages import UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
 from app.services.rag.golden_dataset import GoldenCase, GoldenContext
 from app.services.rag.ragas_evaluation import (
+    RAG_EVALUATION_QUESTION,
     RunResult,
     _pick_scores,
     build_report,
@@ -50,22 +52,25 @@ def _case(case_id, category, contexts=(), difficulty=None):
     )
 
 
-class _StubExtractor:
-    """질의 분해 LLM 대역. queries_by_case 에 없는 사례는 0건을 낸다."""
+class _StubAnalyzer:
+    """통합 분석 LLM 대역. queries_by_case 에 없는 사례는 질의 0건을 낸다."""
 
     def __init__(self, queries_by_case):
         self.queries_by_case = queries_by_case
+        self.calls = []
 
-    def extract(self, *, user_answers):
-        case_id = user_answers.split()[0]
+    def analyze(self, *, question_text, customer_answer):
+        self.calls.append((question_text, customer_answer))
+        case_id = customer_answer.split()[0]
         queries = self.queries_by_case.get(case_id, [])
-        return GuideSearchQueryExtractionResult(
-            guide_search_queries=[
+        return AnswerAnalysisOutcome(
+            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
+            guide_search_queries=tuple(
                 ExtractedGuideSearchQuery(
                     title="소제목", search_query=q, evidence="근거"
                 )
                 for q in queries
-            ]
+            ),
         )
 
 
@@ -110,10 +115,11 @@ class RunCasesTest(unittest.TestCase):
         def fake_retriever(question, session, top_k=3):
             return found
 
+        self.analyzer = _StubAnalyzer(queries)
         return run_cases(
             tuple(cases),
             session=None,
-            extractor=_StubExtractor(queries),
+            analyzer=self.analyzer,
             retriever=fake_retriever,
             responder_factory=lambda recorder, top_k: _StubResponder(
                 recorder, message, grounded
@@ -128,6 +134,10 @@ class RunCasesTest(unittest.TestCase):
         self.assertEqual(results[0].retrieved_locators, (("C02.pdf", 2),))
         self.assertEqual(results[0].search_queries, ("스미싱 신고",))
         self.assertFalse(results[0].abstained)
+        self.assertEqual(
+            self.analyzer.calls,
+            [(RAG_EVALUATION_QUESTION, case.user_input)],
+        )
 
     def test_질의_분해가_0건이면_응답이_비고_기권으로_본다(self):
         case = _case("unans-001", "unanswerable")

@@ -4,7 +4,7 @@
 옮기는 것까지만 본다. 그래프 내부 분기는 tests/test_chatbot_pipeline.py 가 맡는다.
 
 LLM 은 부르지 않는다 — CI 가 ``OPENAI_API_KEY=test-only-key`` 로 돌기 때문에 실호출이
-있으면 깨진다. 평가 LLM 이 필요한 경로는 파이프라인이 지연 생성하는 자리를 대역으로 바꾼다.
+있으면 깨진다. 통합 분석 LLM 이 필요한 경로는 파이프라인이 지연 생성하는 자리를 대역으로 바꾼다.
 """
 
 import json
@@ -44,9 +44,8 @@ from app.dto.chatbot import (
     AnswerQualityVerdict,
     ExtractedGuideSearchQuery,
     FraudCircumstanceExtractionTask,
-    GuideSearchQueryExtractionResult,
 )
-from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
+from app.services.chatbot.answer_analyzer import AnswerAnalysisOutcome
 from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
 from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
 from app.services.chatbot.fraud_circumstance_task_runner import (
@@ -67,38 +66,49 @@ NOW = datetime(2026, 8, 16, 14, 3, tzinfo=UTC)
 BIRTH_YEAR = "1958"
 
 
-class _FakeEvaluator:
-    """평가 LLM 자리에 끼워 넣는 대역. 판정을 고정한다."""
+class _FakeAnswerAnalyzer:
+    """통합 분석 LLM 자리에 끼워 넣는 대역."""
 
-    def __init__(self, verdict: AnswerQualityVerdict) -> None:
+    def __init__(
+        self,
+        verdict: AnswerQualityVerdict,
+        guide_search_queries: tuple[ExtractedGuideSearchQuery, ...] = (),
+    ) -> None:
         self.verdict = verdict
+        self.guide_search_queries = guide_search_queries
 
-    def evaluate(
+    def analyze(
         self,
         *,
         question_text: str,
         customer_answer: str,
-    ) -> AnswerEvaluationOutcome:
-        return AnswerEvaluationOutcome(quality_verdict=self.verdict)
+    ) -> AnswerAnalysisOutcome:
+        return AnswerAnalysisOutcome(
+            quality_verdict=self.verdict,
+            guide_search_queries=(
+                self.guide_search_queries
+                if self.verdict is AnswerQualityVerdict.SUFFICIENT
+                else ()
+            ),
+        )
 
 
-class _FakeGuideSearchQueryExtractor:
-    """가이드 분해 LLM 자리에 끼워 넣는 대역. 분해 결과 0건을 돌려준다."""
-
-    def extract(self, *, user_answers: str) -> GuideSearchQueryExtractionResult:
-        return GuideSearchQueryExtractionResult(guide_search_queries=[])
-
-
-class _FakeStreamingGuideSearchQueryExtractor:
-    def extract(self, *, user_answers: str) -> GuideSearchQueryExtractionResult:
-        return GuideSearchQueryExtractionResult(
-            guide_search_queries=[
+class _FakeStreamingAnswerAnalyzer:
+    def analyze(
+        self,
+        *,
+        question_text: str,
+        customer_answer: str,
+    ) -> AnswerAnalysisOutcome:
+        return AnswerAnalysisOutcome(
+            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
+            guide_search_queries=(
                 ExtractedGuideSearchQuery(
                     title="의심스러운 링크",
                     search_query="의심스러운 링크 확인 방법",
-                    evidence=user_answers,
-                )
-            ]
+                    evidence=customer_answer,
+                ),
+            ),
         )
 
 
@@ -114,26 +124,17 @@ class _FakeStreamingGuideResponder:
         return GuideResponse(message_text=snapshots[-1])
 
 
-class _FailingEvaluator:
-    def evaluate(self, *, question_text: str, customer_answer: str):
+class _FailingAnalyzer:
+    def analyze(self, *, question_text: str, customer_answer: str):
         raise RuntimeError("unexpected evaluator failure")
 
 
-def _evaluating(verdict: AnswerQualityVerdict):
-    """파이프라인이 지연 생성하는 ``AnswerEvaluator`` 를 대역으로 바꾼다."""
+def _analyzing(verdict: AnswerQualityVerdict):
+    """파이프라인이 지연 생성하는 ``AnswerAnalyzer`` 를 대역으로 바꾼다."""
 
     return patch(
-        "app.pipelines.customer_chatbot_pipeline.AnswerEvaluator",
-        lambda: _FakeEvaluator(verdict),
-    )
-
-
-def _extracting_no_guide_query():
-    """SUFFICIENT 턴이 부르는 가이드 분해 LLM 을 대역으로 바꾼다."""
-
-    return patch(
-        "app.pipelines.customer_chatbot_pipeline.GuideSearchQueryExtractor",
-        _FakeGuideSearchQueryExtractor,
+        "app.pipelines.customer_chatbot_pipeline.AnswerAnalyzer",
+        lambda: _FakeAnswerAnalyzer(verdict),
     )
 
 
@@ -440,7 +441,7 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.TOO_VAGUE):
+        with _analyzing(AnswerQualityVerdict.TOO_VAGUE):
             response = self._send(chat_session.chat_session_id)
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -463,7 +464,7 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.WANT_END):
+        with _analyzing(AnswerQualityVerdict.WANT_END):
             response = self._send(chat_session.chat_session_id, message_text="그만할래요")
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -487,7 +488,7 @@ class ChatApiTest(unittest.TestCase):
             subscriber_queue,
         )
 
-        with _evaluating(AnswerQualityVerdict.WANT_END):
+        with _analyzing(AnswerQualityVerdict.WANT_END):
             self._send(chat_session.chat_session_id, message_text="그만할래요")
 
         event = subscriber_queue.get_nowait()
@@ -515,7 +516,7 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.SUFFICIENT), _extracting_no_guide_query():
+        with _analyzing(AnswerQualityVerdict.SUFFICIENT):
             response = self._send(
                 chat_session.chat_session_id,
                 message_text="검찰이라고 전화가 왔어요",
@@ -544,10 +545,9 @@ class ChatApiTest(unittest.TestCase):
         )
 
         with (
-            _evaluating(AnswerQualityVerdict.SUFFICIENT),
             patch(
-                "app.pipelines.customer_chatbot_pipeline.GuideSearchQueryExtractor",
-                _FakeStreamingGuideSearchQueryExtractor,
+                "app.pipelines.customer_chatbot_pipeline.AnswerAnalyzer",
+                _FakeStreamingAnswerAnalyzer,
             ),
             patch(
                 "app.pipelines.customer_chatbot_pipeline.GuideResponder",
@@ -587,8 +587,8 @@ class ChatApiTest(unittest.TestCase):
         )
 
         with patch(
-            "app.pipelines.customer_chatbot_pipeline.AnswerEvaluator",
-            _FailingEvaluator,
+            "app.pipelines.customer_chatbot_pipeline.AnswerAnalyzer",
+            _FailingAnalyzer,
         ):
             response = self._send(chat_session.chat_session_id)
 
@@ -605,7 +605,7 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.TOO_VAGUE):
+        with _analyzing(AnswerQualityVerdict.TOO_VAGUE):
             self._send(chat_session.chat_session_id)
 
         self.assertEqual(self.scheduled_extractions, [])
@@ -618,7 +618,7 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.WANT_END):
+        with _analyzing(AnswerQualityVerdict.WANT_END):
             response = self._send(
                 chat_session.chat_session_id, message_text="그만할래요"
             )

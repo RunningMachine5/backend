@@ -62,6 +62,7 @@ class AnswerQualityVerdict(StrEnum):
     TOO_VAGUE = "TOO_VAGUE"
     WANT_END = "WANT_END"
 
+
 # https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758183824&cot=14
 class AnswerEvaluationResult(BaseModel):
     """평가 LLM이 반환할 JSON 객체 스키마.
@@ -72,6 +73,7 @@ class AnswerEvaluationResult(BaseModel):
 
     verdict: AnswerQualityVerdict
 
+
 class ExtractedGuideSearchQuery(BaseModel):
     """고객 답변에서 분해한 독립 검색 단위와 원문 근거."""
 
@@ -79,11 +81,13 @@ class ExtractedGuideSearchQuery(BaseModel):
     search_query: str = Field(min_length=1, max_length=500)
     evidence: str = Field(min_length=1)
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758280649&cot=14
-class GuideSearchQueryExtractionResult(BaseModel):
-    """대응 가이드 검색 질의 분해 LLM의 구조화 출력."""
 
+class AnswerAnalysisResult(BaseModel):
+    """답변 판정과 가이드 검색 질의 분해를 합친 LLM 구조화 출력."""
+
+    verdict: AnswerQualityVerdict
     guide_search_queries: list[ExtractedGuideSearchQuery] = Field(max_length=5)
+
 
 class ExtractedFraudCircumstance(BaseModel):
     """고객 답변에서 추출한 화이트리스트 사기 정황과 원문 근거."""
@@ -285,6 +289,7 @@ class RetrievedChatbotGuideChunkDTO:
 
 
 __all__ = [
+    "AnswerAnalysisResult",
     "AnswerEvaluationResult",
     "AnswerQualityVerdict",
     "ChatButtonAction",
@@ -301,7 +306,6 @@ __all__ = [
     "FraudCircumstanceExtractionResult",
     "FraudCircumstanceExtractionTask",
     "FraudTypeCode",
-    "GuideSearchQueryExtractionResult",
     "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",
     "TransactionChatSessionDetailResponse",

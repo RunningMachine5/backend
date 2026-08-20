@@ -153,12 +153,17 @@ FDS·Agent 결합.
   - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한,
     상한 소진 시 고객 판정과 분리된 경로로 다음 질문에 진행하고
     `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
-- [x] `app/services/chatbot/extractors.py` — A.2 가이드 검색 질의 분해 / A.3 사기 정황 추출 호출.
-  structured output 스키마는 1단계 DTO. A.2는 원문과 다른 `evidence`도 RAG 질의로 유지하되
-  리포지토리가 해당 감사 행을 저장하지 않고, A.3는 원문과 다른 정황을 추출 단계에서 버린다
-- [x] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
+- [x] `app/services/chatbot/answer_analyzer.py` — 운영 경로의 A.1 판정과 A.2 검색 질의 분해를
+  `AnswerAnalysisResult` 한 번의 구조화 출력으로 통합한다. `SUFFICIENT`만 질의를 다음 노드로
+  전달하고, 실패 시 별도 평가·분해 폴백 없이 기존 `EVALUATOR_FAILED` 경로를 쓴다.
+- [x] `app/services/chatbot/extractors.py` — A.2 검색 질의 공통 정규화와 A.3 사기 정황 추출.
+  A.2는 원문과 다른 `evidence`도 RAG 질의로 유지하되 리포지토리가 해당 감사 행을 저장하지
+  않고, A.3는 원문과 다른 정황을 추출 단계에서 버린다
+- [x] 테스트 `tests/test_chatbot_answer_analyzer.py` / `test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 3종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
+- [x] 실제 지연 비교: 5개 사례 × 3회에서 LLM 호출 30→15회, 중앙값
+  2937.7→2790.2ms(5.02% 감소), p95 6041.9→4610.9ms.
 
 ## 5단계 — RAG 응답 조립 + 채점 집계
 
@@ -290,7 +295,7 @@ FDS·Agent 결합.
   상태 전이, 상태에 맞지 않는 입력의 `409`, 거래별 세션 상태·상담 내역 조회.
   세션 생성 멱등·폴백 이메일은 `tests/test_chat_session_creator.py`가, 스크립트 인자 계약은
   `tests/test_seed_chat_session_script.py`가 맡는다
-  - 평가 LLM 이 필요한 턴은 파이프라인이 지연 생성하는 `AnswerEvaluator` 자리를 대역으로
+  - 통합 분석 LLM 이 필요한 턴은 파이프라인이 지연 생성하는 `AnswerAnalyzer` 자리를 대역으로
     바꾼다. 라우터에 서비스 주입 지점이 없어 생성자 주입 대신 패치를 쓴다
 
 ## 8단계 — FDS·Agent 파이프라인 결합

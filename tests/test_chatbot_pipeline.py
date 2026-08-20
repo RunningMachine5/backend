@@ -33,15 +33,13 @@ from app.dto.chatbot import (
     ChatButtonAction,
     ExtractedGuideSearchQuery,
     FraudCircumstanceExtractionTask,
-    GuideSearchQueryExtractionResult,
 )
 from app.pipelines.customer_chatbot_pipeline import (
     ChatTurnRejectedError,
     CustomerChatbotPipeline,
 )
 from app.repositories.chat_session import ChatSessionRepository
-from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
-from app.services.chatbot.extractors import GuideSearchQueryExtractionError
+from app.services.chatbot.answer_analyzer import AnswerAnalysisOutcome
 from app.services.chatbot.guide_responder import GuideResponse
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
@@ -57,34 +55,31 @@ from app.services.chatbot.questions import (
 )
 
 
-class FakeEvaluator:
-    """판정을 미리 정해두고 순서대로 돌려준다."""
+class FakeAnswerAnalyzer:
+    """판정과 검색 질의를 미리 정해두고 순서대로 돌려준다."""
 
-    def __init__(self, *verdicts: AnswerQualityVerdict) -> None:
+    def __init__(
+        self,
+        *verdicts: AnswerQualityVerdict,
+        guide_search_queries: list[ExtractedGuideSearchQuery] | None = None,
+    ) -> None:
+        queries = tuple(guide_search_queries or [])
         self.outcomes = [
-            AnswerEvaluationOutcome(quality_verdict=verdict)
+            AnswerAnalysisOutcome(
+                quality_verdict=verdict,
+                guide_search_queries=(
+                    queries
+                    if verdict is AnswerQualityVerdict.SUFFICIENT
+                    else ()
+                ),
+            )
             for verdict in verdicts
         ]
         self.calls: list[tuple[str, str]] = []
 
-    def evaluate(self, *, question_text: str, customer_answer: str):
+    def analyze(self, *, question_text: str, customer_answer: str):
         self.calls.append((question_text, customer_answer))
         return self.outcomes[min(len(self.calls) - 1, len(self.outcomes) - 1)]
-
-
-class FakeGuideSearchQueryExtractor:
-    def __init__(self, result=None, error: Exception | None = None) -> None:
-        self.result = result or GuideSearchQueryExtractionResult(
-            guide_search_queries=[]
-        )
-        self.error = error
-        self.calls = 0
-
-    def extract(self, *, user_answers: str):
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        return self.result
 
 
 class FakeGuideResponder:
@@ -152,8 +147,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         """턴 사이 상태만 공유하고 테스트끼리는 격리된 체크포인터를 쓴다."""
 
         options = {
-            "evaluator": FakeEvaluator(AnswerQualityVerdict.SUFFICIENT),
-            "guide_search_query_extractor": FakeGuideSearchQueryExtractor(),
+            "answer_analyzer": FakeAnswerAnalyzer(AnswerQualityVerdict.SUFFICIENT),
             "guide_responder": FakeGuideResponder(),
         }
         options.update(overrides)
@@ -244,26 +238,26 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
     # -- 2.4 판정별 분기 ----------------------------------------------
 
     def test_sufficient_answers_guide_and_schedules_extraction(self) -> None:
-        guide_extractor = FakeGuideSearchQueryExtractor(
-            GuideSearchQueryExtractionResult(
-                guide_search_queries=[
-                    ExtractedGuideSearchQuery(
-                        title="의심스러운 링크를 열었을 때",
-                        search_query="문자 링크를 클릭했을 때 어떻게 해야 하나요?",
-                        evidence="문자로 온 링크를 눌렀어요",
-                    )
-                ]
-            )
+        analyzer = FakeAnswerAnalyzer(
+            AnswerQualityVerdict.SUFFICIENT,
+            guide_search_queries=[
+                ExtractedGuideSearchQuery(
+                    title="의심스러운 링크를 열었을 때",
+                    search_query="문자 링크를 클릭했을 때 어떻게 해야 하나요?",
+                    evidence="문자로 온 링크를 눌렀어요",
+                )
+            ],
         )
         responder = FakeGuideResponder()
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.SUFFICIENT),
-            guide_search_query_extractor=guide_extractor,
+            answer_analyzer=analyzer,
             guide_responder=responder,
         )
 
         message_text = "검찰이라고 전화가 왔어요 그리고 문자로 온 링크를 눌렀어요"
         result = pipeline.handle_message(message_text)
+
+        self.assertEqual(len(analyzer.calls), 1)
 
         # 가이드 응답 → 다음 질문 순서로 나간다.
         self.assertEqual(
@@ -306,24 +300,9 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         self.assertEqual(result.messages, (FOLLOW_UP_QUESTION,))
         self.assertEqual(responder.calls, 0)
 
-    def test_guide_extraction_failure_still_schedules_circumstances(self) -> None:
-        """가이드 분해가 실패해도 사기 정황 추출 예약은 남는다(경로가 독립적이다)."""
-
-        guide_extractor = FakeGuideSearchQueryExtractor(
-            error=GuideSearchQueryExtractionError("boom")
-        )
-        pipeline = self._start_chat(
-            guide_search_query_extractor=guide_extractor,
-        )
-
-        result = pipeline.handle_message("검찰이라고 전화가 왔어요")
-
-        self.assertEqual(result.messages, (FOLLOW_UP_QUESTION,))
-        self.assertIsNotNone(result.pending_extraction)
-
     def test_too_vague_reasks_without_advancing_question_step(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.TOO_VAGUE)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.TOO_VAGUE)
         )
 
         result = pipeline.handle_message("그냥요")
@@ -334,7 +313,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_refusal_like_answer_uses_too_vague_reask(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.TOO_VAGUE)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.TOO_VAGUE)
         )
 
         result = pipeline.handle_message("말하기 싫어요")
@@ -344,7 +323,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_third_vague_answer_is_adopted_and_moves_on(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.TOO_VAGUE)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.TOO_VAGUE)
         )
 
         pipeline.handle_message("몰라요")
@@ -366,14 +345,14 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         )
 
     def test_evaluator_failure_uses_separate_next_question_route(self) -> None:
-        class FailingEvaluator:
-            def evaluate(self, *, question_text: str, customer_answer: str):
-                return AnswerEvaluationOutcome(
+        class FailingAnalyzer:
+            def analyze(self, *, question_text: str, customer_answer: str):
+                return AnswerAnalysisOutcome(
                     quality_verdict=None,
                     verdict_skip_reason="EVALUATOR_FAILED",
                 )
 
-        pipeline = self._start_chat(evaluator=FailingEvaluator())
+        pipeline = self._start_chat(answer_analyzer=FailingAnalyzer())
 
         result = pipeline.handle_message("링크를 눌렀어요")
 
@@ -392,7 +371,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
         """종료 턴의 안전망 재계산은 백그라운드가 저장해 둔 정황까지 합산한다."""
 
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(
+            answer_analyzer=FakeAnswerAnalyzer(
                 AnswerQualityVerdict.SUFFICIENT,
                 AnswerQualityVerdict.WANT_END,
             ),
@@ -430,7 +409,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_want_end_with_no_circumstance_stores_zero_scores(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.WANT_END)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.WANT_END)
         )
 
         pipeline.handle_message("그만할래요")
@@ -441,7 +420,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_want_end_does_not_schedule_extraction(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.WANT_END)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.WANT_END)
         )
 
         result = pipeline.handle_message("그만할래요")
@@ -450,7 +429,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_want_end_does_not_adopt_the_answer(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.WANT_END)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.WANT_END)
         )
 
         pipeline.handle_message("그만할래요")
@@ -460,16 +439,15 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
     # -- 2.5 0건은 상태를 전이시키지 않는다 -----------------------------
 
     def test_all_zero_hit_guide_response_keeps_status(self) -> None:
-        guide_extractor = FakeGuideSearchQueryExtractor(
-            GuideSearchQueryExtractionResult(
-                guide_search_queries=[
-                    ExtractedGuideSearchQuery(
-                        title="신분증 사본을 전달했을 때",
-                        search_query="신분증 사본을 보냈을 때 어떻게 해야 하나요?",
-                        evidence="신분증 사진을 보냈어요",
-                    )
-                ]
-            )
+        analyzer = FakeAnswerAnalyzer(
+            AnswerQualityVerdict.SUFFICIENT,
+            guide_search_queries=[
+                ExtractedGuideSearchQuery(
+                    title="신분증 사본을 전달했을 때",
+                    search_query="신분증 사본을 보냈을 때 어떻게 해야 하나요?",
+                    evidence="신분증 사진을 보냈어요",
+                )
+            ],
         )
         # 전체 0건이어도 GuideResponder는 B.5 문구로 채운 본문을 돌려준다.
         responder = FakeGuideResponder(
@@ -477,7 +455,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
             "말씀해주신 이 부분은 제가 안내해드릴 수 있는 자료를 찾지 못했어요."
         )
         pipeline = self._start_chat(
-            guide_search_query_extractor=guide_extractor,
+            answer_analyzer=analyzer,
             guide_responder=responder,
         )
 
@@ -490,7 +468,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_question_step_two_and_beyond_repeat_follow_up(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.SUFFICIENT)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.SUFFICIENT)
         )
 
         pipeline.handle_message("첫 답변")
@@ -513,7 +491,7 @@ class CustomerChatbotPipelineTest(unittest.TestCase):
 
     def test_ai_and_human_messages_are_logged(self) -> None:
         pipeline = self._start_chat(
-            evaluator=FakeEvaluator(AnswerQualityVerdict.TOO_VAGUE)
+            answer_analyzer=FakeAnswerAnalyzer(AnswerQualityVerdict.TOO_VAGUE)
         )
         pipeline.handle_message("말하기 싫어요")
 

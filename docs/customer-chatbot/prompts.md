@@ -9,8 +9,8 @@
 
 | 절 | 프롬프트 | 사용처 |
 | --- | --- | --- |
-| [A.1](#a1-고객응답-평가-프롬프트) | 고객응답 평가 | 응답 충실도 판정 3종 |
-| [A.2](#a2-가이드-검색-질의-분해-프롬프트) | 가이드 검색 질의 분해 | 동적 검색 단위 최대 5개 |
+| [A.1](#a1-고객응답-평가-프롬프트) | 고객응답 통합 분석 | 응답 판정 3종 + 검색 질의 최대 5개 |
+| [A.2](#a2-가이드-검색-질의-분해-프롬프트) | 가이드 검색 질의 규칙 | A.1 통합 분석의 targeted query 생성 규칙 |
 | [A.3](#a3-사기-정황-추출-프롬프트) | 사기 정황 추출 | `fraud_circumstance` 20종 |
 | [A.4](#a4-대응-가이드-생성-프롬프트) | 대응 가이드 생성 | RAG Generate 1회 통합 호출 |
 
@@ -19,7 +19,7 @@
 
 #### 프롬프트에 적용한 출력 원칙
 
-평가(A.1)·검색 질의 분해(A.2)·사기 정황 추출(A.3)은
+통합 분석(A.1, A.2 규칙 포함)·사기 정황 추출(A.3)은
 [build_structured_llm](../../app/services/chatbot/llm.py)의 `strict=True` `json_schema`를 쓴다.
 이 세 호출은 스키마가 강제하는 출력 형식·enum 화이트리스트를 프롬프트에 중복하지 않는다.
 
@@ -34,7 +34,7 @@
 | `JSON 이외의 설명이나 마크다운을 출력하지 않습니다` | A.2 | 같음. A.3에는 아직 남아 있다 |
 | `허용된 enum 이외의 값은 생성하지 않습니다` | A.3 | `Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]` + 저장 직전 검증([스키마 3.8](schema.md#38-appdomain-enum-코드-상수화)) |
 
-**컨텍스트에 없는 정보는 금지하지 않는다.** A.1은 직전 질문과 고객 답변만, A.2와 A.3은 고객
+**컨텍스트에 없는 정보는 금지하지 않는다.** A.1은 직전 질문과 고객 답변을 함께, A.2와 A.3은 고객
 답변만 받는다([3.2](README.md#32-프롬프트rag)). 프롬프트에 들어오지 않는 입력이나 도달하지
 않는 입력을 금지하는 규칙은 판단 공간만 넓힌다.
 
@@ -49,6 +49,11 @@
 ### A.1 고객응답 평가 프롬프트
 
 사용처: [2.4 조건 2](README.md#조건-2-고객응답-평가-llm)
+
+운영 파이프라인은 이 판정과 A.2의 가이드 검색 질의 분해를
+`AnswerAnalysisResult { verdict, guide_search_queries }` 한 번의 구조화 출력으로 받는다.
+`TOO_VAGUE`와 `WANT_END`는 `guide_search_queries=[]`를 강제하고, `SUFFICIENT`만 아래
+A.2 규칙으로 0~5개의 targeted query를 함께 만든다.
 
 ```text
 QUALITY_CHECK_PROMPT = """
@@ -68,12 +73,18 @@ QUALITY_CHECK_PROMPT = """
 - 모호하거나 질문과 무관한 답변, "모름"·"기억 안 남" 같은 판단 불가 응답은 TOO_VAGUE로 분류합니다.
 - 현재 질문에 대한 답변만 거부하거나 회피하는 경우와 고객이 되묻는 경우도 TOO_VAGUE로 분류합니다.
 - 전체 상담을 그만두거나 종료하겠다는 의사가 명확한 경우에만 WANT_END로 분류합니다.
+- verdict가 TOO_VAGUE 또는 WANT_END이면 guide_search_queries는 반드시 빈 배열입니다.
+- verdict가 SUFFICIENT이면 A.2 규칙에 따라 가이드 검색 질의를 함께 생성합니다.
 """
 ```
 
 ### A.2 가이드 검색 질의 분해 프롬프트
 
 사용처: [2.5 가이드 검색 질의 분해](README.md#가이드-검색-질의-분해)
+
+아래 규칙은 별도 템플릿이 아니라 A.1 통합 프롬프트의
+`GUIDE_SEARCH_QUERY_RULES` 부분이다. 운영 고객 턴과 RAGAS 골든셋 평가가 모두
+`AnswerAnalyzer`를 호출하므로 판정과 질의 분해 계약이 같다.
 
 ```text
 당신은 금융 이상거래 상담에서 고객 답변을 RAG로 독립 검색할 수 있는 가이드 검색 질의로 분해합니다.
@@ -100,8 +111,8 @@ QUALITY_CHECK_PROMPT = """
 
 #### 규칙을 줄인 이유
 
-A.2는 최대 5개 객체 × 자유 텍스트 3필드를 만드는 작업이라 현재 측정에서 네 LLM 호출 중
-가장 느렸다. A.1은 분류, A.3은 enum 선택이라 출력이 짧고, A.4는 근거가 있는 검색 질의를
+A.2는 최대 5개 객체 × 자유 텍스트 3필드를 만드는 작업이라 과거 분리 측정에서 네 LLM 호출 중
+가장 느렸다. 현재 운영 경로는 A.1과 A.2를 합쳤다. A.3은 enum 선택이고, A.4는 근거가 있는 검색 질의를
 한 번에 안내문으로 만든다. A.2의 규칙이 많을수록 열린 출력 공간에서 검사할 것이 늘어
 추론 토큰까지 함께 커진다
 (모델별 측정값은 [PRD 2.4](README.md#모델reasoning-effort와-타임아웃-예산)).
@@ -113,7 +124,7 @@ A.2는 최대 5개 객체 × 자유 텍스트 3필드를 만드는 작업이라 
 
 | 뺀 규칙 | 대신 보장하는 것 |
 | --- | --- |
-| 최대 5개만 반환 | `GuideSearchQueryExtractionResult.guide_search_queries`의 `max_length=5`. 프롬프트에는 **5개는 상한일 뿐 목표가 아니다**라는 생성 의도를 남긴다 |
+| 최대 5개만 반환 | `AnswerAnalysisResult.guide_search_queries`의 `max_length=5`. 프롬프트에는 **5개는 상한일 뿐 목표가 아니다**라는 생성 의도를 남긴다 |
 | title 120자 / search_query 500자 | `ExtractedGuideSearchQuery`의 `Field(max_length=...)` ([app/dto/chatbot.py](../../app/dto/chatbot.py)) |
 
 `evidence`의 출력 예시는 현재 코드와 같이 `사용자 답변의 정확한 원문`이라고 쓰지만,

@@ -7,18 +7,19 @@ from app.domain.fraud_circumstance_codes import (
 )
 from app.domain.fraud_type_codes import MESSENGER_PHISHING, VOICE_PHISHING
 from app.dto.chatbot import (
+    AnswerAnalysisResult,
     AnswerEvaluationResult,
     AnswerQualityVerdict,
     CreateChatRequest,
     FraudCircumstanceExtractionResult,
-    GuideSearchQueryExtractionResult,
 )
 
 
 class TestChatbotStructuredOutputDTO(unittest.TestCase):
     def test_accepts_guide_search_query_without_action_whitelist(self) -> None:
-        result = GuideSearchQueryExtractionResult.model_validate(
+        result = AnswerAnalysisResult.model_validate(
             {
+                "verdict": "SUFFICIENT",
                 "guide_search_queries": [
                     {
                         "title": "전화번호 제공",
@@ -34,8 +35,9 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
     def test_preserves_guide_search_query_evidence_whitespace(self) -> None:
         evidence = " 링크를 눌렀어요 "
 
-        result = GuideSearchQueryExtractionResult.model_validate(
+        result = AnswerAnalysisResult.model_validate(
             {
+                "verdict": "SUFFICIENT",
                 "guide_search_queries": [
                     {
                         "title": "의심 링크",
@@ -50,8 +52,9 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
 
     def test_rejects_more_than_five_guide_search_queries(self) -> None:
         with self.assertRaises(ValidationError):
-            GuideSearchQueryExtractionResult.model_validate(
+            AnswerAnalysisResult.model_validate(
                 {
+                    "verdict": "SUFFICIENT",
                     "guide_search_queries": [
                         {
                             "title": f"요구 {index}",
@@ -74,8 +77,11 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
         for item in invalid_items:
             with self.subTest(item=item):
                 with self.assertRaises(ValidationError):
-                    GuideSearchQueryExtractionResult.model_validate(
-                        {"guide_search_queries": [item]}
+                    AnswerAnalysisResult.model_validate(
+                        {
+                            "verdict": "SUFFICIENT",
+                            "guide_search_queries": [item],
+                        }
                     )
 
     def test_accepts_fraud_circumstance_whitelist_value(self) -> None:

@@ -48,15 +48,12 @@ from app.data.model.transaction import Transaction
 from app.dto.chatbot import (
     AnswerQualityVerdict,
     ChatButtonAction,
+    ExtractedGuideSearchQuery,
     FraudCircumstanceExtractionTask,
 )
 from app.repositories.chat_session import ChatSessionRepository
-from app.services.chatbot.answer_evaluator import AnswerEvaluator
+from app.services.chatbot.answer_analyzer import AnswerAnalyzer
 from app.services.chatbot.chat_scoring import rescore_chat_session
-from app.services.chatbot.extractors import (
-    ChatbotExtractionError,
-    GuideSearchQueryExtractor,
-)
 from app.services.chatbot.guide_responder import GuideResponder
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
@@ -120,10 +117,12 @@ class ChatGraphState(TypedDict, total=False):
     button_action: str | None  # event가 BUTTON_ACTION일 때만 사용
     message_text: str | None
     question_step: int  # 턴 사이에 유지되는 진행 상태
-    attempt_no: int # 현재 시도 횟수 
+    attempt_no: int  # 현재 시도 횟수
     # 턴 안에서만 쓰는 값
-    route: str # 다음 경로의 위치
+    route: str  # 다음 경로의 위치
     answer_id: int | None
+    # 통합 분석 LLM이 만든 질의를 체크포인터에 안전한 dict 형태로 전달한다.
+    guide_search_queries: list[dict[str, str]]
     outbound: list[str]
     # 턴 커밋 뒤 백그라운드 추출에 넘길 답변 id (예약이 없으면 None).
     # 체크포인터에 그대로 실리는 값이라 dataclass 가 아니라 id 만 남긴다.
@@ -140,8 +139,7 @@ class CustomerChatbotPipeline:
         *,
         session: Session,
         chat_session: ChatSession,
-        evaluator: AnswerEvaluator | None = None,
-        guide_search_query_extractor: GuideSearchQueryExtractor | None = None,
+        answer_analyzer: AnswerAnalyzer | None = None,
         guide_responder: GuideResponder | None = None,
         checkpointer: Any | None = None,
     ) -> None:
@@ -150,8 +148,7 @@ class CustomerChatbotPipeline:
         self.repository = ChatSessionRepository(session)
         # LLM 클라이언트는 첫 호출까지 만들지 않는다. 최초 알림과 버튼 처리만 하는
         # 턴에서 OPENAI_API_KEY 가 없다는 이유로 실패하지 않게 한다.
-        self._evaluator = evaluator
-        self._guide_search_query_extractor = guide_search_query_extractor
+        self._answer_analyzer = answer_analyzer
         self._guide_responder = guide_responder
         self.graph = self._build_graph(checkpointer or _CHECKPOINTER)
 
@@ -286,6 +283,7 @@ class CustomerChatbotPipeline:
             "button_action": None,
             "message_text": None,
             "answer_id": None,
+            "guide_search_queries": [],
             "outbound": [],
             "pending_extraction_answer_id": None,
             "stream_output": stream_output,
@@ -471,8 +469,8 @@ class CustomerChatbotPipeline:
             sender_type=ChatSenderType.HUMAN,
             message_text=message_text,
         )
-        # 고객 답변 평가
-        outcome = self.evaluator.evaluate(
+        # 고객 답변 판정과 가이드 검색 질의 분해를 한 호출에서 수행한다.
+        outcome = self.answer_analyzer.analyze(
             question_text=render_question(
                 question_step=question_step,
                 top_fraud_types=self.chat_session.top_fraud_types,
@@ -516,6 +514,11 @@ class CustomerChatbotPipeline:
         return {
             "attempt_no": attempt_no,
             "answer_id": answer.answer_id,
+            "guide_search_queries": [
+                query.model_dump() for query in outcome.guide_search_queries
+            ]
+            if verdict is AnswerQualityVerdict.SUFFICIENT
+            else [],
             "route": route,
         }
 
@@ -532,7 +535,7 @@ class CustomerChatbotPipeline:
     def _announce_next(self, state: ChatGraphState) -> dict[str, Any]:
         """재시도 소진 또는 평가 장애 후 다음 질문 전환 안내(B.4).
 
-        평가 LLM 실패(EVALUATOR_FAILED)와 재시도 초과가 같은 문구를 쓴다.
+        통합 분석 LLM 실패(EVALUATOR_FAILED)와 재시도 초과가 같은 문구를 쓴다.
         """
 
         return {"outbound": self._emit(state.get("outbound", []), NEXT_QUESTION_MESSAGE)}
@@ -551,7 +554,10 @@ class CustomerChatbotPipeline:
         """
 
         answer = self._load_answer(state)
-        message_text = state.get("message_text") or ""
+        guide_search_queries = [
+            ExtractedGuideSearchQuery.model_validate(query)
+            for query in state.get("guide_search_queries", [])
+        ]
 
         outbound = list(state.get("outbound", []))
         on_snapshot: Callable[[str], None] | None = None
@@ -568,7 +574,7 @@ class CustomerChatbotPipeline:
 
         guide_message = self._build_guide_response(
             answer,
-            message_text,
+            guide_search_queries,
             on_snapshot=on_snapshot,
         )
         if guide_message:
@@ -606,25 +612,14 @@ class CustomerChatbotPipeline:
     def _build_guide_response(
         self,
         answer: ChatAnswer,
-        message_text: str,
+        guide_search_queries: list[ExtractedGuideSearchQuery],
         *,
         on_snapshot: Callable[[str], None] | None = None,
     ) -> str:
-        """가이드 검색 질의를 분해·저장하고 RAG 응답 본문을 만든다."""
-
-        try:
-            extraction = self.guide_search_query_extractor.extract(
-                user_answers=message_text
-            )
-        except ChatbotExtractionError:
-            logger.warning(
-                "가이드 검색 질의 분해를 건너뜁니다: session=%s",
-                self.chat_session.chat_session_id,
-            )
-            return ""
+        """통합 분석에서 받은 가이드 검색 질의를 저장하고 RAG 응답을 만든다."""
 
         for position, query in enumerate(
-            extraction.guide_search_queries,
+            guide_search_queries,
             start=1,
         ):
             self.repository.add_guide_search_query(
@@ -637,12 +632,12 @@ class CustomerChatbotPipeline:
             )
 
         # 분해 결과가 없는 턴은 본문이 비므로 메시지를 보내지 않는다(PRD 2.5).
-        if not extraction.guide_search_queries:
+        if not guide_search_queries:
             return ""
 
         try:
             respond_kwargs: dict[str, Any] = {
-                "guide_search_queries": extraction.guide_search_queries,
+                "guide_search_queries": guide_search_queries,
                 "session": self.session,
             }
             if on_snapshot is not None:
@@ -703,16 +698,10 @@ class CustomerChatbotPipeline:
     # ------------------------------------------------------------------
 
     @property
-    def evaluator(self) -> AnswerEvaluator:
-        if self._evaluator is None:
-            self._evaluator = AnswerEvaluator()
-        return self._evaluator
-
-    @property
-    def guide_search_query_extractor(self) -> GuideSearchQueryExtractor:
-        if self._guide_search_query_extractor is None:
-            self._guide_search_query_extractor = GuideSearchQueryExtractor()
-        return self._guide_search_query_extractor
+    def answer_analyzer(self) -> AnswerAnalyzer:
+        if self._answer_analyzer is None:
+            self._answer_analyzer = AnswerAnalyzer()
+        return self._answer_analyzer
 
     @property
     def guide_responder(self) -> GuideResponder:
