@@ -94,9 +94,8 @@ class TrainingDecisionRequest(StrictMLOpsDTO):
     # 확정 ERD에는 사유 컬럼이 없습니다. 요청 감사 로그에서 활용할 수 있도록
     # 호환은 유지하지만 영속 데이터로 취급하지 않습니다.
     reason: str | None = Field(default=None, max_length=2000)
-    # STAGED 후보를 ML Serving CD가 다시 준비한 뒤 계약 검증을 명시적으로
-    # 반복할 때만 사용합니다. 일반 HTTP 재시도로 상태를 다시 쓰지 않도록
-    # 기본값은 false입니다.
+    # 이미 STAGED인 후보를 다시 확인할 때만 사용합니다. 일반 HTTP 재시도로
+    # 상태를 다시 쓰지 않도록 기본값은 false입니다.
     restage: bool = False
 
     @model_validator(mode="after")
