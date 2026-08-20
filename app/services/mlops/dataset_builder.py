@@ -30,7 +30,8 @@ from app.dto.ml_features import (
 from app.services.features.ml_feature_assembler import assemble_ml_features
 
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
-CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+CSV_DATE_FORMAT = "%Y-%m-%d"
+CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S%z"
 CSV_DATETIME_COLUMNS = frozenset(
     {
         "customer_birth_date",
@@ -408,13 +409,15 @@ class LabeledDatasetBuilder:
         if field_name not in CSV_DATETIME_COLUMNS:
             return value
         if field_name == "customer_birth_date" and isinstance(value, date):
-            return value.strftime("%Y-%m-%d 00:00:00")
+            return value.strftime(CSV_DATE_FORMAT)
         if not isinstance(value, datetime):
             raise DatasetBuildError(
                 f"확정 라벨 거래의 {field_name} 값이 datetime이 아닙니다."
             )
-        if value.tzinfo is not None:
-            value = value.astimezone(UTC).replace(tzinfo=None)
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        else:
+            value = value.astimezone(UTC)
         return value.strftime(CSV_DATETIME_FORMAT)
 
     @staticmethod
