@@ -89,16 +89,20 @@ class OpenAIInvestigationActionSelector:
         model: str | None = None,
         reasoning_effort: str = INVESTIGATION_REASONING_EFFORT,
     ) -> None:
+        model_name = model or os.getenv(
+            "AGENT_INVESTIGATION_MODEL",
+            os.getenv("OPENAI_MODEL", "gpt-5"),
+        )
+        model_options: dict[str, Any] = {
+            "model": model_name,
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "timeout": float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
+            "max_retries": int(os.getenv("OPENAI_MAX_RETRIES", "0")),
+        }
+        if not model_name.startswith("gpt-4"):
+            model_options["reasoning_effort"] = reasoning_effort
         self.structured_llm = structured_llm or ChatOpenAI(
-            model=model
-            or os.getenv(
-                "AGENT_INVESTIGATION_MODEL",
-                os.getenv("OPENAI_MODEL", "gpt-5"),
-            ),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
-            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
-            reasoning_effort=reasoning_effort,
+            **model_options
         ).with_structured_output(
             InvestigationActionOutput,
             method="json_schema",

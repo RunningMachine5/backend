@@ -122,13 +122,17 @@ class RagResponsePlanGenerator:
         )
         self.reasoning_effort = reasoning_effort
         self.max_completion_tokens = max_completion_tokens
+        model_options: dict[str, Any] = {
+            "model": self.model_name,
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "timeout": float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
+            "max_retries": int(os.getenv("OPENAI_MAX_RETRIES", "0")),
+            "max_completion_tokens": max_completion_tokens,
+        }
+        if not self.model_name.startswith("gpt-4"):
+            model_options["reasoning_effort"] = reasoning_effort
         self.structured_llm = structured_llm or ChatOpenAI(
-            model=self.model_name,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
-            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
-            reasoning_effort=reasoning_effort,
-            max_completion_tokens=max_completion_tokens,
+            **model_options
         ).with_structured_output(
             GeneratedResponsePlan,
             method="json_schema",
