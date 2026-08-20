@@ -870,7 +870,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(
-            response.json()["detail"],
+            response.json()["error"]["message"],
             "자동 검증에 사용할 저장 거래가 없습니다.",
         )
         self.cloud_run.promote_model_revision.assert_not_called()
