@@ -9,8 +9,6 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.dto.ml_features import MLTransactionFeatures
-
 
 class StrictMLOpsDTO(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -107,8 +105,6 @@ class TrainingDecisionRequest(StrictMLOpsDTO):
 
 class ModelPromotionRequest(StrictMLOpsDTO):
     training_run_id: int = Field(gt=0)
-    transaction_id: int = Field(gt=0)
-    features: MLTransactionFeatures
 
 
 class DeploymentCompleteRequest(StrictMLOpsDTO):

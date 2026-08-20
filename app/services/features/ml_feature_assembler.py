@@ -138,7 +138,7 @@ def assemble_ml_features(
     *,
     customer: Customer,
     source_account: Account,
-    recipient_account: Account,
+    recipient_account: Account | None,
     transaction: Transaction,
     derived: DerivedFeatures,
 ) -> MLTransactionFeatures:

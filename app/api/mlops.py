@@ -15,13 +15,19 @@ from time import perf_counter
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlmodel import select
+from sqlalchemy.orm import aliased
+from sqlmodel import Session, select
 
 from app.core import config
 from app.core.db import SessionDep
+from app.data.model.account import Account
+from app.data.model.customer import Customer
+from app.data.model.derived_features import DerivedFeatures
 from app.data.model.mlops import DatasetVersion, TrainingRun
+from app.data.model.transaction import Transaction
 from app.dto.mlops import (
     CloudRunOperationResponse,
     DatasetPeriodRequest,
@@ -48,6 +54,7 @@ from app.dto.mlops import (
     TrainingRunStartResponse,
 )
 from app.repositories.inference_performance import InferencePerformanceRepository
+from app.services.features.ml_feature_assembler import assemble_ml_features
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
     CloudRunAdminClientDep,
@@ -105,6 +112,55 @@ DATASET_VERSION_DIRECTORY = "versions"
 
 # DatasetVersion은 CSV 자체를 DB에 복사하지 않고, 학습에 사용할 불변 GCS
 # 객체의 주소와 버전만 가리킨다.
+
+
+def _latest_verification_sample(session: Session) -> tuple[int, dict[str, Any]]:
+    """최근 저장 거래에서 후보 모델 검증용 raw51을 복원한다."""
+
+    source_account = aliased(Account, name="verification_source_account")
+    recipient_account = aliased(Account, name="verification_recipient_account")
+    row = session.exec(
+        select(
+            Transaction,
+            Customer,
+            source_account,
+            recipient_account,
+            DerivedFeatures,
+        )
+        .join(Customer, Customer.id == Transaction.customer_id)
+        .join(
+            source_account,
+            source_account.account_number == Transaction.source_account_number,
+        )
+        .outerjoin(
+            recipient_account,
+            recipient_account.account_number == Transaction.recipient_account_number,
+        )
+        .join(DerivedFeatures, DerivedFeatures.id == Transaction.id)
+        .order_by(Transaction.transaction_datetime.desc(), Transaction.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=409,
+            detail="자동 검증에 사용할 저장 거래가 없습니다.",
+        )
+
+    transaction, customer, source, recipient, derived = row
+    try:
+        features = assemble_ml_features(
+            customer=customer,
+            source_account=source,
+            recipient_account=recipient,
+            transaction=transaction,
+            derived=derived,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="최근 저장 거래의 raw51 Feature를 복원할 수 없습니다.",
+        ) from exc
+    return transaction.id, features.model_dump(mode="json", by_alias=True)
 
 
 def _new_labeled_dataset_target(
@@ -919,11 +975,12 @@ def promote_serving_revision(
     if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED"}:
         raise HTTPException(status_code=409, detail="승격 가능한 학습 실행이 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
+    transaction_id, features = _latest_verification_sample(session)
     try:
         result = client.promote_model_revision(
             model_version=model_version,
-            transaction_id=payload.transaction_id,
-            features=payload.features.model_dump(mode="json", by_alias=True),
+            transaction_id=transaction_id,
+            features=features,
         )
     except (CloudRunAdminError, MLServingError) as exc:
         raise _upstream_error(exc) from exc
@@ -935,6 +992,7 @@ def promote_serving_revision(
     return {
         "training_run": _training_run_payload(run),
         "model_version": model_version,
+        "verification_transaction_id": transaction_id,
         "operation_id": _operation_id(operation),
         **result,
     }
