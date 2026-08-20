@@ -101,8 +101,8 @@ class CaseQueryRepository:
         total_count = self.session.exec(count_statement).one()
         rows = self.session.exec(
             statement.order_by(
-                func.coalesce(AgentCase.risk_score, -1).desc(),
                 Transaction.transaction_datetime.desc(),
+                Transaction.id.desc(),
             )
             .offset(offset)
             .limit(limit)
