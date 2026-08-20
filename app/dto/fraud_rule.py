@@ -112,29 +112,29 @@ class FraudRuleCreate(BaseModel):
         return self
 
 
-class FraudRuleUpdate(BaseModel):
+class FraudRuleComponentWeightUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    type_code: str | None = Field(
-        default=None,
+    component_key: str = Field(
         min_length=1,
         max_length=64,
-        pattern=r"^[A-Z][A-Z0-9_]{1,63}$",
+        pattern=r"^[a-z][a-z0-9_]{1,63}$",
     )
-    display_name: str | None = Field(default=None, min_length=1, max_length=128)
-    description: str | None = Field(default=None, max_length=1000)
-    enabled: bool | None = None
-    sort_order: int | None = Field(default=None, ge=0)
-    components: list[FraudRuleComponentCreate] | None = None
+    weight: float = Field(gt=0.0, le=1.0)
+
+
+class FraudRuleWeightUpdate(BaseModel):
+    """운영자가 바꿀 수 있는 기존 구성요소의 가중치 목록."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    components: list[FraudRuleComponentWeightUpdate] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_update(self) -> Self:
-        if not self.model_fields_set:
-            raise ValueError("수정할 룰 필드가 하나 이상 필요합니다.")
-        if self.components is not None:
-            keys = [component.component_key for component in self.components]
-            if len(keys) != len(set(keys)):
-                raise ValueError("component_key는 한 룰 안에서 중복될 수 없습니다.")
+    def reject_duplicate_component_keys(self) -> Self:
+        keys = [component.component_key for component in self.components]
+        if len(keys) != len(set(keys)):
+            raise ValueError("component_key는 한 룰 안에서 중복될 수 없습니다.")
         return self
 
 
@@ -311,6 +311,7 @@ __all__ = [
     "GROUP_OPERATORS",
     "FraudRuleComponentCreate",
     "FraudRuleComponentResponse",
+    "FraudRuleComponentWeightUpdate",
     "FraudRuleCreate",
     "FraudRuleReplayChangedTransactionResponse",
     "FraudRuleReplayComponentImpactResponse",
@@ -323,7 +324,7 @@ __all__ = [
     "FraudRuleSetDraftCreate",
     "FraudRuleSetResponse",
     "FraudRuleSetSummaryResponse",
-    "FraudRuleUpdate",
+    "FraudRuleWeightUpdate",
     "FraudRuleValidationIssue",
     "FraudRuleValidationResponse",
     "RuleExpression",
