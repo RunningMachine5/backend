@@ -30,10 +30,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from collections.abc import Callable, Iterator
 from typing import Any, Literal, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import StreamWriter
 from sqlmodel import Session
 
 from app.data.model.chatbot import (
@@ -95,6 +97,14 @@ class ChatTurnResult:
     pending_extraction: FraudCircumstanceExtractionTask | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ChatTurnStreamEvent:
+    """그래프가 턴 처리 중 라우터로 전달하는 SSE 이벤트."""
+
+    event: str
+    data: dict[str, Any]
+
+
 class ChatGraphState(TypedDict, total=False):
     """그래프 상태.
 
@@ -118,6 +128,8 @@ class ChatGraphState(TypedDict, total=False):
     # 턴 커밋 뒤 백그라운드 추출에 넘길 답변 id (예약이 없으면 None).
     # 체크포인터에 그대로 실리는 값이라 dataclass 가 아니라 id 만 남긴다.
     pending_extraction_answer_id: int | None
+    # 메시지 API에서만 가이드 생성 중간 스냅샷을 custom stream으로 내보낸다.
+    stream_output: bool
 
 
 class CustomerChatbotPipeline:
@@ -166,15 +178,35 @@ class CustomerChatbotPipeline:
     def handle_message(self, message_text: str) -> ChatTurnResult:
         """고객 답변 한 건을 평가하고 다음 흐름까지 진행한다."""
 
+        self._validate_message_turn()
+        return self._run_turn(
+            {"event": "CUSTOMER_MESSAGE", "message_text": message_text}
+        )
+
+    def handle_message_stream(
+        self,
+        message_text: str,
+    ) -> Iterator[ChatTurnStreamEvent | ChatTurnResult]:
+        """고객 답변 턴을 실행하며 가이드 누적 스냅샷과 최종 결과를 돌려준다.
+
+        검증은 이 메서드가 반환되기 전에 수행한다. 따라서 409 오류는 라우터가
+        ``StreamingResponse`` 를 시작하기 전에 기존 JSON 오류 형식으로 보낼 수 있다.
+        """
+
+        self._validate_message_turn()
+        return self._stream_turn(
+            {"event": "CUSTOMER_MESSAGE", "message_text": message_text}
+        )
+
+    def _validate_message_turn(self) -> None:
+        """현재 세션이 고객 답변을 받을 수 있는지 확인한다."""
+
         if self.chat_session.status != ChatSessionStatus.IN_PROGRESS.value:
             raise ChatTurnRejectedError(
                 "고객 답변은 IN_PROGRESS 상태에서만 처리할 수 있습니다"
             )
         if self.chat_session.question_step < 1:
             raise ChatTurnRejectedError("답변을 기다리는 질문이 없습니다")
-        return self._run_turn(
-            {"event": "CUSTOMER_MESSAGE", "message_text": message_text}
-        )
 
     # ------------------------------------------------------------------
     # 턴 실행과 트랜잭션 소유
@@ -183,33 +215,94 @@ class CustomerChatbotPipeline:
     def _run_turn(self, turn_input: dict[str, Any]) -> ChatTurnResult:
         """챗봇 그래프 한 주기"""
 
-        config = {
-            "configurable": {"thread_id": self.chat_session.chat_session_id}
-        }
-        # outbound 는 턴마다 비운다. 리듀서를 두지 않아 입력이 이전 턴 값을 덮는다.
-        # 이번 턴의 입력 상태
-        state_input: dict[str, Any] = {
-            "button_action": None,# 이전 턴의 버튼 선택 제거
-            "message_text": None,# 이전 고객 답변 제거
-            "answer_id": None,# 이전 ChatAnswer ID 제거 (고객응답과 평가 결과가 저장된 객체 id)
-            "outbound": [],# 이전 턴에 보낸 메시지 제거
-            "pending_extraction_answer_id": None,# 이전 턴에 예약한 추출 작업 제거
-            **turn_input,
-        }
-        state_input.update(self._seed_progress_state(config))
+        config = self._turn_config()
+        state_input = self._turn_state_input(
+            turn_input,
+            config=config,
+            stream_output=False,
+        )
 
         try:
             final_state = self.graph.invoke(state_input, config=config)
-            self.repository.update_question_step(
-                self.chat_session,
-                final_state.get("question_step", 0),
-            )
-            self.session.commit()
+            self._commit_turn(final_state)
         except Exception:
             self.session.rollback()
             raise
 
+        return self._turn_result(final_state)
+
+    def _stream_turn(
+        self,
+        turn_input: dict[str, Any],
+    ) -> Iterator[ChatTurnStreamEvent | ChatTurnResult]:
+        """LangGraph custom stream을 전달하고 커밋 뒤 최종 결과를 마지막에 보낸다."""
+
+        config = self._turn_config()
+        state_input = self._turn_state_input(
+            turn_input,
+            config=config,
+            stream_output=True,
+        )
+        final_state: dict[str, Any] | None = None
+
+        try:
+            for stream_mode, value in self.graph.stream(
+                state_input,
+                config=config,
+                stream_mode=["custom", "values"],
+            ):
+                if stream_mode == "custom":
+                    yield ChatTurnStreamEvent(
+                        event=value["event"],
+                        data=value["data"],
+                    )
+                elif stream_mode == "values":
+                    final_state = value
+
+            if final_state is None:
+                raise RuntimeError("챗봇 그래프가 최종 상태를 반환하지 않았습니다")
+
+            self._commit_turn(final_state)
+            # 최종 결과는 DB 커밋과 refresh가 모두 끝난 다음에만 내보낸다.
+            yield self._turn_result(final_state)
+        except BaseException:
+            self.session.rollback()
+            raise
+
+    def _turn_config(self) -> dict[str, Any]:
+        return {
+            "configurable": {"thread_id": self.chat_session.chat_session_id}
+        }
+
+    def _turn_state_input(
+        self,
+        turn_input: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        stream_output: bool,
+    ) -> dict[str, Any]:
+        # 리듀서를 두지 않으므로 턴 전용 값은 매번 명시적으로 이전 값을 덮는다.
+        state_input: dict[str, Any] = {
+            "button_action": None,
+            "message_text": None,
+            "answer_id": None,
+            "outbound": [],
+            "pending_extraction_answer_id": None,
+            "stream_output": stream_output,
+            **turn_input,
+        }
+        state_input.update(self._seed_progress_state(config))
+        return state_input
+
+    def _commit_turn(self, final_state: dict[str, Any]) -> None:
+        self.repository.update_question_step(
+            self.chat_session,
+            final_state.get("question_step", 0),
+        )
+        self.session.commit()
         self.session.refresh(self.chat_session)
+
+    def _turn_result(self, final_state: dict[str, Any]) -> ChatTurnResult:
         return ChatTurnResult(
             messages=tuple(final_state.get("outbound", [])),
             status=ChatSessionStatus(self.chat_session.status),
@@ -447,6 +540,7 @@ class CustomerChatbotPipeline:
     def _process_sufficient_answer(
         self,
         state: ChatGraphState,
+        writer: StreamWriter,
     ) -> dict[str, Any]:
         """채택 답변에서 가이드 응답을 만들고, 사기 정황 추출은 예약만 한다.
 
@@ -460,7 +554,23 @@ class CustomerChatbotPipeline:
         message_text = state.get("message_text") or ""
 
         outbound = list(state.get("outbound", []))
-        guide_message = self._build_guide_response(answer, message_text)
+        on_snapshot: Callable[[str], None] | None = None
+        if state.get("stream_output"):
+            on_snapshot = lambda message_text: writer(
+                {
+                    "event": "chat_message_snapshot",
+                    "data": {
+                        "message_index": 0,
+                        "message_text": message_text,
+                    },
+                }
+            )
+
+        guide_message = self._build_guide_response(
+            answer,
+            message_text,
+            on_snapshot=on_snapshot,
+        )
         if guide_message:
             outbound = self._emit(outbound, guide_message)
 
@@ -497,6 +607,8 @@ class CustomerChatbotPipeline:
         self,
         answer: ChatAnswer,
         message_text: str,
+        *,
+        on_snapshot: Callable[[str], None] | None = None,
     ) -> str:
         """가이드 검색 질의를 분해·저장하고 RAG 응답 본문을 만든다."""
 
@@ -529,10 +641,13 @@ class CustomerChatbotPipeline:
             return ""
 
         try:
-            response = self.guide_responder.respond(
-                guide_search_queries=extraction.guide_search_queries,
-                session=self.session,
-            )
+            respond_kwargs: dict[str, Any] = {
+                "guide_search_queries": extraction.guide_search_queries,
+                "session": self.session,
+            }
+            if on_snapshot is not None:
+                respond_kwargs["on_snapshot"] = on_snapshot
+            response = self.guide_responder.respond(**respond_kwargs)
         except Exception:
             logger.warning(
                 "대응 가이드 응답 조립에 실패했습니다: session=%s",
@@ -631,6 +746,7 @@ __all__ = [
     "ChatGraphState",
     "ChatTurnRejectedError",
     "ChatTurnResult",
+    "ChatTurnStreamEvent",
     "CustomerChatbotPipeline",
     "MAX_ATTEMPTS_PER_QUESTION",
 ]

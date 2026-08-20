@@ -18,9 +18,10 @@
 """
 
 import json
-from collections.abc import Iterator
+import logging
+from collections.abc import Callable, Iterator
 from queue import Empty
-from typing import Annotated, Any
+from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, status
 from fastapi.responses import StreamingResponse
@@ -45,6 +46,7 @@ from app.dto.chatbot import (
 from app.pipelines.customer_chatbot_pipeline import (
     ChatTurnRejectedError,
     ChatTurnResult,
+    ChatTurnStreamEvent,
     CustomerChatbotPipeline,
 )
 from app.repositories.chat_session import ChatSessionRepository
@@ -63,6 +65,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 transaction_chat_router = APIRouter(
     prefix="/transactions", tags=["chat-sessions"]
 )
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 # ----------------------------------------------------------------------
@@ -245,9 +249,26 @@ def send_chat_button_action(
 
 @router.post(
     "/{chat_session_id}/messages",
-    response_model=ApiResponse[ChatTurnResponse],
-    summary="고객 답변 전송",
+    summary="고객 답변 전송(SSE)",
     responses={
+        status.HTTP_200_OK: {
+            "description": "챗봇 턴 이벤트 스트림",
+            "content": {
+                "text/event-stream": {
+                    "example": (
+                        "event: chat_turn_started\n"
+                        'data: {"chat_session_id":"CHAT-20260816-A1B2C3D4"}\n\n'
+                        "event: chat_message_snapshot\n"
+                        'data: {"message_index":0,"message_text":"■ 안내\\n공식"}\n\n'
+                        "event: chat_turn_completed\n"
+                        'data: {"chat_session_id":"CHAT-20260816-A1B2C3D4",'
+                        '"status":"IN_PROGRESS","question_step":2,'
+                        '"messages":["■ 안내\\n공식 금융회사에 확인해 주세요.",'
+                        '"다음 질문"]}\n\n'
+                    )
+                }
+            },
+        },
         status.HTTP_404_NOT_FOUND: _SESSION_NOT_FOUND_RESPONSE,
         status.HTTP_409_CONFLICT: _error_response(
             "상담 중이 아니거나 답변을 기다리는 질문이 없음",
@@ -262,8 +283,8 @@ def send_chat_message(
     session: SessionDep,
     background_tasks: BackgroundTasks,
     fraud_circumstance_task_runner: FraudCircumstanceTaskRunnerDep,
-) -> ApiResponse[ChatTurnResponse]:
-    """고객 답변 한 건을 평가하고 그 턴의 챗봇 응답을 돌려준다(PRD 2.4~2.6).
+) -> StreamingResponse:
+    """고객 답변 한 건을 평가하고 그 턴의 챗봇 응답을 SSE로 돌려준다(PRD 2.4~2.6).
 
     `status` 가 `IN_PROGRESS` 이고 답변을 기다리는 질문이 있을 때만 받는다. 그 외에는 409 다.
 
@@ -280,27 +301,74 @@ def send_chat_message(
 
     평가·추출 LLM 이 실패해도 턴은 실패하지 않는다. 그 결과만 건너뛰고 다음 질문으로 진행한다.
 
-    **사기 정황 추출은 응답을 보낸 뒤 백그라운드로 돈다**(PRD 2.6). 추출 결과는 담당자
-    화면의 점수만 바꾸므로 고객은 추출 LLM 을 기다리지 않고 가이드 응답과 다음 질문을
-    받는다. 갱신된 점수는 추출이 끝난 뒤 SSE(`chat_score_updated`)로 나간다.
+    가이드가 생성되는 동안 ``chat_message_snapshot`` 은 증가분이 아니라 현재까지의
+    전체 본문을 보낸다. DB 커밋이 끝나면 ``chat_turn_completed`` 가 마지막으로 나간다.
+    가이드가 없는 판정은 스냅샷 없이 시작·완료 이벤트만 보낸다.
+
+    **사기 정황 추출은 완료 이벤트 뒤 백그라운드로 돈다**(PRD 2.6). 추출 결과는 담당자
+    화면의 점수만 바꾸므로 고객은 추출 LLM 을 기다리지 않는다. 갱신된 점수는 추출이
+    끝난 뒤 별도 SSE(`chat_score_updated`)로 나간다.
     """
 
     chat_session = _require_session(session, chat_session_id)
     transaction_id = chat_session.transaction_id
-    result = _run_turn(
-        lambda: _pipeline(session, chat_session).handle_message(
-            payload.message_text
+    # handle_message_stream은 iterator를 만들기 전에 상태를 검증한다. 409는 SSE 응답
+    # 헤더를 보내기 전 기존 ApiResponse JSON으로 유지된다.
+    stream = _run_turn(
+        lambda: _pipeline(session, chat_session).handle_message_stream(
+            payload.message_text,
         )
     )
-    # 이 시점의 점수는 아직 이번 답변의 정황이 반영되기 전 값이다. 추출이 끝나면
-    # 백그라운드 작업이 갱신된 값을 다시 발행한다.
-    publish_chat_score_update(session, transaction_id)
-    if result.pending_extraction is not None:
-        background_tasks.add_task(
-            fraud_circumstance_task_runner,
-            result.pending_extraction,
+
+    def event_stream() -> Iterator[str]:
+        yield _sse_event(
+            "chat_turn_started",
+            {"chat_session_id": chat_session_id},
         )
-    return success_response(_turn_response(chat_session_id, result))
+
+        try:
+            for item in stream:
+                if isinstance(item, ChatTurnStreamEvent):
+                    yield _sse_event(item.event, item.data)
+                    continue
+
+                # 이 지점에는 턴 커밋과 세션 refresh가 끝나 있다. 아직 이번 답변의
+                # 정황이 반영되기 전 점수를 발행하고, 추출은 응답 종료 뒤 예약한다.
+                publish_chat_score_update(session, transaction_id)
+                if item.pending_extraction is not None:
+                    background_tasks.add_task(
+                        fraud_circumstance_task_runner,
+                        item.pending_extraction,
+                    )
+                yield _sse_event(
+                    "chat_turn_completed",
+                    _turn_response(chat_session_id, item).model_dump(mode="json"),
+                )
+        except Exception:
+            # 파이프라인이 아직 커밋 전이라면 자체적으로 rollback한다. 응답 헤더가 이미
+            # 전송됐으므로 HTTP 상태를 바꾸는 대신 명시적인 오류 이벤트로 끝낸다.
+            logger.exception(
+                "챗봇 턴 스트림 처리에 실패했습니다: session=%s",
+                chat_session_id,
+            )
+            yield _sse_event(
+                "chat_turn_error",
+                {
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "message": "서버 내부 오류가 발생했습니다.",
+                },
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+        background=background_tasks,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -439,7 +507,7 @@ def _pipeline(
     )
 
 
-def _run_turn(run) -> ChatTurnResult:
+def _run_turn(run: Callable[[], T]) -> T:
     """턴 실행 중 거절된 입력을 409 로 옮긴다.
 
     커밋·롤백과 상태 변경 발행은 파이프라인이 턴 단위로 처리한다.
@@ -452,6 +520,15 @@ def _run_turn(run) -> ChatTurnResult:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+
+
+def _sse_event(event: str, data: dict[str, Any]) -> str:
+    """한 SSE 이벤트를 UTF-8 JSON data 한 줄로 직렬화한다."""
+
+    return (
+        f"event: {event}\n"
+        f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    )
 
 
 def _require_session(

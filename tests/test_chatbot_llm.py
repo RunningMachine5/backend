@@ -54,6 +54,15 @@ class TestBuildStructuredLLM(unittest.TestCase):
         # 재시도 횟수는 각 서비스가 직접 관리한다.
         self.assertEqual(chat_openai.call_args.kwargs["max_retries"], 0)
 
+    def test_plain_text_builder_does_not_wrap_structured_output(self) -> None:
+        with mock.patch.object(llm_module, "ChatOpenAI") as chat_openai:
+            result = llm_module.build_chat_llm(
+                timeout_seconds=CHAT_LLM_TIMEOUT_SECONDS,
+            )
+
+        self.assertIs(result, chat_openai.return_value)
+        chat_openai.return_value.with_structured_output.assert_not_called()
+
 
 class TestChatLLMLatencyBudget(unittest.TestCase):
     def test_default_reasoning_effort_is_low(self) -> None:

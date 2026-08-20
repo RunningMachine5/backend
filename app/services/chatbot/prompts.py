@@ -93,16 +93,22 @@ GUIDE_RESPONSE_PROMPT_TEMPLATE = Template("""당신은 금융사기가 의심되
 
 다음 규칙을 따르세요.
 
-- 주어진 위치마다 안내를 하나씩 작성합니다. 위치를 빠뜨리거나 여러 요구를 합치지 않습니다.
-- 각 안내는 그 위치에 붙은 근거에서 확인되는 내용만으로 작성합니다.
+- 주어진 위치마다 섹션을 하나씩 작성합니다. 위치를 빠뜨리거나 여러 요구를 합치지 않습니다.
+- 입력 위치의 오름차순을 그대로 유지합니다.
+- 각 섹션의 첫 줄은 입력에 주어진 소제목을 바꾸지 말고 `■ 소제목` 형식으로 씁니다.
+- 소제목 다음 줄부터 그 위치에 붙은 근거에서 확인되는 안내만 작성합니다.
 - 다른 위치의 근거나 사전지식으로 답하지 않습니다.
 - 근거에 없는 기관명·연락처·금액·기한·절차를 만들어내지 않습니다.
 - 근거에 고객이 지금 할 수 있는 조치가 있으면 그 조치를 먼저 안내합니다.
 - 피해가 이미 확정되었다고 단정하거나 고객의 책임을 지적하는 표현을 쓰지 않습니다.
 - 존댓말로 쓰고 한 요구당 3문장을 넘기지 않습니다.
-- 소제목·번호·목록 기호를 붙이지 않습니다. 애플리케이션이 붙입니다.
-- 주어진 근거만으로 안내를 쓸 수 없으면 해당 위치의 guidance를 빈 문자열로 둡니다.
-- 주어지지 않은 위치를 출력에 추가하지 않습니다.
+- `근거: 없음`인 위치의 본문은 다른 말을 만들지 말고 아래 두 줄만 정확히 씁니다.
+
+$ungrounded_message
+
+- 섹션 사이는 빈 줄 하나로 구분합니다.
+- 주어지지 않은 위치를 추가하지 않습니다.
+- JSON, 마크다운 코드 블록, 앞뒤 설명은 출력하지 않습니다. 고객에게 보여줄 섹션 본문만 출력합니다.
 
 가이드 검색 질의와 근거:
 
@@ -163,12 +169,14 @@ def render_fraud_circumstance_extraction_prompt(
 def render_guide_response_prompt(
     *,
     guide_search_query_context_block: str,
+    ungrounded_message: str,
 ) -> str:
-    """근거를 찾은 가이드 검색 질의의 대응 가이드를 한 번에 생성하는 프롬프트를 만든다.
+    """검색 질의 전체의 최종 고객 안내 본문을 한 번에 생성하는 프롬프트를 만든다.
 
     guide_search_query_context_block은 질의별 블록이며 형식은 A.4 문서에 있다.
     """
 
     return GUIDE_RESPONSE_PROMPT_TEMPLATE.substitute(
         guide_search_query_context_block=guide_search_query_context_block,
+        ungrounded_message=ungrounded_message,
     )

@@ -32,17 +32,20 @@ class FakeRetriever:
         return list(self.chunks_by_query.get(query, []))
 
 
-class FakeStructuredLLM:
+class FakeStreamingLLM:
     def __init__(self, results: list[object]) -> None:
         self.results = list(results)
         self.prompts: list[str] = []
 
-    def invoke(self, prompt: str) -> object:
+    def stream(self, prompt: str):
         self.prompts.append(prompt)
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
-        return result
+        for chunk in result:
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
 
 
 class GuideResponderTestCase(unittest.TestCase):
@@ -64,7 +67,7 @@ class TestRetrieveStep(GuideResponderTestCase):
     def test_uses_each_standalone_query_with_top_k_three(self) -> None:
         retriever = FakeRetriever({})
         responder = GuideResponder(
-            structured_llm=FakeStructuredLLM([]),
+            llm=FakeStreamingLLM([]),
             retriever=retriever,
         )
 
@@ -87,7 +90,7 @@ class TestRetrieveStep(GuideResponderTestCase):
         )
         retriever = FakeRetriever({})
         responder = GuideResponder(
-            structured_llm=FakeStructuredLLM([]),
+            llm=FakeStreamingLLM([]),
             retriever=retriever,
         )
 
@@ -102,9 +105,9 @@ class TestRetrieveStep(GuideResponderTestCase):
         def failing_retriever(query, session, top_k=3):
             raise RuntimeError("pgvector down")
 
-        llm = FakeStructuredLLM([])
+        llm = FakeStreamingLLM([])
         responder = GuideResponder(
-            structured_llm=llm,
+            llm=llm,
             retriever=failing_retriever,
         )
 
@@ -126,14 +129,16 @@ class TestRetrieveStep(GuideResponderTestCase):
 
 
 class TestGenerateStep(GuideResponderTestCase):
-    def test_llm_is_called_once_with_grounded_queries_only(self) -> None:
+    def test_llm_is_called_once_with_all_queries_when_any_is_grounded(self) -> None:
         retriever = FakeRetriever(
             {self.call_query.search_query: [_chunk("발신자를 공식 채널로 확인하세요")]}
         )
-        llm = FakeStructuredLLM(
-            [{"guides": [{"position": 1, "guidance": "공식 채널로 확인해주세요."}]}]
+        generated = (
+            f"■ {self.call_query.title}\n공식 채널로 확인해주세요.\n\n"
+            f"■ {self.phone_query.title}\n{UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE}"
         )
-        responder = GuideResponder(structured_llm=llm, retriever=retriever)
+        llm = FakeStreamingLLM([[generated]])
+        responder = GuideResponder(llm=llm, retriever=retriever)
 
         response = responder.respond(
             guide_search_queries=[self.call_query, self.phone_query],
@@ -144,7 +149,8 @@ class TestGenerateStep(GuideResponderTestCase):
         prompt = llm.prompts[0]
         self.assertIn(self.call_query.title, prompt)
         self.assertIn(self.call_query.search_query, prompt)
-        self.assertNotIn(self.phone_query.title, prompt)
+        self.assertIn(self.phone_query.title, prompt)
+        self.assertIn(UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE, prompt)
         self.assertIn("공식 채널로 확인해주세요.", response.message_text)
         self.assertEqual(response.grounded_query_positions, (1,))
         self.assertEqual(response.ungrounded_query_positions, (2,))
@@ -153,14 +159,14 @@ class TestGenerateStep(GuideResponderTestCase):
         retriever = FakeRetriever(
             {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
-        llm = FakeStructuredLLM(
+        llm = FakeStreamingLLM(
             [
                 TimeoutError("timeout"),
-                {"guides": [{"position": 1, "guidance": "확인해주세요."}]},
+                [f"■ {self.call_query.title}\n", "확인해주세요."],
             ]
         )
         responder = GuideResponder(
-            structured_llm=llm,
+            llm=llm,
             retriever=retriever,
             max_attempts=2,
         )
@@ -177,11 +183,11 @@ class TestGenerateStep(GuideResponderTestCase):
         retriever = FakeRetriever(
             {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
-        llm = FakeStructuredLLM(
+        llm = FakeStreamingLLM(
             [TimeoutError("timeout"), TimeoutError("timeout")]
         )
         responder = GuideResponder(
-            structured_llm=llm,
+            llm=llm,
             retriever=retriever,
             max_attempts=2,
         )
@@ -201,35 +207,72 @@ class TestGenerateStep(GuideResponderTestCase):
         )
         self.assertEqual(response.grounded_query_positions, (1,))
 
-    def test_unrequested_and_duplicate_positions_are_ignored(self) -> None:
+    def test_streams_korean_chunks_as_cumulative_snapshots(self) -> None:
         retriever = FakeRetriever(
             {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
-        llm = FakeStructuredLLM(
+        llm = FakeStreamingLLM(
+            [[f"■ {self.call_query.title}\n공", "식 채널", "로 확인해주세요."]]
+        )
+        responder = GuideResponder(llm=llm, retriever=retriever)
+        snapshots: list[str] = []
+
+        response = responder.respond(
+            guide_search_queries=[self.call_query],
+            session=self.session,
+            on_snapshot=snapshots.append,
+        )
+
+        self.assertEqual(
+            snapshots,
             [
-                {
-                    "guides": [
-                        {"position": 1, "guidance": "첫 안내"},
-                        {"position": 1, "guidance": "중복 안내"},
-                        {"position": 3, "guidance": "근거 없는 안내"},
-                    ]
-                }
+                f"■ {self.call_query.title}\n공",
+                f"■ {self.call_query.title}\n공식 채널",
+                f"■ {self.call_query.title}\n공식 채널로 확인해주세요.",
+            ],
+        )
+        self.assertEqual(snapshots[-1], response.message_text)
+
+    def test_retry_resets_partial_snapshot_before_second_attempt(self) -> None:
+        retriever = FakeRetriever(
+            {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
+        )
+        llm = FakeStreamingLLM(
+            [
+                ["부분 안내", TimeoutError("timeout")],
+                [f"■ {self.call_query.title}\n최종 안내"],
             ]
         )
-        responder = GuideResponder(structured_llm=llm, retriever=retriever)
+        responder = GuideResponder(llm=llm, retriever=retriever, max_attempts=2)
+        snapshots: list[str] = []
 
-        with self.assertLogs(
-            "app.services.chatbot.guide_responder",
-            level="WARNING",
-        ):
-            response = responder.respond(
-                guide_search_queries=[self.call_query],
-                session=self.session,
-            )
+        response = responder.respond(
+            guide_search_queries=[self.call_query],
+            session=self.session,
+            on_snapshot=snapshots.append,
+        )
 
-        self.assertIn("첫 안내", response.message_text)
-        self.assertNotIn("중복 안내", response.message_text)
-        self.assertNotIn("근거 없는 안내", response.message_text)
+        self.assertEqual(snapshots[0], "부분 안내")
+        self.assertEqual(snapshots[1], "")
+        self.assertEqual(snapshots[-1], response.message_text)
+
+    def test_empty_generation_retries_then_uses_fixed_message(self) -> None:
+        retriever = FakeRetriever(
+            {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
+        )
+        llm = FakeStreamingLLM([[], []])
+        responder = GuideResponder(llm=llm, retriever=retriever, max_attempts=2)
+
+        response = responder.respond(
+            guide_search_queries=[self.call_query],
+            session=self.session,
+        )
+
+        self.assertEqual(len(llm.prompts), 2)
+        self.assertEqual(
+            response.message_text,
+            f"■ {self.call_query.title}\n{UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE}",
+        )
 
 
 class TestAssembleStep(GuideResponderTestCase):
@@ -237,27 +280,25 @@ class TestAssembleStep(GuideResponderTestCase):
         retriever = FakeRetriever(
             {self.call_query.search_query: [_chunk("공식 채널로 확인하세요")]}
         )
-        llm = FakeStructuredLLM(
-            [{"guides": [{"position": 1, "guidance": "확인해주세요."}]}]
+        expected = (
+            f"■ {self.call_query.title}\n확인해주세요.\n\n"
+            f"■ {self.phone_query.title}\n"
+            f"{UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE}"
         )
-        responder = GuideResponder(structured_llm=llm, retriever=retriever)
+        llm = FakeStreamingLLM([[expected]])
+        responder = GuideResponder(llm=llm, retriever=retriever)
 
         response = responder.respond(
             guide_search_queries=[self.call_query, self.phone_query],
             session=self.session,
         )
 
-        expected = (
-            f"■ {self.call_query.title}\n확인해주세요.\n\n"
-            f"■ {self.phone_query.title}\n"
-            f"{UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE}"
-        )
         self.assertEqual(response.message_text, expected)
 
     def test_all_ungrounded_skips_llm_and_keeps_every_heading(self) -> None:
-        llm = FakeStructuredLLM([])
+        llm = FakeStreamingLLM([])
         responder = GuideResponder(
-            structured_llm=llm,
+            llm=llm,
             retriever=FakeRetriever({}),
         )
 
@@ -273,9 +314,9 @@ class TestAssembleStep(GuideResponderTestCase):
         self.assertEqual(llm.prompts, [])
 
     def test_no_guide_search_query_returns_empty_text(self) -> None:
-        llm = FakeStructuredLLM([])
+        llm = FakeStreamingLLM([])
         responder = GuideResponder(
-            structured_llm=llm,
+            llm=llm,
             retriever=FakeRetriever({}),
         )
 

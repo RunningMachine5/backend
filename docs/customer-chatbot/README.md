@@ -389,8 +389,8 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 [A.2 규칙을 줄인 이유](prompts.md#규칙을-줄인-이유)에 있다.
 
 `evidence`는 프롬프트에서 **답변 원문의 연속 문자열**이라고 요구하지 않는다. 규칙 목록에도
-없고, 그렇게 안내하던 출력 형식 예시도 [스키마가 강제하는 것은 프롬프트에 쓰지
-않는다](prompts.md#네-프롬프트에-공통으로-적용한-원칙)에 따라 뺐다.
+없고, 그렇게 안내하던 출력 형식 예시도 [구조화 출력 원칙](prompts.md#프롬프트에-적용한-출력-원칙)에
+따라 뺐다.
 분해 결과가 원문과 달라도 [extractors.py](../../app/services/chatbot/extractors.py)는 검색 질의를
 버리지 않으므로 RAG 응답에는 사용할 수 있다. 다만
 [chat_session.py](../../app/repositories/chat_session.py)는 실제 고객 답변에 포함된 `evidence`만
@@ -427,7 +427,7 @@ for position, query in enumerate(guide_search_queries, start=1):
     augmented.append(augment(position, query, chunks))
 
 grounded = [item for item in augmented if item.chunks]
-response = generate(grounded)
+response = generate_text(augmented) if grounded else assemble_b5(augmented)
 ```
 
 Generate를 1회로 묶으면 LLM 호출 수가 요구 개수와 무관하게 1회로 고정되고 응답 문체가
@@ -444,19 +444,18 @@ Generate를 1회로 묶으면 LLM 호출 수가 요구 개수와 무관하게 1�
 0건을 "드물게 발생하는 예외"로 보고
 세션 전체를 상담사 연결로 넘기면 대부분의 상담이 챗봇을 거치지 못한다.
 
-**규칙: LLM 프롬프트에서만 제외하고, 고객 응답에서는 반드시 언급한다.
+**규칙: 0건도 입력 위치와 함께 프롬프트에 명시하고, 고객 응답에서는 B.5로 반드시 언급한다.
 0건은 어떤 경우에도 상태를 전이시키지 않는다.**
 
 1. **리트리버는 구조화된 결과를 돌려준다.** 0건은 빈 리스트로 표현하고, 문장
    (`"관련 문서를 찾지 못했습니다."`)을 컨텍스트로 넣지 않는다. 문장을 넣으면 LLM이
    그것을 무시하고 사전지식으로 답할 여지가 남는다.
-2. **0건 가이드 검색 질의는 Generate 프롬프트에 넣지 않는다.** Generate가 1회 통합이므로, 근거 있는
-   요구와 없는 요구를 한 프롬프트에 섞으면 LLM이 A 요구의 청크를 근거 삼아 B 요구까지
-   답하는 교차 오염이 일어난다. "모르면 모른다고 답하라"는 지시는 강제가 아니므로
-   프롬프트에 의존하지 않는다.
-3. **제외한 요구는 `assemble` 단계에서 고정 문구로 채운다.** 소제목은 분해 결과의
-   `title`을 사용하므로 근거가 있든 없든 모든 요구가 분해 LLM이 반환한 순서대로 나타난다.
-   → 문구: [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내)
+2. **0건 위치도 Generate 프롬프트에 `근거: 없음`으로 넣는다.** A.4는 해당 위치 본문을
+   [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내) 두 줄과 정확히 같게
+   출력하고, 다른 위치의 근거를 사용하지 않도록 지시한다.
+3. **최종 텍스트 조립은 LLM이 한다.** `■ {title}` 소제목, 입력 순서, 섹션 사이 빈 줄을
+   포함한 고객 표시용 일반 텍스트를 한 번에 스트리밍한다. 위치별 JSON 파싱이나 서버 조립은
+   하지 않는다.
 4. **모든 요구가 0건이어도 상담사 연결로 넘기지 않는다.** 모든 요구가 3번의 고정 문구로
    채워질 뿐이고 `chat_sessions.status`는 그대로다. 0건은 코퍼스 커버리지 문제이지
    사람이 개입해야 한다는 신호가 아니며, 위에 적었듯 **0건은 흔한 경우**라 세션을 넘기면
@@ -469,11 +468,8 @@ Generate를 1회로 묶으면 LLM 호출 수가 요구 개수와 무관하게 1�
 grounded   = [a for a in augmented if a.chunks]
 ungrounded = [a for a in augmented if not a.chunks]
 
-# 근거가 하나도 없으면 LLM 호출을 건너뛴다. 상태는 전이하지 않는다.
-guidance = generate(grounded) if grounded else {}
-
-# 안내를 얻지 못한 요구는 코드가 B.5 고정 문구로 채운다
-response = assemble(augmented, guidance)
+# 하나라도 근거가 있으면 전체 최종 본문을 일반 텍스트 한 번으로 생성한다.
+response = generate_text(augmented) if grounded else assemble_b5(augmented)
 ```
 
 분해된 가이드 검색 질의가 하나도 없는 턴은 응답 본문이 비므로 대응 가이드 메시지를 보내지 않고
@@ -511,12 +507,12 @@ response = assemble(augmented, guidance)
 | --- | --- |
 | 가이드 검색 질의 하나의 Retrieve 실패 | 그 질의만 0건으로 떨어뜨리고 나머지 질의로 응답을 계속 만든다 |
 | Generate(A.4) 재시도 상한 소진 | 안내를 한 줄도 만들지 못한 것과 같게 보고 모든 요구를 B.5 문구로 채운다 |
-| Generate는 성공했으나 모든 `guidance`가 비어 있음 | 위와 같다 |
+| Generate는 성공했으나 최종 텍스트가 비어 있음 | 재시도하며, 상한 소진 시 위와 같다 |
 
 근거가 있는데도 챗봇이 할 말이 없는 상태는 전체 0건과 구분할 실익이 없으므로 같은
 분기로 처리한다. **어느 실패도 상태를 전이시키지 않는다** — 한 턴의 응답이 부실해질 뿐
-상담은 다음 질문으로 이어진다. 프롬프트에 넣지 않은 위치에 대한 안내가 응답에 섞여 오면
-근거가 없는 내용이므로 버린다.
+상담은 다음 질문으로 이어진다. 별도의 위치별 텍스트 파서는 만들지 않으며, 최종 형식과
+근거 분리는 A.4 프롬프트에 맡긴다.
 
 #### 응답 후 흐름
 
@@ -723,22 +719,40 @@ HTTP 응답보다 늦게 도착한다. 어느 쪽이든 최신 점수를 다시 
 | `POST /chat/{chat_session_id}/verify` | 출생연도 4자리 본인인증. **고객이 처음 접속할 때 부르는 경로**이며 첫 진입이면 최초 알림을 만들어 함께 돌려준다 | [2.2](#22-채팅-접속-및-본인인증), [2.3](#23-최초-알림-메시지와-버튼) |
 | `GET /chat/{chat_session_id}` | 세션 상태와 대화 이력 조회. 인증을 마친 화면의 **새로고침·재접속 전용**이라 최초 알림을 만들지 않는다 | [2.2](#22-채팅-접속-및-본인인증) |
 | `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
-| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다. 사기 정황 추출은 응답 뒤 백그라운드로 돈다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
+| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 가이드 누적 스냅샷과 완료 결과를 SSE로 돌려준다. 사기 정황 추출은 완료 뒤 백그라운드로 돈다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
 | `GET /transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 담당자 화면이 폴링하는 경로. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 | `GET /transactions/{transaction_id}/chat-session/score-events` | 사기 정황 점수 실시간 스트림(SSE, `text/event-stream`). 정황이 추출될 때마다 `chat_score_updated` 이벤트로 `type_scores` 전체를 다시 밀어준다. `status`는 포함하지 않는다 | [2.7](#사기-정황-점수-실시간-스트림-sse) |
 | `GET /transactions/{transaction_id}/chat-session/detail` | 거래별 상담 내역 조회. 대화 전문 + 유형별 점수. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 
-- 응답은 레포 공통 봉투 `ApiResponse`(`success`/`data`/`error`)를 쓴다.
+- 메시지 POST의 성공 응답만 `text/event-stream`이다. 나머지 API와 메시지 POST의 스트림
+  시작 전 오류(404·409·422)는 공통 `ApiResponse` JSON을 유지한다.
 - **현재 세션 상태에서 받을 수 없는 입력은 `409`다.** 버튼·답변 경로의 상태 조건이 그것이고,
   판정에 따른 흐름 분기는 오류가 아니라 정상 응답이다.
-- 버튼·답변 응답의 `messages`는 **그 턴에 챗봇이 보낸 메시지 본문만** 담는다. 누적 이력은
-  세션 조회로 받는다.
+- 버튼 응답과 메시지 POST의 `chat_turn_completed.messages`는 **그 턴에 챗봇이 보낸 메시지
+  본문만** 담는다. 누적 이력은 세션 조회로 받는다.
 - 본인인증은 토큰을 발급하지 않으므로 `GET /chat/{chat_session_id}`를 포함한 나머지 경로에
   인증 게이트가 없다. 세션 id를 아는 사람은 이력을 볼 수 있다([3.3](#33-보안운영)의 MVP 제외).
 - 담당자 화면의 두 조회 경로는 `/transactions` 하위에 둔다. Agent(`app/services/agent/`)와는
   무관한 채팅 세션 조회이므로 `/agent` 접두사를 쓰지 않는다.
 - 트랜잭션은 라우터가 소유한다(`get_session`은 commit하지 않는다). 턴 실행의 커밋은
   [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 처리한다.
+
+메시지 POST의 성공 이벤트 순서는 다음과 같다. 스냅샷은 증가분이 아니라 현재까지 누적된
+가이드 전체 본문이다. 가이드가 없는 판정은 스냅샷 없이 시작·완료만 보낸다.
+
+```text
+event: chat_turn_started
+data: {"chat_session_id":"CHAT-..."}
+
+event: chat_message_snapshot
+data: {"message_index":0,"message_text":"■ 의심스러운 링크\n공식"}
+
+event: chat_turn_completed
+data: {"chat_session_id":"CHAT-...","status":"IN_PROGRESS","question_step":2,"messages":["최종 가이드","다음 질문"]}
+```
+
+`chat_turn_completed`는 전체 메시지 저장과 턴 커밋이 끝난 뒤에만 전송한다. 스트림 시작 뒤
+예상하지 못한 오류는 트랜잭션을 롤백하고 `chat_turn_error`를 보낸다.
 
 ---
 
@@ -763,12 +777,10 @@ HTTP 응답보다 늦게 도착한다. 어느 쪽이든 최신 점수를 다시 
 
 - **프롬프트 입력을 최소화했다.** 응답 평가는 직전 질문과 고객 답변만
   사용하고, 가이드 검색 질의 분해와 사기 정황 추출은 고객 답변만 사용한다.
-- ~~**프롬프트의 JSON 지시만으로 출력 형식을 제한한다.**~~ 해결됐다.
-  평가·가이드 검색 질의 분해·사기 정황 추출·대응 가이드 생성 모두
-  [build_structured_llm](../../app/services/chatbot/llm.py)과 각 Pydantic 응답 스키마로
-  구조화 출력을 강제한다. 스키마가 유일한 검증 수단이므로 같은 것을 요구하던 프롬프트 문구
-  (출력 형식 예시, `JSON만 반환`, enum 화이트리스트)는 뺐다
-  ([공통 원칙](prompts.md#네-프롬프트에-공통으로-적용한-원칙)).
+- **A.4 일반 텍스트 형식은 프롬프트가 소유한다.** 평가·가이드 검색 질의 분해·사기 정황
+  추출은 계속 구조화 출력이지만, 대응 가이드는 SSE 표시를 위해 일반 텍스트로 생성한다.
+  `■` 소제목·순서·B.5 정확 일치는 [A.4](prompts.md#a4-대응-가이드-생성-프롬프트)가 정하고
+  서버는 비어 있지 않은지만 검사한다.
 - ~~**리트리버가 아직 문자열을 돌려준다.**~~ 해결됐다.
   [retriever_source](../../app/services/rag/chatbot_retriever.py)가 0건을 빈 리스트로
   반환하고, 문자열을 돌려주던 옛 `retriever`와 그 유일한 호출부

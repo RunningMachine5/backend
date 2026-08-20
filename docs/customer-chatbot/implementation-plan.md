@@ -165,15 +165,14 @@ FDS·Agent 결합.
 **참조**: [PRD 2.5](README.md#25-정보-응답--rag-대응-가이드-4-1), [PRD 2.6](README.md#26-사기-정황-추출과-채점-4-2),
 [messages.md B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내), [scoring.md](scoring.md)
 
-- [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) 신설 — Generate 프롬프트가
-  설계 문서에 없었다. 소제목·목록 조립은 LLM이 하지 않고 코드가 한다는 것을 문서에 못박고,
-  [prompts.py](../../app/services/chatbot/prompts.py)의 `render_guide_response_prompt`로 옮겼다
+- [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) — 최종 고객 본문을 일반
+  텍스트로 한 번 생성한다. 소제목·입력 순서·B.5 형식은 프롬프트가 소유하며,
+  [prompts.py](../../app/services/chatbot/prompts.py)의 `render_guide_response_prompt`로 관리한다
 - [x] [guide_responder.py](../../app/services/chatbot/guide_responder.py) — PRD 2.5의 의사코드 그대로:
   - 검색 질의 = 분해 결과의 독립적인 `guide_search_query.search_query`
   - Retrieve는 가이드 검색 질의당 독립, `top_k = 3` 고정
-  - `grounded` / `ungrounded` 분리 → **Generate는 grounded만으로 1회 호출**
-    (0건 요구를 프롬프트에 넣지 않아 교차 오염 차단)
-  - `assemble`: ungrounded 요구는 분해 결과의 `title` 소제목 + B.5 고정 문구.
+  - `grounded` / `ungrounded`를 모두 원래 순서로 전달 → **Generate는 일반 텍스트 1회 호출**
+  - ungrounded 요구는 프롬프트가 `title` 소제목 + B.5 고정 문구로 출력
   - **`GuideResponder`는 상태 전이 신호를 내지 않는다.** 전체 0건이면 Generate를 건너뛰고
     모든 요구를 B.5로 채운다. 요구가 하나도 없으면 빈 본문을 돌려주고 파이프라인이
     메시지를 보내지 않는다 (README 2.5 4번)

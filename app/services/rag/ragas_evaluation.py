@@ -123,9 +123,8 @@ class RunResult:
         섹션이 B.5 문구인지로 판정한다.
 
         근거를 찾은 질의 수(grounded_query_count)로 판정하면 안 된다. 검색이 성공해도
-        생성 LLM 이 그 자리의 안내를 내놓지 못하면 GuideResponder 는 B.5 문구로
-        메워 내보내므로(guide_responder._assemble), 고객은 기권을 받았는데 지표는
-        답변으로 세는 일이 생긴다. 실측 100건에서 5건이 여기 걸렸다.
+        생성 LLM 이 최종 일반 텍스트에서 안내를 내놓지 못하고 B.5만 출력하면 고객은
+        기권을 받았는데 지표는 답변으로 세는 일이 생긴다.
         """
 
         if not self.response.strip():
@@ -136,7 +135,7 @@ class RunResult:
 def _has_guidance(message_text: str) -> bool:
     """응답 본문에 B.5 문구가 아닌 안내가 한 섹션이라도 있는가.
 
-    GuideResponder 는 소제목 한 줄과 본문을 붙여 섹션을 만든다. 소제목을 걷어낸
+    A.4 일반 텍스트는 `■` 소제목 한 줄과 본문으로 섹션을 만든다. 소제목을 걷어낸
     나머지가 전부 B.5 문구면 고객이 받은 것은 기권 응답이다.
     """
 
