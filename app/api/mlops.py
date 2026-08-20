@@ -12,10 +12,12 @@ import re
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
+from time import perf_counter
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import select
 
 from app.core import config
@@ -33,9 +35,13 @@ from app.dto.mlops import (
     MLflowDetailsPointer,
     MLflowModelDetails,
     ModelPromotionRequest,
+    PlatformMonitoringResponse,
+    PlatformStatusResponse,
     ServingMonitoringResponse,
     TrainingDecision,
     TrainingDecisionRequest,
+    TrainingExecutionResponse,
+    TrainingMonitoringResponse,
     TrainingResultRequest,
     TrainingResultStatus,
     TrainingRunRequest,
@@ -490,6 +496,50 @@ def get_training_run(run_id: int, session: SessionDep) -> TrainingRunResponse:
 
 
 @router.get(
+    "/training/runs/{run_id}/execution",
+    response_model=TrainingExecutionResponse,
+)
+def get_training_run_execution(
+    run_id: int,
+    client: CloudRunAdminClientDep,
+    session: SessionDep,
+) -> TrainingExecutionResponse:
+    """학습 Run에 연결된 Cloud Run Execution의 운영 정보만 반환한다."""
+
+    run = _get_training_run_or_404(run_id, session)
+    if run.cloud_run_execution_name is None:
+        raise HTTPException(
+            status_code=409,
+            detail="아직 Cloud Run execution이 연결되지 않았습니다.",
+        )
+    try:
+        execution = client.get_training_execution(run.cloud_run_execution_name)
+        outcome = client.training_execution_outcome(execution)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+
+    terminal = execution.get("terminalCondition")
+    failure_reason = None
+    if outcome == "FAILED" and isinstance(terminal, dict):
+        failure_reason = terminal.get("message") or terminal.get("reason")
+
+    return TrainingExecutionResponse(
+        name=execution.get("name", run.cloud_run_execution_name),
+        outcome=outcome,
+        create_time=execution.get("createTime"),
+        start_time=execution.get("startTime"),
+        completion_time=execution.get("completionTime"),
+        running_count=execution.get("runningCount", 0),
+        succeeded_count=execution.get("succeededCount", 0),
+        failed_count=execution.get("failedCount", 0),
+        cancelled_count=execution.get("cancelledCount", 0),
+        retried_count=execution.get("retriedCount", 0),
+        log_uri=execution.get("logUri"),
+        failure_reason=failure_reason,
+    )
+
+
+@router.get(
     "/training/runs/{run_id}/model-details",
     response_model=MLflowModelDetails,
 )
@@ -731,6 +781,56 @@ def get_training_status(
 
 
 @router.get(
+    "/training/monitoring",
+    response_model=TrainingMonitoringResponse,
+)
+def get_training_monitoring(
+    client: CloudMonitoringClientDep,
+    window_minutes: int = Query(default=60, ge=15, le=1440),
+) -> dict[str, Any]:
+    """Cloud Run Training Job의 실행 수와 자원 시계열을 반환한다."""
+
+    try:
+        return client.get_training_metrics(window_minutes)
+    except CloudMonitoringError as exc:
+        raise _upstream_error(exc) from exc
+
+
+@router.get("/platform/status", response_model=PlatformStatusResponse)
+def get_platform_status(session: SessionDep) -> PlatformStatusResponse:
+    """Backend 응답 여부와 DB 연결 상태를 가볍게 확인한다."""
+
+    started_at = perf_counter()
+    try:
+        session.exec(text("SELECT 1"))
+    except SQLAlchemyError:
+        return PlatformStatusResponse(
+            database_status="DOWN",
+            database_latency_ms=None,
+        )
+    return PlatformStatusResponse(
+        database_status="UP",
+        database_latency_ms=round((perf_counter() - started_at) * 1000, 1),
+    )
+
+
+@router.get(
+    "/platform/monitoring",
+    response_model=PlatformMonitoringResponse,
+)
+def get_platform_monitoring(
+    client: CloudMonitoringClientDep,
+    window_minutes: int = Query(default=60, ge=15, le=1440),
+) -> dict[str, Any]:
+    """Backend가 실행 중인 VM의 CPU·메모리·디스크 시계열을 반환한다."""
+
+    try:
+        return client.get_platform_metrics(window_minutes)
+    except CloudMonitoringError as exc:
+        raise _upstream_error(exc) from exc
+
+
+@router.get(
     "/operations/{operation_id}",
     response_model=CloudRunOperationResponse,
 )
@@ -788,7 +888,7 @@ def get_serving_performance(
 )
 def get_serving_monitoring(
     client: CloudMonitoringClientDep,
-    window_minutes: int = Query(default=60, ge=15, le=360),
+    window_minutes: int = Query(default=60, ge=15, le=1440),
 ) -> dict[str, Any]:
     """Cloud Run Serving의 최근 인프라 시계열을 반환한다."""
 

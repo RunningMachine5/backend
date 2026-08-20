@@ -77,6 +77,58 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             return run.id
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_platform_status_checks_database_connection(self) -> None:
+        response = self.client.get("/mlops/platform/status", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["backend_status"], "UP")
+        self.assertEqual(response.json()["database_status"], "UP")
+        self.assertIsInstance(response.json()["database_latency_ms"], float)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_execution_returns_runtime_details(self) -> None:
+        run_id = self.make_run()
+        with Session(self.engine) as session:
+            run = session.get(TrainingRun, run_id)
+            assert run is not None
+            run.cloud_run_execution_name = "training-abc12"
+            session.add(run)
+            session.commit()
+        self.cloud_run.get_training_execution.return_value = {
+            "name": (
+                "projects/p/locations/asia-northeast3/jobs/fdshield-training/"
+                "executions/training-abc12"
+            ),
+            "createTime": "2026-08-19T03:00:00Z",
+            "startTime": "2026-08-19T03:00:05Z",
+            "completionTime": "2026-08-19T03:02:00Z",
+            "runningCount": 0,
+            "succeededCount": 1,
+            "failedCount": 0,
+            "cancelledCount": 0,
+            "retriedCount": 0,
+            "logUri": "https://console.cloud.google.com/logs/query",
+            "terminalCondition": {"state": "CONDITION_SUCCEEDED"},
+        }
+        self.cloud_run.training_execution_outcome.return_value = "SUCCEEDED"
+
+        response = self.client.get(
+            f"/mlops/training/runs/{run_id}/execution",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["outcome"], "SUCCEEDED")
+        self.assertEqual(response.json()["succeeded_count"], 1)
+        self.assertEqual(
+            response.json()["log_uri"],
+            "https://console.cloud.google.com/logs/query",
+        )
+        self.cloud_run.get_training_execution.assert_called_once_with(
+            "training-abc12"
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_dataset_build_generates_version_and_gcs_uri(self) -> None:
         self.dataset_builder.label_summary.return_value = DatasetLabelSummary(
             normal_count=9,
