@@ -155,6 +155,66 @@ class CaseSimilarityTest(unittest.TestCase):
 
         self.assertEqual(result.similarity_score, 0.5)
 
+    def test_other_fraud_type_evidence_does_not_penalize_candidate(self) -> None:
+        current = make_case(
+            "CASE-CURRENT",
+            type_scores={
+                VOICE_PHISHING: 0.50,
+                MESSENGER_PHISHING: 0.15,
+                ACCOUNT_TAKEOVER: 0.70,
+                FRAUD_USED_ACCOUNT: 0.00,
+            },
+            matched_components={
+                VOICE_PHISHING: [
+                    "loan_escalation_context",
+                    "severe_amount_context",
+                    "recipient_transfer_with_severe_amount",
+                ],
+                MESSENGER_PHISHING: ["vulnerable_mobile_recipient_transfer"],
+                ACCOUNT_TAKEOVER: [
+                    "unused_terminal_with_device_compromise",
+                    "device_compromise_2plus",
+                    "impossible_travel",
+                    "vpn_or_roaming_with_impossible_travel",
+                    "connection_failures",
+                ],
+            },
+            risk_score=70,
+            risk_grade="HIGH",
+        )
+        candidate = make_case(
+            "CASE-ACCOUNT-HIGH",
+            type_scores={
+                VOICE_PHISHING: 0.10,
+                MESSENGER_PHISHING: 0.10,
+                ACCOUNT_TAKEOVER: 0.63,
+                FRAUD_USED_ACCOUNT: 0.55,
+            },
+            matched_components={
+                ACCOUNT_TAKEOVER: [
+                    "remote_control",
+                    "impossible_travel",
+                    "vpn_or_roaming_with_impossible_travel",
+                    "connection_failures",
+                ]
+            },
+            risk_score=76,
+            risk_grade="HIGH",
+        )
+
+        result = calculate_case_similarity(current, candidate)
+
+        self.assertEqual(result.evidence_similarity, 0.5)
+        self.assertGreaterEqual(result.similarity_score, 0.60)
+        self.assertEqual(
+            result.common_evidence_codes,
+            (
+                f"{ACCOUNT_TAKEOVER}:connection_failures",
+                f"{ACCOUNT_TAKEOVER}:impossible_travel",
+                f"{ACCOUNT_TAKEOVER}:vpn_or_roaming_with_impossible_travel",
+            ),
+        )
+
     def test_same_case_is_rejected_for_direct_comparison(self) -> None:
         with self.assertRaisesRegex(ValueError, "동일한 사건"):
             calculate_case_similarity(

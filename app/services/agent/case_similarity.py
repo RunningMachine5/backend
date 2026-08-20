@@ -211,8 +211,16 @@ def calculate_case_similarity(
 
     current_evidence = normalize_evidence_codes(current.matched_components)
     candidate_evidence = normalize_evidence_codes(candidate.matched_components)
+    candidate_evidence_types = {
+        code.split(":", 1)[0] for code in candidate_evidence
+    }
+    comparable_current_evidence = frozenset(
+        code
+        for code in current_evidence
+        if code.split(":", 1)[0] in candidate_evidence_types
+    )
     evidence_similarity = calculate_evidence_similarity(
-        current_evidence,
+        comparable_current_evidence,
         candidate_evidence,
     )
     score_vector_similarity = calculate_score_vector_similarity(
@@ -244,7 +252,9 @@ def calculate_case_similarity(
         score_vector_similarity=score_vector_similarity,
         risk_grade_similarity=risk_grade_similarity,
         risk_score_similarity=risk_score_similarity,
-        common_evidence_codes=tuple(sorted(current_evidence & candidate_evidence)),
+        common_evidence_codes=tuple(
+            sorted(comparable_current_evidence & candidate_evidence)
+        ),
     )
 
 
