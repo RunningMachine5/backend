@@ -6,6 +6,7 @@ class DashboardInsightGenerateRequest(BaseModel):
     # 분석 시작/종료 시간
     period_start: datetime
     period_end: datetime
+    force_refresh: bool = False
 
 class DashboardInsightPeriod(BaseModel):
     current_start: datetime
