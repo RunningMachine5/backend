@@ -405,6 +405,80 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_prepare_returns_requested_run_without_cloud_run(self) -> None:
+        with Session(self.engine) as session:
+            dataset = DatasetVersion(
+                version="prepared-source",
+                gcs_uri="gs://bucket/prepared.csv",
+                row_count=100,
+            )
+            session.add(dataset)
+            session.commit()
+            session.refresh(dataset)
+            dataset_id = dataset.id
+
+        response = self.client.post(
+            "/mlops/training/runs/prepare",
+            headers=self.headers,
+            json={"dataset_version_id": dataset_id},
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["status"], "REQUESTED")
+        self.cloud_run.run_training.assert_not_called()
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_prepared_training_executes_only_once(self) -> None:
+        with Session(self.engine) as session:
+            dataset = DatasetVersion(
+                version="execute-source",
+                gcs_uri="gs://bucket/execute.csv",
+                row_count=100,
+            )
+            session.add(dataset)
+            session.commit()
+            session.refresh(dataset)
+            dataset_id = dataset.id
+
+        prepared = self.client.post(
+            "/mlops/training/runs/prepare",
+            headers=self.headers,
+            json={"dataset_version_id": dataset_id},
+        )
+        run_id = prepared.json()["id"]
+        self.cloud_run.training_execution_name.return_value = "training-exec-prepared"
+        self.cloud_run.run_training.return_value = {
+            "name": "projects/p/locations/r/operations/prepared-op",
+            "metadata": {
+                "target": (
+                    "projects/p/locations/r/jobs/training/"
+                    "executions/training-exec-prepared"
+                )
+            },
+        }
+
+        started = self.client.post(
+            f"/mlops/training/runs/{run_id}/execute",
+            headers=self.headers,
+            json={},
+        )
+        duplicate = self.client.post(
+            f"/mlops/training/runs/{run_id}/execute",
+            headers=self.headers,
+            json={},
+        )
+
+        self.assertEqual(started.status_code, 202, started.text)
+        self.assertEqual(started.json()["training_run"]["status"], "RUNNING")
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.cloud_run.run_training.assert_called_once_with(
+            min_pr_auc=0.0,
+            min_recall=0.0,
+            dataset_uri="gs://bucket/execute.csv",
+            training_run_id=run_id,
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_training_start_does_not_regress_an_early_callback(self) -> None:
         with Session(self.engine) as session:
             dataset = DatasetVersion(
@@ -450,7 +524,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.json()["training_run"]["mlflow_run_id"], "early-run")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_unknown_training_acceptance_stays_requested_for_late_callback(
+    def test_unknown_training_acceptance_stays_running_for_late_callback(
         self,
     ) -> None:
         with Session(self.engine) as session:
@@ -477,7 +551,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 502, response.text)
         with Session(self.engine) as session:
             run = session.exec(select(TrainingRun)).one()
-            self.assertEqual(run.status, "REQUESTED")
+            self.assertEqual(run.status, "RUNNING")
             run_id = run.id
         self.assertIsNotNone(run_id)
 
