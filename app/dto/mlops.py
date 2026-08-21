@@ -67,6 +67,7 @@ def _validated_gcs_uri(value: str) -> str:
 
 
 class TrainingResultStatus(StrEnum):
+    RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
 
@@ -86,6 +87,11 @@ class TrainingResultRequest(StrictMLOpsDTO):
 
     @model_validator(mode="after")
     def validate_result(self) -> Self:
+        if (
+            self.status == TrainingResultStatus.RUNNING
+            and self.cloud_run_execution_name is None
+        ):
+            raise ValueError("시작한 학습 실행에는 Cloud Run execution 이름이 필요합니다.")
         if self.status == TrainingResultStatus.SUCCEEDED and self.mlflow_run_id is None:
             raise ValueError("성공한 학습 결과에는 mlflow_run_id가 필요합니다.")
         return self

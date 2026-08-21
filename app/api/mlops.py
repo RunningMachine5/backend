@@ -778,6 +778,13 @@ def record_training_result(
             run.cloud_run_execution_name = payload.cloud_run_execution_name
             execution_changed = True
 
+    if payload.status == TrainingResultStatus.RUNNING:
+        if execution_changed:
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+        return _training_run_payload(run)
+
     if payload.status == TrainingResultStatus.SUCCEEDED:
         assert payload.mlflow_run_id is not None
         if run.status == "FAILED":

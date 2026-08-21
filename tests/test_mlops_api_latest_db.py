@@ -603,6 +603,36 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             self.assertEqual(run.status, "FAILED")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_running_callback_connects_cloud_run_execution_without_finishing_run(
+        self,
+    ) -> None:
+        run_id = self.make_run()
+        payload = {
+            "status": "RUNNING",
+            "cloud_run_execution_name": "fdshield-training-started1",
+        }
+
+        first = self.client.post(
+            f"/mlops/training/runs/{run_id}/result",
+            headers=self.headers,
+            json=payload,
+        )
+        second = self.client.post(
+            f"/mlops/training/runs/{run_id}/result",
+            headers=self.headers,
+            json=payload,
+        )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["status"], "RUNNING")
+        self.assertEqual(
+            second.json()["cloud_run_execution_name"],
+            "fdshield-training-started1",
+        )
+        self.assertIsNone(second.json()["mlflow_run_id"])
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_success_callback_rejects_legacy_fields_and_is_idempotent(self) -> None:
         run_id = self.make_run()
         with Session(self.engine) as session:
