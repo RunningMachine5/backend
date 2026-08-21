@@ -43,7 +43,7 @@ class DashboardInsightLLM:
 
         response = self.client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-5"),
-            temperature=0.2,
+            reasoning_effort="low",
 
             # json_object는 json 형식만 강제함. 필드 구조는 못 정함.
             # response_format={"type": "json_object"}, 

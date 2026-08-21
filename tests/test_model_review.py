@@ -57,6 +57,7 @@ class ModelReviewLLMTest(unittest.TestCase):
         self.assertEqual(prompt["metrics"][0]["candidate"], 0.82)
         self.assertAlmostEqual(prompt["metrics"][0]["delta"], -0.10)
         self.assertEqual(request["model"], "test-model")
+        self.assertEqual(request["reasoning_effort"], "low")
 
     def test_review_rejects_invalid_ai_response(self) -> None:
         self.client.chat.completions.create.return_value = SimpleNamespace(

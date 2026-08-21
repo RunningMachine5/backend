@@ -42,7 +42,7 @@ class ModelReviewLLM:
             timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
             max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
         )
-        self.model = model or os.getenv("OPENAI_MODEL", "gpt-5-mini")
+        self.model = model or os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 
     def review(
         self,
@@ -61,6 +61,7 @@ class ModelReviewLLM:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
+                reasoning_effort="low",
                 max_completion_tokens=500,
                 response_format={
                     "type": "json_schema",
