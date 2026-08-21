@@ -45,6 +45,12 @@ class ChatSessionAlertNotifier:
                 command.primary_suspected_type,
                 command.secondary_suspected_type,
             ],
+            top_fraud_type_scores={
+                command.primary_suspected_type: command.primary_suspected_score,
+                command.secondary_suspected_type: (
+                    command.secondary_suspected_score
+                ),
+            },
         )
         if not creation.created:
             return

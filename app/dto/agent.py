@@ -143,7 +143,9 @@ class FraudAlertEmailCommand:
 
     transaction_id: int
     primary_suspected_type: str
+    primary_suspected_score: float
     secondary_suspected_type: str
+    secondary_suspected_score: float
     classification_status: ClassificationStatus
 
 

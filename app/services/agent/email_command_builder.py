@@ -23,7 +23,9 @@ def build_fraud_alert_email_command(
     return FraudAlertEmailCommand(
         transaction_id=transaction_id,
         primary_suspected_type=type_confidence.top_type_code,
+        primary_suspected_score=type_confidence.top_score,
         secondary_suspected_type=type_confidence.second_type_code,
+        secondary_suspected_score=type_confidence.second_score,
         classification_status=type_confidence.classification_status,
     )
 

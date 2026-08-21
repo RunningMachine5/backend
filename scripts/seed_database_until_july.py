@@ -42,7 +42,10 @@ from app.data.model.transaction_label import TransactionLabel
 def parse_dt(v: str | None) -> datetime | None:
     if not v:
         return None
-    return datetime.strptime(v, "%Y-%m-%d %H:%M:%S%z")
+
+    # 전달받은 CSV는 timezone 없는 값과 마이크로초 포함 값을 함께 사용한다.
+    dt = datetime.fromisoformat(v)
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def parse_date(v: str | None):
@@ -71,7 +74,7 @@ def parse_interval(v: str | None) -> timedelta:
 
 def load_customers(filepath: str) -> list[Customer]:
     items = []
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             items.append(
                 Customer(
@@ -94,7 +97,7 @@ def load_customers(filepath: str) -> list[Customer]:
 
 def load_accounts(filepath: str) -> list[Account]:
     items = []
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             cid_str = r.get("customer_id", "").strip()
             items.append(
@@ -117,7 +120,7 @@ def load_accounts(filepath: str) -> list[Account]:
 
 def load_customer_events(filepath: str) -> list[CustomerEvent]:
     items = []
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             items.append(
                 CustomerEvent(
@@ -134,7 +137,7 @@ def load_customer_events(filepath: str) -> list[CustomerEvent]:
 
 def load_transactions(filepath: str) -> list[Transaction]:
     items = []
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             items.append(
                 Transaction(
@@ -173,7 +176,7 @@ def load_transactions(filepath: str) -> list[Transaction]:
 
 def load_derived_features(filepath: str) -> list[DerivedFeatures]:
     items = []
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             items.append(
                 DerivedFeatures(
@@ -211,7 +214,7 @@ def load_derived_features(filepath: str) -> list[DerivedFeatures]:
 
 def load_transaction_labels(filepath: str, max_tx_id: int) -> list[TransactionLabel]:
     items = []
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             tx_id = int(r["transaction_id"])
             if tx_id <= max_tx_id:

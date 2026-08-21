@@ -48,6 +48,7 @@ class ChatSessionRepository:
         chat_session_id: str,
         transaction_id: int,
         top_fraud_types: list[str] | None = None,
+        top_fraud_type_scores: dict[str, float] | None = None,
         is_older: bool = False,
     ) -> ChatSession:
         """거래에 연결된 세션이 있으면 반환하고 없으면 생성한다."""
@@ -61,6 +62,11 @@ class ChatSessionRepository:
             transaction_id=transaction_id,
             top_fraud_types=(
                 list(top_fraud_types) if top_fraud_types is not None else None
+            ),
+            top_fraud_type_scores=(
+                dict(top_fraud_type_scores)
+                if top_fraud_type_scores is not None
+                else None
             ),
             is_older=is_older,
         )

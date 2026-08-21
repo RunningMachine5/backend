@@ -87,6 +87,11 @@ class ChatSession(SQLModel, table=True):
         default=None,
         sa_column=Column(JSON_COLUMN, nullable=True),
     )
+    # top_fraud_types에 대응하는 Rule Engine 원본 점수. 챗봇 대화 후 점수와 구분한다.
+    top_fraud_type_scores: dict[str, float] | None = Field(
+        default=None,
+        sa_column=Column(JSON_COLUMN, nullable=True),
+    )
     # 0은 상담 시작 전, 1부터 고객이 답변할 질문 번호다.
     question_step: int = Field(
         default=0,
