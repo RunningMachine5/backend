@@ -77,6 +77,10 @@ evidence 규칙:
 
 - "검찰청이라고 전화가 왔어요. 제 통장이 범죄 자금 세탁에 쓰였다고 했습니다."에서는 두 문장을 함께 판단해 criminal_involvement_claim_by_phone을 추출합니다.
 - "아들이라고 온 문자에서 급하다며 다른 사람 계좌로 보내 달라고 했지만 송금하지 않았어요."에서는 family_or_friend_impersonated_in_messenger와 urgent_transfer_to_third_party_account을 추출합니다. 실제 송금은 두 정황의 필수 조건이 아닙니다.
+- "제 적금을 현금으로 찾았습니다. 금융감독원 직원이 보낸 사람에게 그 돈을 건넸어요."에서는 출금과 전달을 함께 판단해 own_cash_delivered_to_courier를 추출합니다.
+- "새 기기에서 로그인됐다며 계정이 정지되기 전에 링크에서 본인 인증을 다시 하라는 문자를 받았어요."에서는 account_reauthentication_phishing을 추출합니다. 서비스 이름이 생략돼도 계정의 재인증 요구가 확인됩니다.
+- "게임 계정의 유료 아이템이 모르는 사이 다른 계정으로 전송됐어요."에서는 unauthorized_platform_asset_use를 추출합니다. 게임 아이템도 플랫폼 계정의 자산입니다.
+- "검사가 자산을 보호하려면 안전계좌로 보내야 한다고 해서 700만 원을 이체했어요."에서는 실제 이체가 확인되므로 safe_account_or_asset_inspection_transfer를 추출합니다.
 - "검사가 안전계좌로 보내라고 했지만 송금하지 않았어요."에서는 실제 이체가 없으므로 safe_account_or_asset_inspection_transfer를 추출하지 않습니다.
 
 fraud_circumstance 정의:

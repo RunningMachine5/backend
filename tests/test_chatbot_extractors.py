@@ -114,6 +114,7 @@ class TestFraudCircumstanceExtractor(unittest.TestCase):
             "gift_card_pin_requested_by_impersonated_contact을 추출하면",
             prompt,
         )
+        self.assertIn("게임 아이템도 플랫폼 계정의 자산입니다", prompt)
         self.assertIn("여러 문장을 포함해도 됩니다", prompt)
         self.assertNotIn(
             "하나의 연속된 원문만으로 정황이 입증되지 않으면",
