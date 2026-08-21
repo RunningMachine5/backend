@@ -58,7 +58,4 @@ class CaseReviewRepository:
 
             self.session.add(review)
 
-        self.session.commit()
-        self.session.refresh(review)
-
         return review
