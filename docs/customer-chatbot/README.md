@@ -784,7 +784,7 @@ data: {"chat_session_id":"CHAT-...","status":"IN_PROGRESS","question_step":2,"me
   호출당 타임아웃(`CHAT_LLM_TIMEOUT_SECONDS`)과 재시도 상한(`CHAT_LLM_MAX_ATTEMPTS`)을
   [app/core/config.py](../../app/core/config.py)에 두고, 상한을 소진하면 별도 기술 실패 경로로
   다음 질문에 진행하며 `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다.
-  구현은 [answer_evaluator.py](../../app/services/chatbot/answer_evaluator.py)이고
+  구현은 [answer_analyzer.py](../../app/services/chatbot/answer_analyzer.py)이고
   확정된 동작은 [2.4 평가 LLM 실패 시 동작](#평가-llm-실패-시-동작)에 있다.
 - **가이드 검색 질의 수 상한.** 한 답변에서 최대 5개를 만들고 질의당 최대 3개 청크를 사용한다.
 - **추가 질문이 대화 히스토리를 쓰지 않는다.** "그럼 그건 어떻게 해요?"처럼 이전 답변의

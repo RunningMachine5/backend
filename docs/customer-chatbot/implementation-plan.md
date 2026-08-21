@@ -147,19 +147,14 @@ FDS·Agent 결합.
 프롬프트 렌더링은 [prompts.py](../../app/services/chatbot/prompts.py)에 이미 있으므로
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
 
-- [x] `app/services/chatbot/answer_evaluator.py` — A.1 평가 호출.
-  structured output으로 판정 3종을 강제(프롬프트 지시에 의존하지 않는다, PRD 3.2).
-  타임아웃·재시도는 1단계 env var 사용.
-  - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한,
-    상한 소진 시 고객 판정과 분리된 경로로 다음 질문에 진행하고
-    `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
 - [x] `app/services/chatbot/answer_analyzer.py` — 운영 경로의 A.1 판정과 A.2 검색 질의 분해를
   `AnswerAnalysisResult` 한 번의 구조화 출력으로 통합한다. `SUFFICIENT`만 질의를 다음 노드로
-  전달하고, 실패 시 별도 평가·분해 폴백 없이 기존 `EVALUATOR_FAILED` 경로를 쓴다.
+  전달한다. 호출당 타임아웃과 재시도 상한을 소진하면 고객 판정과 분리된
+  `EVALUATOR_FAILED` 경로로 다음 질문을 진행한다.
 - [x] `app/services/chatbot/extractors.py` — A.2 검색 질의 공통 정규화와 A.3 사기 정황 추출.
   A.2는 원문과 다른 `evidence`도 RAG 질의로 유지하되 리포지토리가 해당 감사 행을 저장하지
   않고, A.3는 원문과 다른 정황을 추출 단계에서 버린다
-- [x] 테스트 `tests/test_chatbot_answer_analyzer.py` / `test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
+- [x] 테스트 `tests/test_chatbot_answer_analyzer.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 3종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
 - [x] 실제 지연 비교: 5개 사례 × 3회에서 LLM 호출 30→15회, 중앙값

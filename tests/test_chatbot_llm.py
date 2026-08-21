@@ -13,7 +13,7 @@ from app.core.config import (
     CHAT_LLM_REASONING_EFFORT,
     CHAT_LLM_TIMEOUT_SECONDS,
 )
-from app.dto.chatbot import AnswerEvaluationResult
+from app.dto.chatbot import AnswerAnalysisResult
 from app.services.chatbot import llm as llm_module
 
 
@@ -23,7 +23,7 @@ class TestBuildStructuredLLM(unittest.TestCase):
 
         with mock.patch.object(llm_module, "ChatOpenAI") as chat_openai:
             llm_module.build_structured_llm(
-                AnswerEvaluationResult,
+                AnswerAnalysisResult,
                 timeout_seconds=CHAT_LLM_TIMEOUT_SECONDS,
                 **kwargs,
             )

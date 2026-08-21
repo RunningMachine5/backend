@@ -67,6 +67,11 @@ transaction_chat_router = APIRouter(
 )
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+SSE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 # ----------------------------------------------------------------------
@@ -363,11 +368,7 @@ def send_chat_message(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=SSE_RESPONSE_HEADERS,
         background=background_tasks,
     )
 
@@ -450,10 +451,9 @@ def stream_transaction_chat_score_events(
                     yield ": keep-alive\n\n"
                     continue
 
-                data = json.dumps(chat_score_event.data, ensure_ascii=False)
-                yield (
-                    f"event: {chat_score_event.event}\n"
-                    f"data: {data}\n\n"
+                yield _sse_event(
+                    chat_score_event.event,
+                    chat_score_event.data,
                 )
 
         finally:
@@ -462,11 +462,7 @@ def stream_transaction_chat_score_events(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=SSE_RESPONSE_HEADERS,
     )
 
 

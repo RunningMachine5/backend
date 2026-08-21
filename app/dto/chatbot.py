@@ -63,17 +63,6 @@ class AnswerQualityVerdict(StrEnum):
     WANT_END = "WANT_END"
 
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758183824&cot=14
-class AnswerEvaluationResult(BaseModel):
-    """평가 LLM이 반환할 JSON 객체 스키마.
-
-    ``AnswerQualityVerdict``는 ``verdict`` 한 필드의 허용 문자열 집합이고,
-    이 DTO는 ``{"verdict": "SUFFICIENT"}`` 형태의 전체 출력을 검증한다.
-    """
-
-    verdict: AnswerQualityVerdict
-
-
 class ExtractedGuideSearchQuery(BaseModel):
     """고객 답변에서 분해한 독립 검색 단위와 원문 근거."""
 
@@ -290,7 +279,6 @@ class RetrievedChatbotGuideChunkDTO:
 
 __all__ = [
     "AnswerAnalysisResult",
-    "AnswerEvaluationResult",
     "AnswerQualityVerdict",
     "ChatButtonAction",
     "ChatButtonActionRequest",

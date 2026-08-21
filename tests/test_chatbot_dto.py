@@ -8,7 +8,6 @@ from app.domain.fraud_circumstance_codes import (
 from app.domain.fraud_type_codes import MESSENGER_PHISHING, VOICE_PHISHING
 from app.dto.chatbot import (
     AnswerAnalysisResult,
-    AnswerEvaluationResult,
     AnswerQualityVerdict,
     CreateChatRequest,
     FraudCircumstanceExtractionResult,
@@ -117,9 +116,13 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
     def test_rejects_answer_quality_verdict_outside_contract(self) -> None:
         for verdict in ("NON_ANSWER", "REFUSAL", "UNKNOWN"):
             with self.subTest(verdict=verdict), self.assertRaises(ValidationError):
-                AnswerEvaluationResult.model_validate({"verdict": verdict})
+                AnswerAnalysisResult.model_validate(
+                    {"verdict": verdict, "guide_search_queries": []}
+                )
 
-        result = AnswerEvaluationResult.model_validate({"verdict": "SUFFICIENT"})
+        result = AnswerAnalysisResult.model_validate(
+            {"verdict": "SUFFICIENT", "guide_search_queries": []}
+        )
         self.assertEqual(result.verdict, AnswerQualityVerdict.SUFFICIENT)
 
 
