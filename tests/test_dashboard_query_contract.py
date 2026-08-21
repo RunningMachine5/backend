@@ -51,6 +51,7 @@ class DashboardQueryContractTest(unittest.TestCase):
             min_amount=None,
             max_amount=None,
             risk_grades=None,
+            review_statuses=None,
             offset=0,
             limit=50,
         )
