@@ -90,6 +90,21 @@ class FraudRuleComponentCreate(BaseModel):
     sort_order: int = Field(default=0, ge=0)
 
 
+class FraudRuleComponentsUpdate(BaseModel):
+    """기존 사기유형에 저장할 전체 패턴 목록."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    components: list[FraudRuleComponentCreate] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def reject_duplicate_component_keys(self) -> Self:
+        keys = [component.component_key for component in self.components]
+        if len(keys) != len(set(keys)):
+            raise ValueError("component_key는 한 룰 안에서 중복될 수 없습니다.")
+        return self
+
+
 class FraudRuleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -311,6 +326,7 @@ __all__ = [
     "GROUP_OPERATORS",
     "FraudRuleComponentCreate",
     "FraudRuleComponentResponse",
+    "FraudRuleComponentsUpdate",
     "FraudRuleComponentWeightUpdate",
     "FraudRuleCreate",
     "FraudRuleReplayChangedTransactionResponse",
