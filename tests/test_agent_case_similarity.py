@@ -305,6 +305,9 @@ class SimilarCaseRankingTest(unittest.TestCase):
 
 
 class SimilarityValidationTest(unittest.TestCase):
+    def test_default_minimum_similarity_matches_evaluated_candidate(self) -> None:
+        self.assertEqual(CaseSimilarityConfig().minimum_similarity, 0.55)
+
     def test_weights_must_sum_to_one(self) -> None:
         with self.assertRaisesRegex(ValueError, "합은 1.0"):
             CaseSimilarityWeights(evidence=0.4)

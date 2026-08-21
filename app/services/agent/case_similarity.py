@@ -48,7 +48,8 @@ class CaseSimilarityConfig:
     """후보 선택 기준과 점수 정규화 범위를 관리하는 설정이다."""
 
     weights: CaseSimilarityWeights = field(default_factory=CaseSimilarityWeights)
-    minimum_similarity: float = 0.60
+    # Seed 완료 사건 평가에서 Top-1 정확도를 유지하면서 검색 커버리지가 가장 높았던 값이다.
+    minimum_similarity: float = 0.55
     maximum_risk_score: float = 100.0
 
     def __post_init__(self) -> None:
