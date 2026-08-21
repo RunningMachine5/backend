@@ -304,13 +304,14 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 
 권장 실행 순서는 다음과 같습니다.
 
-1. 이미 준비된 GCS CSV는 `POST /mlops/datasets`로 등록합니다. DB 확정 라벨을
-   반영할 때는 `POST /mlops/datasets/build`로 고정 원본
+1. DB 확정 라벨을 반영할 때는 `POST /mlops/datasets/build`로 고정 원본
    `gs://fdshield-ml-data-801817539291/base/train1.csv`에서 새 불변 CSV와
    데이터셋 버전을 함께 만듭니다. 버전명과 GCS 객체 위치는 원본명과 서버의 UTC
    생성 시각을 기준으로 자동 결정합니다.
-2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs`를 호출합니다. Backend가
-   `training_runs` 이력을 만든 뒤 Cloud Run Training Job을 시작합니다.
+2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs/prepare`를 호출해
+   `training_runs` 이력을 먼저 만듭니다. 반환된 Run ID로
+   `POST /mlops/training/runs/{id}/execute`를 호출하면 Cloud Run Training Job을
+   시작합니다.
 3. Training Job은 후보와 현재 champion을 평가하고 성공 시 `status`, `mlflow_run_id`,
    실제 Cloud Run execution 이름만 `POST /mlops/training/runs/{id}/result`로 보냅니다.
 4. Backend의 `training_runs`에는 실행 연결 정보와 상태만 저장합니다. 관리자는
@@ -333,16 +334,14 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 승격 스모크 요청에는 `MLTransactionFeatures`의 51개 필드를 넣습니다.
 
 ```text
-POST /mlops/datasets
-{"version": "generated-v2",
- "gcs_uri": "gs://bucket/datasets/generated/v2/transactions.csv",
- "row_count": 210000}
-
 POST /mlops/datasets/build
-요청 본문 없음
+{"period_start": "2026-08-01", "period_end": "2026-08-20"}
 
-POST /mlops/training/runs
-{"dataset_version_id": 2, "min_pr_auc": 0.75, "min_recall": 0.8}
+POST /mlops/training/runs/prepare
+{"dataset_version_id": 2}
+
+POST /mlops/training/runs/12/execute
+{"min_pr_auc": 0.75, "min_recall": 0.8}
 
 POST /mlops/training/runs/12/result
 {"status": "SUCCEEDED", "mlflow_run_id": "a1b2c3...",

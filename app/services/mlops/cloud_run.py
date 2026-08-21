@@ -311,9 +311,6 @@ class CloudRunAdminClient:
                     return execution_name
         return None
 
-    def get_training_status(self) -> dict[str, Any]:
-        return self._request("GET", self._job_name)
-
     def get_training_execution(self, execution_name: str) -> dict[str, Any]:
         """이 Training Job에 속한 단일 Execution의 live 상태를 조회한다."""
 
