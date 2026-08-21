@@ -69,6 +69,7 @@ def get_cases(
     min_amount: int | None = Query(default=None, ge=0),
     max_amount: int | None = Query(default=None, ge=0),
     risk_grades: list[str] | None = Query(default=None),
+    review_statuses: list[str] | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
 ) -> ApiResponse[CaseListResponse]:
@@ -85,6 +86,7 @@ def get_cases(
             min_amount=min_amount,
             max_amount=max_amount,
             risk_grades=risk_grades,
+            review_statuses=review_statuses,
             page=page,
             page_size=page_size,
         )

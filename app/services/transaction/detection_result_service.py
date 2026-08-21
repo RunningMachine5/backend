@@ -83,7 +83,11 @@ class DetectionResultService:
             predict_result=is_fraud,
             rule_set_id=score_result.rule_set_id if score_result else None,
             rule_scores=score_result.type_scores if score_result else None,
+            transaction_amount=transaction.transaction_amount,
+            transaction_datetime=transaction.transaction_datetime,
+            risk_score=prediction.predict_proba * 100,
             created_at=transaction.created_at,
+            received_at=transaction.created_at,
         )
         return FraudDetectionResult(
             response=response,

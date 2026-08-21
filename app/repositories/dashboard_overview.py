@@ -14,7 +14,7 @@ from sqlalchemy import func
 
 from app.data.model.transaction import Transaction
 from app.data.model.fraud_rule import FraudTypeScoreResult
-from app.data.model.agent import AgentCase
+from app.data.model.agent import AgentCase, AgentReview
 
 # 프론트 응답 DTO 아니고, 내부 전달용 row 객체
 @dataclass(frozen=True)
@@ -68,6 +68,24 @@ class DashboardOverviewRepository:
             )
         )
 
+        return self.session.exec(statement).one()
+
+    def count_completed_cases(
+            self,
+            period_start: datetime,
+            period_end: datetime,
+    ) -> int:
+        """선택 기간에 담당자가 최종 판정을 저장한 사건 수를 센다."""
+        statement = (
+            select(func.count())
+            .select_from(AgentReview)
+            .join(AgentCase, AgentCase.case_id == AgentReview.case_id)
+            .join(Transaction, Transaction.id == AgentCase.transaction_id)
+            .where(
+                Transaction.transaction_datetime >= period_start,
+                Transaction.transaction_datetime < period_end,
+            )
+        )
         return self.session.exec(statement).one()
 
     # 의심 거래 목록 조회 함수

@@ -49,6 +49,10 @@ class DashboardOverviewService:
                 period_end=period_end,
             )
         )
+        completed_case_count = self.repository.count_completed_cases(
+            period_start=period_start,
+            period_end=period_end,
+        )
 
         # 의심 거래 건수
         suspicious_rows = self.repository.list_suspicious_rows(
@@ -70,6 +74,7 @@ class DashboardOverviewService:
             summary=self._build_summary(
                 total_transaction_count=total_transaction_count,
                 rule_analysis_completed_count=rule_analysis_completed_count,
+                completed_case_count=completed_case_count,
                 suspicious_rows=suspicious_rows,
             ),
             priority_trend=self._build_priority_trend(
@@ -122,6 +127,7 @@ class DashboardOverviewService:
         *,
         total_transaction_count: int,
         rule_analysis_completed_count: int,
+        completed_case_count: int,
         suspicious_rows: list[DashboardSuspiciousRow],
     ) -> DashboardOverviewSummary:
         return DashboardOverviewSummary(
@@ -136,6 +142,7 @@ class DashboardOverviewService:
                 for row in suspicious_rows
             ),
             rule_analysis_completed_count=rule_analysis_completed_count,
+            completed_case_count=completed_case_count,
         )
 
     # 우선순위
