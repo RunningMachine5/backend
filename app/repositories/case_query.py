@@ -45,6 +45,7 @@ class CaseQueryRepository:
         min_amount: int | None = None,
         max_amount: int | None = None,
         risk_grades: list[str] | None = None,
+        review_statuses: list[str] | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> tuple[list[CaseListRow], int]:
@@ -96,6 +97,12 @@ class CaseQueryRepository:
             statement = statement.where(Transaction.transaction_amount <= max_amount)
         if risk_grades:
             statement = statement.where(AgentCase.risk_grade.in_(risk_grades))
+        if review_statuses:
+            # 두 항목을 함께 고르면 모든 상태를 보이므로 조건을 추가하지 않는다.
+            if "COMPLETED" in review_statuses and "NEEDS_ACTION" not in review_statuses:
+                statement = statement.where(AgentReview.case_id.is_not(None))
+            elif "NEEDS_ACTION" in review_statuses and "COMPLETED" not in review_statuses:
+                statement = statement.where(AgentReview.case_id.is_(None))
 
         count_statement = select(func.count()).select_from(statement.subquery())
         total_count = self.session.exec(count_statement).one()

@@ -144,6 +144,7 @@ class DashboardOverviewSummary(BaseModel):
     priority_review_count: int # 우선 대응 필요한 건수
     suspicious_amount: int # 사기 의심 사건 총 피해 금액
     rule_analysis_completed_count: int # 룰 분석 완료 건수
+    completed_case_count: int # 담당자 처리 완료 사건 수
 
 # 우선순위 검토 대상 그래프
 class PriorityTrendPoint(BaseModel):

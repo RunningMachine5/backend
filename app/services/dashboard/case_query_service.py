@@ -30,6 +30,7 @@ class CaseQueryService:
         min_amount: int | None = None, # amount가 금액인가?
         max_amount: int | None = None,
         risk_grades: list[str] | None = None, # risk_grades 이거 덕현님 dto에서 받는 값 아님?
+        review_statuses: list[str] | None = None,
         page: int = 1,
         page_size: int = 50
     ) -> tuple[list[CaseListItemResponse], int]:
@@ -48,6 +49,7 @@ class CaseQueryService:
             min_amount=min_amount,
             max_amount=max_amount,
             risk_grades=risk_grades,
+            review_statuses=review_statuses,
             offset=(page-1)*page_size,
             limit=page_size,
         )
@@ -323,6 +325,7 @@ class CaseQueryService:
                 "performed_actions": review.performed_actions or [],
                 "checklist_results": review.checklist_results or [],
                 "resolution_summary": review.resolution_summary,
+                "reviewer_id": review.reviewer_id,
                 "reviewed_at": review.reviewed_at.isoformat(),
             },
         )

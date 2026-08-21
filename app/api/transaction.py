@@ -53,6 +53,13 @@ def _transaction_response(
             # 세션 상태와 관계없이 같은 응답을 만든다.
             "transaction_id": transaction.id,
             "created_at": transaction.created_at,
+            "received_at": transaction.created_at,
+            "transaction_amount": transaction.transaction_amount,
+            "transaction_datetime": transaction.transaction_datetime,
+            "risk_score": (
+                prediction_result.predict_proba * 100
+                if prediction_result else None
+            ),
             "prediction_status": prediction_status,
             "predict_result": (
                 prediction_result.predict_result if prediction_result else None
