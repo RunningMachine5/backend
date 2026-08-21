@@ -207,6 +207,20 @@ class FraudRuleCreate(BaseModel):
         return self
 
 
+class FraudRuleTypeCreate(BaseModel):
+    """관리 화면에서 새로 등록할 사기유형 정보."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    type_code: str = Field(
+        min_length=2,
+        max_length=64,
+        pattern=r"^[A-Z][A-Z0-9_]{1,63}$",
+    )
+    display_name: str = Field(min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=1000)
+
+
 class FraudRuleComponentWeightUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -420,6 +434,7 @@ __all__ = [
     "FraudRuleSetDraftCreate",
     "FraudRuleSetResponse",
     "FraudRuleSetSummaryResponse",
+    "FraudRuleTypeCreate",
     "FraudRuleWeightUpdate",
     "FraudRuleValidationIssue",
     "FraudRuleValidationResponse",
