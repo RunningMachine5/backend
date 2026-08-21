@@ -136,11 +136,7 @@ class CaseQueryService:
                 if row.agent_case is not None
                 else None
             ),
-            primary_fraud_type=(
-                row.score_result.primary_fraud_type
-                if row.score_result is not None
-                else None
-            ),
+            primary_fraud_type=self._get_primary_fraud_type(row),
             transaction_amount=row.transaction.transaction_amount,
             transaction_datetime=row.transaction.transaction_datetime,
             ip_address=(
@@ -149,6 +145,28 @@ class CaseQueryService:
                 else None
             ),
             review_status=review_status
+        )
+
+    @staticmethod
+    def _get_primary_fraud_type(row: CaseListRow) -> str | None:
+        """처리 목록에는 Agent가 확정한 대응 유형을 우선 표시한다."""
+        response_result = (
+            row.agent_case.response_result
+            if row.agent_case is not None
+            else None
+        )
+        applied_fraud_type = (
+            response_result.get("applied_fraud_type")
+            if isinstance(response_result, dict)
+            else None
+        )
+        if isinstance(applied_fraud_type, str) and applied_fraud_type:
+            return applied_fraud_type
+
+        return (
+            row.score_result.primary_fraud_type
+            if row.score_result is not None
+            else None
         )
 
     def _to_transaction_section(

@@ -37,9 +37,11 @@ from app.domain.fraud_type_codes import (
     FRAUD_USED_ACCOUNT,
     MESSENGER_PHISHING,
     VOICE_PHISHING,
+    get_fraud_type_display_name,
 )
 from app.dto.chatbot import AnswerQualityVerdict
 from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
+from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
 from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
@@ -374,6 +376,55 @@ class ChatApiTest(unittest.TestCase):
         self.assertEqual(data["messages"], [WANT_END_MESSAGE])
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
         self.assertEqual(len(scores), 1)
+
+    def test_message_turn_publishes_score_event_to_subscriber(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+        subscriber_queue = chat_score_event_broker.subscribe(
+            chat_session.transaction_id
+        )
+        self.addCleanup(
+            chat_score_event_broker.unsubscribe,
+            chat_session.transaction_id,
+            subscriber_queue,
+        )
+
+        with _evaluating(AnswerQualityVerdict.WANT_END):
+            self._send(chat_session.chat_session_id, message_text="그만할래요")
+
+        event = subscriber_queue.get_nowait()
+        self.assertEqual(event.event, "chat_score_updated")
+        self.assertEqual(
+            event.data,
+            {
+                "transaction_id": chat_session.transaction_id,
+                "type_scores": [
+                    {
+                        "type_code": type_code,
+                        "display_name": get_fraud_type_display_name(type_code),
+                        "score": 0,
+                    }
+                    for type_code in sorted(FINAL_FRAUD_TYPE_CODES)
+                ],
+            },
+        )
+
+    def test_message_turn_with_no_subscriber_does_not_raise(self) -> None:
+        """구독자가 없는 거래에 대한 발행은 조용히 버려진다."""
+
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+
+        with _evaluating(AnswerQualityVerdict.WANT_END):
+            response = self._send(
+                chat_session.chat_session_id, message_text="그만할래요"
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
 
     # -- 2.7 담당자 경로 -----------------------------------------------
 

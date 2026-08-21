@@ -433,19 +433,15 @@ class CustomerChatbotPipeline:
         return {"outbound": outbound}
 
     def _finish(self, state: ChatGraphState) -> dict[str, Any]:
-        """WANT_END — 채점을 집계한 뒤 상담을 종료한다(PRD 2.6)."""
+        """WANT_END — 상담을 종료한다(PRD 2.6).
 
-        circumstance_codes = [
-            circumstance.circumstance_code
-            for circumstance in self.repository.list_fraud_circumstances(
-                self.chat_session
-            )
-        ]
-        # 담당자가 화면에서 결과를 볼 수 있도록 전이보다 집계를 먼저 끝낸다.
-        self.repository.add_fraud_type_scores(
-            self.chat_session,
-            type_scores=score_chat_fraud_circumstances(circumstance_codes),
-        )
+        채점은 이미 정황이 추출될 때마다 ``_update_fraud_type_scores``로 갱신되어
+        있다. 여기서 다시 부르는 것은 정황이 한 번도 추출되지 않은 세션(예:
+        첫 질문에서 바로 종료 의사를 밝힌 경우)도 담당자 화면에 0점 행을 남기기
+        위한 안전망이다.
+        """
+
+        self._update_fraud_type_scores()
         self.repository.set_session_complete(
             self.chat_session,
             completed_at=datetime.now(UTC),
@@ -531,6 +527,30 @@ class CustomerChatbotPipeline:
                 evidence=circumstance.evidence,
                 source_answer=answer,
             )
+
+        # 이 턴에서 새 정황이 없었어도(전부 중복이거나 0건) 재계산 자체는 저렴하므로
+        # 그대로 갱신한다 — 세션당 최대 20종이라 매번 다시 읽어 합산해도 무시할 비용이다.
+        self._update_fraud_type_scores()
+
+    def _update_fraud_type_scores(self) -> None:
+        """세션에 쌓인 사기 정황 전체를 다시 읽어 유형별 점수를 갱신한다.
+
+        정황 추출마다(PRD 2.6) 호출된다. 세션당 정황은 최대 20종
+        (``FINAL_FRAUD_CIRCUMSTANCE_CODES``)으로 상한이 있어, 매 턴 다시 읽어
+        합산해도 응답 시간에 영향을 줄 만큼의 비용이 아니다 — LLM 호출은
+        추가되지 않고 인덱스 조회 1회와 in-memory 합산, upsert 1회뿐이다.
+        """
+
+        circumstance_codes = [
+            circumstance.circumstance_code
+            for circumstance in self.repository.list_fraud_circumstances(
+                self.chat_session
+            )
+        ]
+        self.repository.upsert_fraud_type_scores(
+            self.chat_session,
+            type_scores=score_chat_fraud_circumstances(circumstance_codes),
+        )
 
     def _emit(self, outbound: list[str], message_text: str) -> list[str]:
         """챗봇 메시지를 대화 로그에 남기고 이번 턴 출력에 덧붙인다."""

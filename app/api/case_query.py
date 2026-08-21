@@ -70,7 +70,7 @@ def get_cases(
     max_amount: int | None = Query(default=None, ge=0),
     risk_grades: list[str] | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=100),
+    page_size: int = Query(default=50, ge=1, le=500),
 ) -> ApiResponse[CaseListResponse]:
     service = get_case_query_service(session)
 

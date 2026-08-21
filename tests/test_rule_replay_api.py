@@ -184,27 +184,29 @@ class FraudRuleReplayApiTest(unittest.TestCase):
         return activated.json(), draft
 
     def _add_always_matching_type(self, draft_id: int) -> None:
-        response = self.client.post(
-            f"/rule-sets/{draft_id}/rules",
-            headers=ADMIN_HEADERS,
-            json={
-                "type_code": "CUSTOM_FRAUD",
-                "display_name": "테스트 유형",
-                "components": [
-                    {
-                        "component_key": "positive_amount",
-                        "name": "양수 거래금액",
-                        "condition_expression": {
-                            "field": "transaction_amount",
-                            "operator": "GT",
-                            "value": 0,
-                        },
-                        "weight": 1.0,
-                    }
-                ],
-            },
-        )
-        self.assertEqual(response.status_code, 201, response.text)
+        with Session(self.engine) as session:
+            rule = FraudRule(
+                rule_set_id=draft_id,
+                type_code="CUSTOM_FRAUD",
+                display_name="테스트 유형",
+                sort_order=99,
+            )
+            session.add(rule)
+            session.flush()
+            session.add(
+                FraudRuleComponent(
+                    rule_id=rule.id,
+                    component_key="positive_amount",
+                    name="양수 거래금액",
+                    condition_expression={
+                        "field": "transaction_amount",
+                        "operator": "GT",
+                        "value": 0,
+                    },
+                    weight=1.0,
+                )
+            )
+            session.commit()
 
     @staticmethod
     def _stored_score_snapshot(
@@ -409,27 +411,29 @@ class FraudRuleReplayApiTest(unittest.TestCase):
             "/rule-sets/drafts",
             headers=ADMIN_HEADERS,
         ).json()
-        added = self.client.post(
-            f"/rule-sets/{first_draft['id']}/rules",
-            headers=ADMIN_HEADERS,
-            json={
-                "type_code": "LOAN_TEST",
-                "display_name": "매칭 대상 변경 테스트",
-                "components": [
-                    {
-                        "component_key": "target_loan_context",
-                        "name": "대출 관련 거래",
-                        "condition_expression": {
-                            "field": "loan_related",
-                            "operator": "EQ",
-                            "value": True,
-                        },
-                        "weight": 1.0,
-                    }
-                ],
-            },
-        )
-        self.assertEqual(added.status_code, 201, added.text)
+        with Session(self.engine) as session:
+            rule = FraudRule(
+                rule_set_id=first_draft["id"],
+                type_code="LOAN_TEST",
+                display_name="매칭 대상 변경 테스트",
+                sort_order=99,
+            )
+            session.add(rule)
+            session.flush()
+            session.add(
+                FraudRuleComponent(
+                    rule_id=rule.id,
+                    component_key="target_loan_context",
+                    name="대출 관련 거래",
+                    condition_expression={
+                        "field": "loan_related",
+                        "operator": "EQ",
+                        "value": True,
+                    },
+                    weight=1.0,
+                )
+            )
+            session.commit()
         activated = self.client.post(
             f"/rule-sets/{first_draft['id']}/activate",
             headers=ADMIN_HEADERS,
@@ -439,25 +443,21 @@ class FraudRuleReplayApiTest(unittest.TestCase):
         draft_rule = next(
             rule for rule in draft["rules"] if rule["type_code"] == "LOAN_TEST"
         )
-        updated = self.client.put(
-            f"/rule-sets/{draft['id']}/rules/{draft_rule['id']}",
-            headers=ADMIN_HEADERS,
-            json={
-                "components": [
-                    {
-                        "component_key": "target_loan_context",
-                        "name": "비대출 거래",
-                        "condition_expression": {
-                            "field": "loan_related",
-                            "operator": "EQ",
-                            "value": False,
-                        },
-                        "weight": 1.0,
-                    }
-                ]
-            },
-        )
-        self.assertEqual(updated.status_code, 200, updated.text)
+        with Session(self.engine) as session:
+            component = session.exec(
+                select(FraudRuleComponent).where(
+                    FraudRuleComponent.rule_id == draft_rule["id"],
+                    FraudRuleComponent.component_key == "target_loan_context",
+                )
+            ).one()
+            component.name = "비대출 거래"
+            component.condition_expression = {
+                "field": "loan_related",
+                "operator": "EQ",
+                "value": False,
+            }
+            session.add(component)
+            session.commit()
 
         base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
         with Session(self.engine) as session:

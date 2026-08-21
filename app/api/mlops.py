@@ -11,16 +11,23 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import UTC, date, datetime, timedelta
-from pathlib import PurePosixPath
+from time import perf_counter
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
-from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
+from pydantic import ValidationError
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import aliased
+from sqlmodel import Session, select
 
 from app.core import config
 from app.core.db import SessionDep
+from app.data.model.account import Account
+from app.data.model.customer import Customer
+from app.data.model.derived_features import DerivedFeatures
 from app.data.model.mlops import DatasetVersion, TrainingRun
+from app.data.model.transaction import Transaction
 from app.dto.mlops import (
     CloudRunOperationResponse,
     DatasetPeriodRequest,
@@ -33,9 +40,13 @@ from app.dto.mlops import (
     MLflowDetailsPointer,
     MLflowModelDetails,
     ModelPromotionRequest,
+    PlatformMonitoringResponse,
+    PlatformStatusResponse,
     ServingMonitoringResponse,
     TrainingDecision,
     TrainingDecisionRequest,
+    TrainingExecutionResponse,
+    TrainingMonitoringResponse,
     TrainingResultRequest,
     TrainingResultStatus,
     TrainingRunRequest,
@@ -43,6 +54,7 @@ from app.dto.mlops import (
     TrainingRunStartResponse,
 )
 from app.repositories.inference_performance import InferencePerformanceRepository
+from app.services.features.ml_feature_assembler import assemble_ml_features
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
     CloudRunAdminClientDep,
@@ -102,7 +114,57 @@ DATASET_VERSION_DIRECTORY = "versions"
 # 객체의 주소와 버전만 가리킨다.
 
 
+def _latest_verification_sample(session: Session) -> tuple[int, dict[str, Any]]:
+    """최근 저장 거래에서 후보 모델 검증용 raw51을 복원한다."""
+
+    source_account = aliased(Account, name="verification_source_account")
+    recipient_account = aliased(Account, name="verification_recipient_account")
+    row = session.exec(
+        select(
+            Transaction,
+            Customer,
+            source_account,
+            recipient_account,
+            DerivedFeatures,
+        )
+        .join(Customer, Customer.id == Transaction.customer_id)
+        .join(
+            source_account,
+            source_account.account_number == Transaction.source_account_number,
+        )
+        .outerjoin(
+            recipient_account,
+            recipient_account.account_number == Transaction.recipient_account_number,
+        )
+        .join(DerivedFeatures, DerivedFeatures.id == Transaction.id)
+        .order_by(Transaction.transaction_datetime.desc(), Transaction.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=409,
+            detail="자동 검증에 사용할 저장 거래가 없습니다.",
+        )
+
+    transaction, customer, source, recipient, derived = row
+    try:
+        features = assemble_ml_features(
+            customer=customer,
+            source_account=source,
+            recipient_account=recipient,
+            transaction=transaction,
+            derived=derived,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="최근 저장 거래의 raw51 Feature를 복원할 수 없습니다.",
+        ) from exc
+    return transaction.id, features.model_dump(mode="json", by_alias=True)
+
+
 def _new_labeled_dataset_target(
+    version_number: int,
     period_start: date,
     period_end: date,
     normal_count: int,
@@ -111,11 +173,10 @@ def _new_labeled_dataset_target(
     """기간과 라벨 수를 이름에 넣어 DB 컬럼 없이도 다시 표시한다."""
 
     source = parse_gcs_uri(MLOPS_BASE_DATASET_URI)
-    source_name = PurePosixPath(source.name).stem
     created_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     period = f"{period_start:%Y%m%d}-{period_end:%Y%m%d}"
     version = (
-        f"{source_name}-labeled-{period}"
+        f"train_v{version_number}-labeled-{period}"
         f"-n{normal_count}-f{fraud_count}-{created_at}"
     )
     gcs_uri = f"gs://{source.bucket}/{DATASET_VERSION_DIRECTORY}/{version}.csv"
@@ -351,20 +412,30 @@ def build_labeled_dataset_version(
     if summary.labeled_count == 0:
         raise HTTPException(status_code=422, detail="반영할 확정 거래 라벨이 없습니다.")
 
+    # DB가 부여하는 ID를 v1, v2 버전 번호로 사용한다.
+    reservation = secrets.token_hex(8)
+    source = parse_gcs_uri(MLOPS_BASE_DATASET_URI)
+    dataset = DatasetVersion(
+        version=f"pending-{reservation}",
+        gcs_uri=(
+            f"gs://{source.bucket}/{DATASET_VERSION_DIRECTORY}/"
+            f"pending-{reservation}.csv"
+        ),
+        row_count=0,
+    )
+    session.add(dataset)
+    session.flush()
+    assert dataset.id is not None
+
     version, gcs_uri = _new_labeled_dataset_target(
+        dataset.id,
         payload.period_start,
         payload.period_end,
         summary.normal_count,
         summary.fraud_count,
     )
-    existing_version = session.exec(
-        select(DatasetVersion).where(DatasetVersion.version == version)
-    ).first()
-    if existing_version is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="이미 존재하는 데이터셋 버전입니다.",
-        )
+    dataset.version = version
+    dataset.gcs_uri = gcs_uri
 
     try:
         result = builder.build(
@@ -374,16 +445,13 @@ def build_labeled_dataset_version(
             period_end=payload.period_end,
         )
     except DatasetStorageError as exc:
+        session.rollback()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except DatasetBuildError as exc:
+        session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    dataset = DatasetVersion(
-        version=version,
-        gcs_uri=gcs_uri,
-        row_count=result.output_row_count,
-    )
-    session.add(dataset)
+    dataset.row_count = result.output_row_count
     try:
         session.commit()
     except IntegrityError as exc:
@@ -487,6 +555,50 @@ def list_training_runs(session: SessionDep) -> list[TrainingRunResponse]:
 @router.get("/training/runs/{run_id}", response_model=TrainingRunResponse)
 def get_training_run(run_id: int, session: SessionDep) -> TrainingRunResponse:
     return _training_run_payload(_get_training_run_or_404(run_id, session))
+
+
+@router.get(
+    "/training/runs/{run_id}/execution",
+    response_model=TrainingExecutionResponse,
+)
+def get_training_run_execution(
+    run_id: int,
+    client: CloudRunAdminClientDep,
+    session: SessionDep,
+) -> TrainingExecutionResponse:
+    """학습 Run에 연결된 Cloud Run Execution의 운영 정보만 반환한다."""
+
+    run = _get_training_run_or_404(run_id, session)
+    if run.cloud_run_execution_name is None:
+        raise HTTPException(
+            status_code=409,
+            detail="아직 Cloud Run execution이 연결되지 않았습니다.",
+        )
+    try:
+        execution = client.get_training_execution(run.cloud_run_execution_name)
+        outcome = client.training_execution_outcome(execution)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+
+    terminal = execution.get("terminalCondition")
+    failure_reason = None
+    if outcome == "FAILED" and isinstance(terminal, dict):
+        failure_reason = terminal.get("message") or terminal.get("reason")
+
+    return TrainingExecutionResponse(
+        name=execution.get("name", run.cloud_run_execution_name),
+        outcome=outcome,
+        create_time=execution.get("createTime"),
+        start_time=execution.get("startTime"),
+        completion_time=execution.get("completionTime"),
+        running_count=execution.get("runningCount", 0),
+        succeeded_count=execution.get("succeededCount", 0),
+        failed_count=execution.get("failedCount", 0),
+        cancelled_count=execution.get("cancelledCount", 0),
+        retried_count=execution.get("retriedCount", 0),
+        log_uri=execution.get("logUri"),
+        failure_reason=failure_reason,
+    )
 
 
 @router.get(
@@ -604,7 +716,7 @@ def decide_training_run(
     mlflow: MLflowRegistryClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
-    """학습 실행을 거절하거나 MLflow가 확인한 후보를 0%로 staging한다."""
+    """학습 실행을 거절하거나 같은 Serving 이미지로 0% 후보를 만든다."""
 
     run = _get_training_run_for_update_or_404(run_id, session)
     initial_decision = run.status == "CANDIDATE" and not payload.restage
@@ -635,11 +747,10 @@ def decide_training_run(
         return {"training_run": _training_run_payload(run), "operation": None}
 
     try:
-        result = client.verify_staged_model_revision(model_version)
+        result = client.stage_model_revision(model_version)
     except CloudRunAdminError as exc:
         raise _upstream_error(exc) from exc
-    # 승인 태그는 CD 후보 리비전 검증이 성공한 뒤에만 기록한다. 그렇지 않으면
-    # MLflow는 승인됐지만 Backend는 CANDIDATE인 분리 상태가 남는다.
+    # Cloud Run이 후보 생성 요청을 받은 뒤에만 관리자 결정을 기록한다.
     try:
         mlflow.set_model_version_tags(
             run.model_key,
@@ -731,6 +842,56 @@ def get_training_status(
 
 
 @router.get(
+    "/training/monitoring",
+    response_model=TrainingMonitoringResponse,
+)
+def get_training_monitoring(
+    client: CloudMonitoringClientDep,
+    window_minutes: int = Query(default=60, ge=15, le=1440),
+) -> dict[str, Any]:
+    """Cloud Run Training Job의 실행 수와 자원 시계열을 반환한다."""
+
+    try:
+        return client.get_training_metrics(window_minutes)
+    except CloudMonitoringError as exc:
+        raise _upstream_error(exc) from exc
+
+
+@router.get("/platform/status", response_model=PlatformStatusResponse)
+def get_platform_status(session: SessionDep) -> PlatformStatusResponse:
+    """Backend 응답 여부와 DB 연결 상태를 가볍게 확인한다."""
+
+    started_at = perf_counter()
+    try:
+        session.exec(text("SELECT 1"))
+    except SQLAlchemyError:
+        return PlatformStatusResponse(
+            database_status="DOWN",
+            database_latency_ms=None,
+        )
+    return PlatformStatusResponse(
+        database_status="UP",
+        database_latency_ms=round((perf_counter() - started_at) * 1000, 1),
+    )
+
+
+@router.get(
+    "/platform/monitoring",
+    response_model=PlatformMonitoringResponse,
+)
+def get_platform_monitoring(
+    client: CloudMonitoringClientDep,
+    window_minutes: int = Query(default=60, ge=15, le=1440),
+) -> dict[str, Any]:
+    """Backend가 실행 중인 VM의 CPU·메모리·디스크 시계열을 반환한다."""
+
+    try:
+        return client.get_platform_metrics(window_minutes)
+    except CloudMonitoringError as exc:
+        raise _upstream_error(exc) from exc
+
+
+@router.get(
     "/operations/{operation_id}",
     response_model=CloudRunOperationResponse,
 )
@@ -788,7 +949,7 @@ def get_serving_performance(
 )
 def get_serving_monitoring(
     client: CloudMonitoringClientDep,
-    window_minutes: int = Query(default=60, ge=15, le=360),
+    window_minutes: int = Query(default=60, ge=15, le=1440),
 ) -> dict[str, Any]:
     """Cloud Run Serving의 최근 인프라 시계열을 반환한다."""
 
@@ -814,11 +975,12 @@ def promote_serving_revision(
     if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED"}:
         raise HTTPException(status_code=409, detail="승격 가능한 학습 실행이 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
+    transaction_id, features = _latest_verification_sample(session)
     try:
         result = client.promote_model_revision(
             model_version=model_version,
-            transaction_id=payload.transaction_id,
-            features=payload.features.model_dump(mode="json", by_alias=True),
+            transaction_id=transaction_id,
+            features=features,
         )
     except (CloudRunAdminError, MLServingError) as exc:
         raise _upstream_error(exc) from exc
@@ -830,6 +992,7 @@ def promote_serving_revision(
     return {
         "training_run": _training_run_payload(run),
         "model_version": model_version,
+        "verification_transaction_id": transaction_id,
         "operation_id": _operation_id(operation),
         **result,
     }

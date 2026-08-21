@@ -317,12 +317,11 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
    `GET /mlops/training/runs/{id}/model-details`에서 MLflow 원본의 모델 버전·지표·파라미터·
    태그를 확인한 뒤 `POST /mlops/training/runs/{id}/decision`으로 승인 또는 거절합니다.
 5. 승인하면 Backend가 `mlflow_run_id`에 대응하는 등록 모델 버전을 MLflow에서 확인합니다.
-   리비전 생성은 ML Serving CD만 담당합니다. CD가 `model-v<version>` 태그의 최신 Ready
-   리비전을 0%로 준비한 뒤 승인 API를 호출해야 합니다. Backend는 모델명·버전·mlflow
-   모드, digest 고정 이미지, 기존 운영 트래픽 100%를 검증해 그 리비전만 재사용하며,
-   태그가 없거나 계약이 다르면 승인하지 않습니다. 검증 성공 뒤에만 MLflow 승인 태그와
-   학습 실행 상태 `STAGED`를 기록합니다. 별도 Cloud Run 작업이 없으므로
-   `operation_id`는 `null`입니다.
+   Backend는 현재 운영 중인 digest 고정 Serving 이미지를 그대로 사용하고
+   `ML_MODEL_VERSION`만 승인 버전으로 바꿔 `model-v<version>` 태그의 새 리비전을
+   트래픽 0%로 요청합니다. 같은 태그의 Ready 후보가 이미 있으면 새로 만들지 않고
+   재사용합니다. Cloud Run이 요청을 수락한 뒤 MLflow 승인 태그와 학습 실행 상태
+   `STAGED`를 기록합니다.
 6. Ready 상태를 확인한 뒤 `POST /mlops/serving/promotions`로 실제 예측 스모크를
    실행하고, 성공한 경우에만 새 리비전으로 트래픽 100% 이동을 요청합니다. 요청자가
    모델 버전을 직접 지정하지 않습니다.
@@ -367,8 +366,8 @@ POST /mlops/training/runs/12/deployment/complete
 학습 결과 callback이 유실됐다면 `POST /mlops/training/runs/{id}/reconcile`로 저장된
 Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution 실패는 `FAILED`로
 정리하지만, 성공한 실행의 `mlflow_run_id`는 추측하지 않으므로 callback 설정을 고쳐야
-합니다. CD 후보 리비전이 교체되었거나 검증이 필요해진 `STAGED` 실행은 ML Serving
-CD를 정상 완료한 뒤 `{"decision":"APPROVE","restage":true}`로 다시 검증합니다.
+합니다. 후보 리비전을 다시 확인해야 하는 `STAGED` 실행은
+`{"decision":"APPROVE","restage":true}`로 재검증합니다.
 동일 모델 태그가 존재하지만 아직 reconciling 중이거나 Ready·환경변수·digest·트래픽
 검증을 통과하지 못하면 Backend는 중복 리비전을 만들지 않고 staging 요청을 거절합니다.
 
@@ -408,12 +407,14 @@ Backend가 모델 상세 조회·승인·최종 alias 변경을 하려면 `MLFLO
 `model_comparison_artifact_path=metadata/model-comparison.json`을 제공합니다. 모델 지표·
 파라미터·태그와 비교 결과는 MLflow를 원본으로 사용하며 Backend DB에 복제하지 않습니다.
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회와 Service 조회·트래픽 수정
-권한이 필요합니다. Serving 리비전 생성과 해당 런타임 서비스 계정에 대한
-`iam.serviceAccounts.actAs` 권한은 ML Serving CD 배포 서비스 계정에만 부여합니다.
+권한이 필요합니다. 승인 모델의 0% Serving 리비전을 만들기 위해 Cloud Run Service
+수정 권한과 해당 Serving 런타임 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한도
+Backend 서비스 계정에 부여합니다. Serving 코드 이미지 배포 권한은 ML Serving CD
+서비스 계정이 별도로 사용합니다.
 데이터셋 빌드 기능을 사용할 때는 기준 객체 읽기와 새 객체 생성에 필요한
 `storage.objects.get`, `storage.objects.create` 권한도 학습 데이터 버킷에 필요합니다.
 학습 Job 서비스 계정에는 GCS 학습 객체 읽기와 MLflow Secret 접근 권한이, Serving
-서비스 계정에는 MLflow Secret 접근 권한이 필요합니다. CD의 새 리비전 준비나 승격
+서비스 계정에는 MLflow Secret 접근 권한이 필요합니다. 후보 리비전 준비나 승격
 스모크 테스트가 실패하면 트래픽 전환이 호출되지 않으므로 기존 추론 리비전은 계속
 서비스합니다.
 Cloud Run Service는 요청이 없으면 자동 scale-to-zero 되므로 별도의 "서버 끄기" API는

@@ -97,7 +97,7 @@ class DashboardInsightAnalyzer:
         results = [
             CauseAggregate(
                 cause_codes=cause_codes,
-                label="+".join(
+                label=" + ".join(
                     self._display_name(code)
                     for code in cause_codes
                 ),
@@ -220,13 +220,59 @@ class DashboardInsightAnalyzer:
             .replace(" ", "_")
         )
 
-    @staticmethod # 이름 보이기?
+    @staticmethod
     def _display_name(code: str) -> str:
         parts = code.split(":")
+        category = parts[0]
+        name = parts[-1]
 
-        if parts[0] == "CHANNEL":
-            return f"{parts[-1]} 채널"
-        if parts[0] == "LOCATION":
-            return f"{parts[-1]} 지역"
+        fraud_type_map = {
+            "VOICE_PHISHING": "보이스피싱",
+            "ACCOUNT_TAKEOVER": "계정 탈취",
+            "FRAUD_USED_ACCOUNT": "사기 이용 계좌",
+            "MESSENGER_PHISHING": "메신저피싱",
+        }
+        channel_map = {
+            "MOBILE": "모바일",
+            "INTERNET": "인터넷",
+            "ATM": "ATM",
+            "BRANCH": "영업점",
+            "OTHERS": "기타",
+            "OTHER": "기타",
+        }
+        feature_map = {
+            "ANOTHER_PERSON_ACCOUNT": "타인 명의 계좌",
+            "AUTHENTICATION_CHANGED": "인증 수단 변경",
+            "NEW_RECIPIENT": "신규 수취 계좌",
+            "HIGH_AMOUNT": "고액 이체",
+            "NIGHT_TIME": "심야 거래",
+            "NIGHT": "심야 거래",
+            "FIRST_TIME": "최초 거래",
+            "FOREIGN_IP": "해외 IP",
+            "DEVICE_CHANGE": "기기 변경",
+            "FAST_TRANSFER": "단시간 연속 이체",
+            "NEW_DEVICE": "신규 기기",
+            "MALWARE_DETECTED": "악성 앱 감지",
+            "REMOTE_CONTROL": "원격 제어 앱",
+            "LOAN_SCAM": "대출 사기",
+            "MULTI_ACCOUNT": "다수 계좌 이체",
+            "LARGE_WITHDRAWAL": "거액 출금",
+            "LIMIT_EXCEEDED": "한도 초과",
+            "PASSWORD_ERROR": "비밀번호 오류",
+        }
 
-        return parts[-1]
+        if category == "CHANNEL":
+            channel_label = channel_map.get(name, name)
+            return f"{channel_label} 채널"
+        if category == "FRAUD_TYPE":
+            return fraud_type_map.get(name, name)
+        if category == "FEATURE":
+            return feature_map.get(name, name)
+        if category == "LOCATION":
+            return f"지역 격자({name})"
+        if category == "RULE":
+            rule_type = fraud_type_map.get(parts[1], parts[1]) if len(parts) > 1 else ""
+            rule_comp = feature_map.get(name, name)
+            return f"{rule_type} 룰({rule_comp})" if rule_type else f"{rule_comp} 룰"
+
+        return feature_map.get(name, name)

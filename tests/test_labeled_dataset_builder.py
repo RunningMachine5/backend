@@ -276,6 +276,15 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         self.assertEqual(first_row["transaction_id"], "1")
         self.assertEqual(first_row["transaction_amount"], "75000")
         self.assertEqual(first_row["time_difference"], "0 days 00:01:30")
+        self.assertEqual(first_row["customer_birth_date"], "1984-08-14")
+        self.assertEqual(
+            first_row["transaction_datetime"],
+            "2026-08-13 06:00:00+0000",
+        )
+        self.assertEqual(
+            first_row["customer_flag_change_of_authentication_1"],
+            str(first.features.customer_flag_change_of_authentication_1),
+        )
         self.assertIn(FLAG_DEPOSIT_CANONICAL, first_row)
         self.assertNotIn(FLAG_DEPOSIT_ALIAS, first_row)
         self.assertEqual(first_row["is_fraud"], "1")

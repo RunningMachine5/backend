@@ -7,7 +7,7 @@ from app.domain.fraud_type_codes import FINAL_FRAUD_TYPE_CODES
 def score_chat_fraud_circumstances(
     circumstance_codes: Iterable[str],
 ) -> dict[str, int]:
-    """상담 종료 시 한 번 호출된다. 상담 종료 시 사기 정황을 사기유형 점수로 집계"""
+    """사기 정황이 추출될 때마다 세션의 정황 전체를 다시 읽어 사기유형 점수로 집계한다."""
 
     type_scores = {type_code: 0 for type_code in sorted(FINAL_FRAUD_TYPE_CODES)}
 
