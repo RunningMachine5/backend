@@ -126,8 +126,6 @@ def calculate_pattern_statistics(
     ).latest_positive_feature_rows(limit=sample_size)
     engine = RuleEngine()
     evaluator = RuleExpressionEvaluator()
-    for definition in definitions:
-        evaluator.validate(definition.condition_expression)
 
     contexts = [
         engine.feature_builder.build(
