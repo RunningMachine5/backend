@@ -31,6 +31,10 @@ from app.services.mlops.dataset_builder import (
     get_labeled_dataset_builder,
 )
 from app.services.mlops.mlflow import MLflowRegistryError, get_mlflow_registry_client
+from app.services.mlops.model_review import (
+    ModelReviewResult,
+    get_model_review_llm,
+)
 from main import app
 from tests.ml_feature_fixture import valid_ml_raw_data
 
@@ -56,12 +60,14 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.cloud_run = Mock()
         self.dataset_builder = Mock()
         self.mlflow = Mock()
+        self.model_reviewer = Mock()
         app.dependency_overrides[get_session] = override_session
         app.dependency_overrides[get_cloud_run_admin_client] = lambda: self.cloud_run
         app.dependency_overrides[get_labeled_dataset_builder] = (
             lambda: self.dataset_builder
         )
         app.dependency_overrides[get_mlflow_registry_client] = lambda: self.mlflow
+        app.dependency_overrides[get_model_review_llm] = lambda: self.model_reviewer
         self.client = TestClient(app)
         self.headers = {"X-MLOps-Admin-Token": "admin-secret"}
         self.make_verification_transaction()
@@ -1069,6 +1075,45 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
         self.mlflow.get_model_details.assert_called_once_with(
             "fdshield-fraud-detector-v2", "candidate-run"
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_ai_review_uses_candidate_and_production_metrics(self) -> None:
+        production_id = self.make_run("PRODUCTION", "production-run")
+        candidate_id = self.make_run("CANDIDATE", "candidate-run")
+        details = {
+            "candidate-run": {
+                "model_version": "18",
+                "metrics": {"validation_pr_auc": 0.82},
+                "tags": {"promotion_recommendation": "RECOMMENDED"},
+            },
+            "production-run": {
+                "model_version": "17",
+                "metrics": {"validation_pr_auc": 0.92},
+                "tags": {},
+            },
+        }
+        self.mlflow.get_model_details.side_effect = (
+            lambda _model_name, run_id: details[run_id]
+        )
+        self.model_reviewer.review.return_value = ModelReviewResult(
+            decision="NOT_RECOMMENDED",
+            summary="PR-AUC가 운영 모델보다 낮아 승격을 비추천합니다.",
+        )
+
+        response = self.client.post(
+            f"/mlops/training/runs/{candidate_id}/ai-review",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["source"], "AI")
+        self.assertEqual(response.json()["decision"], "NOT_RECOMMENDED")
+        self.model_reviewer.review.assert_called_once_with(
+            candidate_run_id=candidate_id,
+            candidate_details=details["candidate-run"],
+            production_run_id=production_id,
+            production_details=details["production-run"],
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")

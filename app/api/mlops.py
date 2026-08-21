@@ -39,6 +39,7 @@ from app.dto.mlops import (
     LabeledDatasetBuildResponse,
     MLflowDetailsPointer,
     MLflowModelDetails,
+    ModelReviewResponse,
     ModelPromotionRequest,
     PlatformMonitoringResponse,
     PlatformStatusResponse,
@@ -75,6 +76,10 @@ from app.services.mlops.dataset_builder import (
 from app.services.mlops.mlflow import (
     MLflowRegistryClientDep,
     MLflowRegistryError,
+)
+from app.services.mlops.model_review import (
+    ModelReviewError,
+    ModelReviewLLMDep,
 )
 from app.services.mlops.monitoring import (
     CloudMonitoringClientDep,
@@ -687,6 +692,64 @@ def get_training_run_model_details(
         return mlflow.get_model_details(run.model_key, run.mlflow_run_id)
     except MLflowRegistryError as exc:
         raise _upstream_error(exc) from exc
+
+
+@router.post(
+    "/training/runs/{run_id}/ai-review",
+    response_model=ModelReviewResponse,
+)
+def review_training_run_with_ai(
+    run_id: int,
+    mlflow: MLflowRegistryClientDep,
+    reviewer: ModelReviewLLMDep,
+    session: SessionDep,
+) -> ModelReviewResponse:
+    """후보와 현재 운영 모델의 성능 수치만 AI에 전달해 검토한다."""
+
+    candidate = _get_training_run_or_404(run_id, session)
+    if candidate.status != "CANDIDATE":
+        raise HTTPException(
+            status_code=409,
+            detail="AI 판단은 검토 대기 후보 모델에서만 요청할 수 있습니다.",
+        )
+    if candidate.mlflow_run_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="후보 모델의 MLflow run ID가 기록되지 않았습니다.",
+        )
+
+    production = session.exec(
+        select(TrainingRun)
+        .where(TrainingRun.status == "PRODUCTION")
+        .order_by(TrainingRun.created_at.desc())
+    ).first()
+
+    try:
+        candidate_details = mlflow.get_model_details(
+            candidate.model_key,
+            candidate.mlflow_run_id,
+        )
+        production_details = (
+            mlflow.get_model_details(
+                production.model_key,
+                production.mlflow_run_id,
+            )
+            if production is not None and production.mlflow_run_id is not None
+            else None
+        )
+        result = reviewer.review(
+            candidate_run_id=run_id,
+            candidate_details=candidate_details,
+            production_run_id=production.id if production else None,
+            production_details=production_details,
+        )
+    except (MLflowRegistryError, ModelReviewError) as exc:
+        raise _upstream_error(exc) from exc
+
+    return ModelReviewResponse(
+        decision=result.decision,
+        summary=result.summary,
+    )
 
 
 @router.post(
