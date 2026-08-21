@@ -42,6 +42,8 @@ from app.dto.fraud_rule import (
     FraudRuleValidationResponse,
     RuleExpressionOperator,
     RuleFeatureResponse,
+    RulePatternStatisticsRequest,
+    RulePatternStatisticsResponse,
     expression_to_json,
 )
 from app.services.rules import repository as rule_repository
@@ -51,12 +53,19 @@ from app.services.rules.engine import (
     RuleSetDefinition,
     RuleSetValidationError,
 )
-from app.services.rules.expression_evaluator import RuleExpressionError
+from app.services.rules.expression_evaluator import (
+    RuleExpressionError,
+    RuleExpressionEvaluator,
+)
 from app.services.rules.feature_builder import (
     TRANSITION_LEGACY_DERIVED_FEATURES,
     TRANSITION_LEGACY_RAW_ALIASES,
 )
 from app.services.rules.replay import replay_rule_sets
+from app.services.rules.pattern_statistics import (
+    PatternStatisticsDefinition,
+    calculate_pattern_statistics,
+)
 from app.services.rules.repository import rule_set_definition_from_database
 
 router = APIRouter(
@@ -757,6 +766,18 @@ def _expression_type_issues(
             )
 
 
+def _expression_fields(expression: Mapping[str, Any]) -> set[str]:
+    if expression.get("operator") in {"AND", "OR"}:
+        return {
+            field
+            for condition in expression.get("conditions", [])
+            if isinstance(condition, Mapping)
+            for field in _expression_fields(condition)
+        }
+    field = expression.get("field")
+    return {field} if isinstance(field, str) else set()
+
+
 def _definition_validation_issues(
     definition: RuleSetDefinition,
 ) -> list[FraudRuleValidationIssue]:
@@ -852,6 +873,69 @@ def list_rule_features() -> list[RuleFeatureResponse]:
     """Return only the allow-listed raw and derived fields usable by rules."""
 
     return list(RULE_FEATURES)
+
+
+@router.post(
+    "/rule-pattern-statistics",
+    response_model=RulePatternStatisticsResponse,
+)
+def get_rule_pattern_statistics(
+    payload: RulePatternStatisticsRequest,
+    session: SessionDep,
+) -> RulePatternStatisticsResponse:
+    """최근 ML 양성 거래에서 화면상의 패턴 통계를 계산한다."""
+
+    evaluator = RuleExpressionEvaluator()
+    definitions: list[PatternStatisticsDefinition] = []
+    issues: list[FraudRuleValidationIssue] = []
+    for index, pattern in enumerate(payload.patterns):
+        expression = expression_to_json(pattern.condition_expression)
+        path = f"patterns[{index}].condition_expression"
+        try:
+            evaluator.validate(expression)
+        except RuleExpressionError as exc:
+            issues.append(FraudRuleValidationIssue(path=path, message=str(exc)))
+        issues.extend(_expression_type_issues(expression, path))
+
+        fields = _expression_fields(expression)
+        feature = _FEATURE_BY_FIELD.get(next(iter(fields))) if len(fields) == 1 else None
+        feature_value_type = None
+        if feature and feature.value_type in {"integer", "number", "boolean", "enum"}:
+            # 0/1 플래그처럼 선택지가 정해진 정수는 평균보다 값별 비율이 유용하다.
+            feature_value_type = (
+                "enum"
+                if feature.value_type == "integer" and feature.allowed_values
+                else feature.value_type
+            )
+        definitions.append(
+            PatternStatisticsDefinition(
+                component_key=pattern.component_key,
+                condition_expression=expression,
+                feature_field=feature.field if feature_value_type else None,
+                feature_value_type=feature_value_type,
+            )
+        )
+
+    if issues:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "통계를 계산할 수 없는 패턴이 있습니다.",
+                "issues": [issue.model_dump() for issue in issues],
+            },
+        )
+
+    result = calculate_pattern_statistics(
+        session=session,
+        definitions=definitions,
+        sample_size=payload.sample_size,
+    )
+    return RulePatternStatisticsResponse(
+        requested_count=result.requested_count,
+        sample_count=result.sample_count,
+        has_more=result.has_more,
+        patterns=[asdict(item) for item in result.patterns],
+    )
 
 
 @router.get(
