@@ -256,10 +256,6 @@ class LabeledDatasetBuilder:
 
         if period_start > period_end:
             raise DatasetBuildError("기간 시작일은 종료일보다 늦을 수 없습니다.")
-        if period_start <= MLOPS_BASE_DATASET_PERIOD_END:
-            raise DatasetBuildError(
-                "추가 기간은 기본 데이터 다음 날인 2026-08-01부터 선택할 수 있습니다."
-            )
         return (
             datetime.combine(period_start, time.min, tzinfo=UTC),
             datetime.combine(period_end, time.max, tzinfo=UTC),

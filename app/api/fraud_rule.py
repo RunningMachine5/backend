@@ -28,6 +28,7 @@ from app.data.model.fraud_rule import (
 from app.dto.fraud_rule import (
     FraudRuleComponentCreate,
     FraudRuleComponentResponse,
+    FraudRuleComponentsUpdate,
     FraudRuleCreate,
     FraudRuleReplayRequest,
     FraudRuleReplayResponse,
@@ -995,6 +996,40 @@ def update_rule(
     session.add(rule_set)
 
     session.commit()
+    session.refresh(rule)
+    return _rule_response(session, rule)
+
+
+@router.put(
+    "/rule-sets/{rule_set_id}/rules/{rule_id}/components",
+    response_model=FraudRuleResponse,
+)
+def replace_rule_components(
+    rule_set_id: int,
+    rule_id: int,
+    payload: FraudRuleComponentsUpdate,
+    session: SessionDep,
+) -> FraudRuleResponse:
+    """DRAFT의 기존 사기유형에 속한 패턴 목록을 한 번에 저장한다."""
+
+    rule_set = _get_rule_set(session, rule_set_id)
+    _assert_draft(rule_set)
+    rule = _get_rule(session, rule_set_id, rule_id)
+
+    for component in _components_for_rule(session, rule.id):
+        session.delete(component)
+    session.flush()
+
+    for component in payload.components:
+        _add_component(session, rule, component)
+
+    now = datetime.now()
+    rule.updated_at = now
+    rule_set.updated_at = now
+    session.add(rule)
+    session.add(rule_set)
+
+    _commit_or_conflict(session, "한 유형에서 패턴 키는 중복될 수 없습니다.")
     session.refresh(rule)
     return _rule_response(session, rule)
 
