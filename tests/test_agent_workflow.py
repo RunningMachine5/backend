@@ -17,6 +17,7 @@ from app.domain.response_policy import (
 from app.dto.agent import (
     AgentInputDTO,
     AgentResponseDTO,
+    CustomerResponseContextDTO,
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
     SimilarCaseResultDTO,
@@ -264,7 +265,54 @@ class FakeDashboardSimilarCaseFinder:
         ]
 
 
+class FakeCustomerResponseProvider:
+    def __init__(self, context: CustomerResponseContextDTO) -> None:
+        self.context = context
+        self.transaction_ids: list[int] = []
+
+    def get_customer_response_context(
+        self, transaction_id: int
+    ) -> CustomerResponseContextDTO:
+        self.transaction_ids.append(transaction_id)
+        return self.context
+
+
 class AgentWorkflowTest(unittest.TestCase):
+    def test_customer_chatbot_result_overrides_rule_type_for_plan_and_checklist(self) -> None:
+        provider = FakeCustomerResponseProvider(
+            CustomerResponseContextDTO(
+                customer_answers=["모르는 사람이 원격제어 앱 설치를 유도했습니다."],
+                type_scores={
+                    "VOICE_PHISHING": 0.93,
+                    "ACCOUNT_TAKEOVER": 0.41,
+                },
+            )
+        )
+        policy_repository = FakePolicyRepository()
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(self._rule_result(0.80, 0.40)),  # type: ignore[arg-type]
+            policy_repository=policy_repository,
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            customer_response_provider=provider,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(provider.transaction_ids, [1])
+        self.assertEqual(policy_repository.requested_fraud_type, "VOICE_PHISHING")
+        self.assertEqual(response.response_result.applied_fraud_type, "VOICE_PHISHING")
+        self.assertTrue(
+            response.response_result.summary.startswith("챗봇 고객 응답을 우선 반영한")
+        )
+        self.assertEqual(
+            response.response_result.checklist[0].item_code,
+            "CHECK_CHATBOT_CUSTOMER_RESPONSE",
+        )
+        self.assertTrue(response.generation_metadata["customer_response_applied"])
+        self.assertEqual(
+            response.generation_metadata["customer_response_answer_count"], 1
+        )
+
     def test_confident_case_skips_investigation_and_completes(self) -> None:
         investigator = FakeInvestigator("MESSENGER_PHISHING")
         case_service = FakeCaseService(self._rule_result(0.80, 0.40))

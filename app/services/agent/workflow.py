@@ -19,6 +19,7 @@ from app.dto.agent import (
     AgentInputDTO,
     AgentResponseDTO,
     ChecklistItemDTO,
+    CustomerResponseContextDTO,
     FraudAlertEmailCommand,
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
@@ -46,6 +47,7 @@ class AgentGraphState(TypedDict, total=False):
     investigation_result: InvestigationResultDTO | None
     applied_fraud_type: str
     email_command: FraudAlertEmailCommand
+    customer_response: CustomerResponseContextDTO
     response_policy: ResponsePolicy
     retrieved_guides: list[RetrievedGuideChunkDTO]
     response_plan: ResponsePlanDTO
@@ -81,6 +83,7 @@ class ResponsePlanGenerator(Protocol):
         fraud_type: str,
         policy: ResponsePolicy,
         guides: list[RetrievedGuideChunkDTO],
+        customer_response: CustomerResponseContextDTO | None = None,
         metrics: dict[str, object] | None = None,
     ) -> ResponsePlanDTO: ...
 
@@ -102,6 +105,14 @@ class DashboardSimilarCaseFinder(Protocol):
         risk_score: int,
         risk_grade: str,
     ) -> list[SimilarCaseResultDTO]: ...
+
+
+class CustomerResponseProvider(Protocol):
+    """거래별 최신 챗봇 고객 응답을 읽는 계약이다."""
+
+    def get_customer_response_context(
+        self, transaction_id: int
+    ) -> CustomerResponseContextDTO: ...
 
 
 class RuleFirstFallbackInvestigator:
@@ -158,6 +169,7 @@ class AgentWorkflow:
         response_plan_generator: ResponsePlanGenerator | None = None,
         email_notifier: FraudAlertEmailNotifier | None = None,
         dashboard_similar_case_finder: DashboardSimilarCaseFinder | None = None,
+        customer_response_provider: CustomerResponseProvider | None = None,
     ) -> None:
         self.case_service = case_service
         self.policy_repository = policy_repository
@@ -168,6 +180,7 @@ class AgentWorkflow:
         )
         self.email_notifier = email_notifier or NoOpFraudAlertEmailService()
         self.dashboard_similar_case_finder = dashboard_similar_case_finder
+        self.customer_response_provider = customer_response_provider
         self.graph = self._build_graph()
 
     def run(self, agent_input: AgentInputDTO) -> AgentResponseDTO:
@@ -199,6 +212,9 @@ class AgentWorkflow:
             "build_unclassified_plan", self._safe(self._build_unclassified_plan)
         )
         graph.add_node("load_policy", self._safe(self._load_policy))
+        graph.add_node(
+            "load_customer_response", self._safe(self._load_customer_response)
+        )
         graph.add_node("search_guides", self._safe(self._search_guides))
         graph.add_node("generate_plan", self._safe(self._generate_plan))
         graph.add_node("find_similar_cases", self._safe(self._find_similar_cases))
@@ -228,8 +244,15 @@ class AgentWorkflow:
         self._add_failure_route(
             graph, "build_unclassified_plan", "complete_case"
         )
-        self._add_failure_route(graph, "use_rule_type", "load_policy")
-        self._add_failure_route(graph, "investigate_type", "load_policy")
+        self._add_failure_route(
+            graph, "use_rule_type", "load_customer_response"
+        )
+        self._add_failure_route(
+            graph, "investigate_type", "load_customer_response"
+        )
+        self._add_failure_route(
+            graph, "load_customer_response", "load_policy"
+        )
         self._add_failure_route(graph, "load_policy", "search_guides")
         self._add_failure_route(graph, "search_guides", "generate_plan")
         self._add_failure_route(graph, "generate_plan", "find_similar_cases")
@@ -402,6 +425,30 @@ class AgentWorkflow:
             ),
         }
 
+    def _load_customer_response(self, state: AgentGraphState) -> dict[str, object]:
+        """가이드 생성 직전 챗봇 결과를 읽고, 고객 재채점 유형을 우선 적용한다."""
+
+        if self.customer_response_provider is None:
+            context = CustomerResponseContextDTO([], {})
+        else:
+            context = self.customer_response_provider.get_customer_response_context(
+                state["agent_input"].transaction_id
+            )
+        applied_fraud_type = state["applied_fraud_type"]
+        positive_scores = [
+            (code, score)
+            for code, score in context.type_scores.items()
+            if score > 0
+        ]
+        if positive_scores:
+            applied_fraud_type = sorted(
+                positive_scores, key=lambda item: (-item[1], item[0])
+            )[0][0]
+        return {
+            "customer_response": context,
+            "applied_fraud_type": applied_fraud_type,
+        }
+
     def _search_guides(self, state: AgentGraphState) -> dict[str, object]:
         policy = state["response_policy"]
         query = " ".join(
@@ -433,6 +480,7 @@ class AgentWorkflow:
             fraud_type=state["applied_fraud_type"],
             policy=state["response_policy"],
             guides=state["retrieved_guides"],
+            customer_response=state.get("customer_response"),
             metrics=generation_metrics,
         )
         step_metrics = self._updated_step_metrics(
@@ -494,6 +542,12 @@ class AgentWorkflow:
                 "workflow_version": "1.0",
                 "classification_status": state["investigation_result"].classification_status.value,
                 "retrieved_guide_count": len(state["retrieved_guides"]),
+                "customer_response_applied": state.get(
+                    "customer_response", CustomerResponseContextDTO([], {})
+                ).has_customer_response,
+                "customer_response_answer_count": len(
+                    state.get("customer_response", CustomerResponseContextDTO([], {})).customer_answers
+                ),
                 **metrics,
             },
         )
@@ -565,6 +619,7 @@ __all__ = [
     "AgentGraphState",
     "AgentWorkflow",
     "AmbiguousTypeInvestigator",
+    "CustomerResponseProvider",
     "DashboardSimilarCaseFinder",
     "FraudAlertEmailNotifier",
     "PolicyResponsePlanGenerator",

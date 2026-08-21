@@ -18,6 +18,7 @@ from app.domain.agent_status import InformationStatus
 from app.domain.response_policy import ResponsePolicy
 from app.dto.agent import (
     ChecklistItemDTO,
+    CustomerResponseContextDTO,
     RecommendedActionDTO,
     ResponsePlanDTO,
 )
@@ -58,6 +59,7 @@ class PolicyResponsePlanGenerator:
         fraud_type: str,
         policy: ResponsePolicy,
         guides: list[RetrievedGuideChunkDTO],
+        customer_response: CustomerResponseContextDTO | None = None,
         metrics: dict[str, object] | None = None,
     ) -> ResponsePlanDTO:
         if metrics is not None:
@@ -69,7 +71,7 @@ class PolicyResponsePlanGenerator:
                     "response_plan_fallback_used": False,
                 }
             )
-        return ResponsePlanDTO(
+        return _apply_customer_response_context(ResponsePlanDTO(
             applied_fraud_type=fraud_type,
             information_status=(
                 InformationStatus.SUFFICIENT
@@ -100,7 +102,7 @@ class PolicyResponsePlanGenerator:
                 )
                 for item in policy.checklist
             ],
-        )
+        ), customer_response)
 
 
 class RagResponsePlanGenerator:
@@ -150,6 +152,7 @@ class RagResponsePlanGenerator:
         fraud_type: str,
         policy: ResponsePolicy,
         guides: list[RetrievedGuideChunkDTO],
+        customer_response: CustomerResponseContextDTO | None = None,
         metrics: dict[str, object] | None = None,
     ) -> ResponsePlanDTO:
         # 검색 근거가 없으면 LLM을 호출하지 않고 정책 원문을 그대로 사용한다.
@@ -158,10 +161,13 @@ class RagResponsePlanGenerator:
                 fraud_type=fraud_type,
                 policy=policy,
                 guides=guides,
+                customer_response=customer_response,
                 metrics=metrics,
             )
 
-        cache_key = self._build_cache_key(fraud_type, policy, guides)
+        cache_key = self._build_cache_key(
+            fraud_type, policy, guides, customer_response
+        )
         if metrics is not None:
             metrics.update(
                 {
@@ -188,7 +194,7 @@ class RagResponsePlanGenerator:
                 metrics["response_plan_llm_call_count"] = 1
             try:
                 generated = self.structured_llm.invoke(
-                    _build_messages(fraud_type, policy, guides)
+                    _build_messages(fraud_type, policy, guides, customer_response)
                 )
                 details = {item.action_code: item for item in generated.actions}
                 policy_codes = {item.action_code for item in policy.actions}
@@ -197,7 +203,7 @@ class RagResponsePlanGenerator:
                 ):
                     raise ValueError("LLM 조치 코드가 내부 정책과 일치하지 않는다.")
 
-                plan = ResponsePlanDTO(
+                plan = _apply_customer_response_context(ResponsePlanDTO(
                     applied_fraud_type=fraud_type,
                     information_status=InformationStatus.SUFFICIENT,
                     summary=(
@@ -226,7 +232,7 @@ class RagResponsePlanGenerator:
                         )
                         for item in policy.checklist
                     ],
-                )
+                ), customer_response)
             except Exception as error:
                 logging.getLogger(__name__).warning(
                     "RAG 대응 계획 생성 실패로 정책 fallback 적용: %s",
@@ -238,6 +244,7 @@ class RagResponsePlanGenerator:
                     fraud_type=fraud_type,
                     policy=policy,
                     guides=guides,
+                    customer_response=customer_response,
                 )
 
             self._store_cached(cache_key, plan)
@@ -248,6 +255,7 @@ class RagResponsePlanGenerator:
         fraud_type: str,
         policy: ResponsePolicy,
         guides: list[RetrievedGuideChunkDTO],
+        customer_response: CustomerResponseContextDTO | None,
     ) -> str:
         payload = {
             "prompt_version": RESPONSE_PLAN_PROMPT_VERSION,
@@ -256,7 +264,9 @@ class RagResponsePlanGenerator:
             "max_completion_tokens": self.max_completion_tokens,
             # 최종 DTO에 반영되는 정책값과 실제 LLM 입력이 바뀌면 키도 바뀐다.
             "policy": asdict(policy),
-            "messages": _build_messages(fraud_type, policy, guides),
+            "messages": _build_messages(
+                fraud_type, policy, guides, customer_response
+            ),
         }
         serialized = json.dumps(
             payload,
@@ -293,6 +303,7 @@ def _build_messages(
     fraud_type: str,
     policy: ResponsePolicy,
     guides: list[RetrievedGuideChunkDTO],
+    customer_response: CustomerResponseContextDTO | None = None,
 ) -> list[dict[str, str]]:
     payload = {
         "fraud_type": fraud_type,
@@ -313,13 +324,23 @@ def _build_messages(
             }
             for guide in guides
         ],
+        "customer_response": (
+            {
+                "answers": customer_response.customer_answers,
+                "type_scores": customer_response.type_scores,
+            }
+            if customer_response is not None
+            and customer_response.has_customer_response
+            else None
+        ),
     }
     return [
         {
             "role": "system",
             "content": (
                 "금융 이상거래 모니터링 담당자의 대응 계획을 작성한다. "
-                "사기 유형과 정책 조치를 변경하지 말고, 검색 문서에 근거해 각 조치의 "
+                "사기 유형과 정책 조치를 변경하지 말고, 고객 응답이 있으면 이를 "
+                "검색 문서보다 우선 사실로 반영해 각 조치의 "
                 "구체적인 수행 절차는 최대 3개, 주의사항은 최대 2개만 작성한다. "
                 "요약과 정책 조치 설명은 작성하지 않는다. 개인정보나 인증정보를 "
                 "요청하는 절차를 만들지 않는다."
@@ -330,6 +351,30 @@ def _build_messages(
             "content": json.dumps(payload, ensure_ascii=False),
         },
     ]
+
+
+def _apply_customer_response_context(
+    plan: ResponsePlanDTO,
+    customer_response: CustomerResponseContextDTO | None,
+) -> ResponsePlanDTO:
+    """고객 응답 반영 사실을 가이드와 체크리스트에 명시한다."""
+
+    if customer_response is None or not customer_response.has_customer_response:
+        return plan
+    return ResponsePlanDTO(
+        applied_fraud_type=plan.applied_fraud_type,
+        information_status=plan.information_status,
+        summary="챗봇 고객 응답을 우선 반영한 " + plan.summary,
+        recommended_actions=plan.recommended_actions,
+        checklist=[
+            ChecklistItemDTO(
+                item_code="CHECK_CHATBOT_CUSTOMER_RESPONSE",
+                label="챗봇 고객 응답 및 추출 사기 정황 우선 확인",
+                required=True,
+            ),
+            *plan.checklist,
+        ],
+    )
 
 
 __all__ = [
