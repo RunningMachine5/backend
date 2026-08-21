@@ -293,7 +293,6 @@ class AgentWorkflow:
             "case_id": started.response.case_id,
             "case_created": started.created,
             "rule_result": started.response.rule_result,
-            # 사건 생성 서비스가 계산한 결과를 재사용하여 중복 계산하지 않는다.
             "type_confidence": started.type_confidence,
             "final_response": started.response,
         }

@@ -155,7 +155,6 @@ class RagResponsePlanGenerator:
         customer_response: CustomerResponseContextDTO | None = None,
         metrics: dict[str, object] | None = None,
     ) -> ResponsePlanDTO:
-        # 검색 근거가 없으면 LLM을 호출하지 않고 정책 원문을 그대로 사용한다.
         if not guides:
             return self.fallback.generate(
                 fraud_type=fraud_type,
@@ -262,7 +261,6 @@ class RagResponsePlanGenerator:
             "model": self.model_name,
             "reasoning_effort": self.reasoning_effort,
             "max_completion_tokens": self.max_completion_tokens,
-            # 최종 DTO에 반영되는 정책값과 실제 LLM 입력이 바뀌면 키도 바뀐다.
             "policy": asdict(policy),
             "messages": _build_messages(
                 fraud_type, policy, guides, customer_response
