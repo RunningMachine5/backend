@@ -513,6 +513,48 @@ class FraudRuleReplayApiTest(unittest.TestCase):
         self.assertIsNone(patterns["mobile_high_amount"]["feature_statistics"])
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_feature_statistics_returns_distribution_without_condition(self) -> None:
+        base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
+        with Session(self.engine) as session:
+            transactions = []
+            for index, amount in enumerate((100, 200, 300)):
+                transaction = _save_transaction(
+                    session,
+                    f"TX-FEATURE-STATS-{index}",
+                    transaction_datetime=base + timedelta(minutes=index),
+                )
+                transaction.transaction_amount = amount
+                session.add(transaction)
+                transactions.append(transaction)
+            session.commit()
+            session.add_all(
+                [
+                    _prediction(
+                        transaction.id,
+                        is_fraud=True,
+                        created_at=base + timedelta(hours=1, seconds=index),
+                    )
+                    for index, transaction in enumerate(transactions)
+                ]
+            )
+            session.commit()
+
+        response = self.client.post(
+            "/rule-feature-statistics",
+            headers=ADMIN_HEADERS,
+            json={"field": "transaction_amount", "sample_size": 1000},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["selection_basis"], "LATEST_ML_POSITIVE")
+        self.assertEqual(body["sample_count"], 3)
+        self.assertFalse(body["has_more"])
+        self.assertEqual(body["feature_statistics"]["average"], 200.0)
+        self.assertEqual(body["feature_statistics"]["median"], 200.0)
+        self.assertEqual(body["feature_statistics"]["p90"], 300.0)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_pattern_statistics_limits_sample_and_rejects_invalid_requests(self) -> None:
         base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
         with Session(self.engine) as session:

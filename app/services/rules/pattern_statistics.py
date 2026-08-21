@@ -59,6 +59,14 @@ class PatternStatisticsResult:
     patterns: list[PatternStatistics]
 
 
+@dataclass(frozen=True, slots=True)
+class FeatureStatisticsResult:
+    requested_count: int
+    sample_count: int
+    has_more: bool
+    feature_statistics: PatternFeatureStatistics
+
+
 def _numeric_statistics(
     *,
     field: str,
@@ -113,20 +121,15 @@ def _categorical_statistics(
     )
 
 
-def calculate_pattern_statistics(
+def _latest_positive_contexts(
     *,
     session: Session,
-    definitions: Sequence[PatternStatisticsDefinition],
     sample_size: int,
-) -> PatternStatisticsResult:
-    """같은 거래 표본으로 모든 패턴의 매칭률과 Feature 분포를 계산한다."""
-
+) -> tuple[list[dict[str, Any]], bool]:
     selected, has_more = PredictionResultRepository(
         session
     ).latest_positive_feature_rows(limit=sample_size)
     engine = RuleEngine()
-    evaluator = RuleExpressionEvaluator()
-
     contexts = [
         engine.feature_builder.build(
             assemble_ml_features(
@@ -139,6 +142,56 @@ def calculate_pattern_statistics(
         )
         for transaction, customer, source_account, recipient_account, derived in selected
     ]
+    return contexts, has_more
+
+
+def calculate_feature_statistics(
+    *,
+    session: Session,
+    field: str,
+    value_type: Literal["integer", "number", "boolean", "enum"],
+    sample_size: int,
+) -> FeatureStatisticsResult:
+    """패턴 비교값을 정할 수 있도록 Feature 분포만 계산한다."""
+
+    contexts, has_more = _latest_positive_contexts(
+        session=session,
+        sample_size=sample_size,
+    )
+    values = [context[field] for context in contexts if context[field] is not None]
+    if value_type in {"integer", "number"}:
+        statistics = _numeric_statistics(
+            field=field,
+            value_type=value_type,
+            values=values,
+        )
+    else:
+        statistics = _categorical_statistics(
+            field=field,
+            value_type=value_type,
+            values=values,
+        )
+    return FeatureStatisticsResult(
+        requested_count=sample_size,
+        sample_count=len(contexts),
+        has_more=has_more,
+        feature_statistics=statistics,
+    )
+
+
+def calculate_pattern_statistics(
+    *,
+    session: Session,
+    definitions: Sequence[PatternStatisticsDefinition],
+    sample_size: int,
+) -> PatternStatisticsResult:
+    """같은 거래 표본으로 모든 패턴의 매칭률과 Feature 분포를 계산한다."""
+
+    contexts, has_more = _latest_positive_contexts(
+        session=session,
+        sample_size=sample_size,
+    )
+    evaluator = RuleExpressionEvaluator()
     sample_count = len(contexts)
     pattern_results: list[PatternStatistics] = []
 
@@ -187,10 +240,12 @@ def calculate_pattern_statistics(
 
 
 __all__ = [
+    "FeatureStatisticsResult",
     "PatternFeatureStatistics",
     "PatternStatistics",
     "PatternStatisticsDefinition",
     "PatternStatisticsResult",
     "PatternValueCount",
+    "calculate_feature_statistics",
     "calculate_pattern_statistics",
 ]

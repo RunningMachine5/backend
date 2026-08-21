@@ -120,6 +120,25 @@ class RulePatternFeatureStatisticsResponse(BaseModel):
     value_counts: list[RulePatternValueCountResponse] = Field(default_factory=list)
 
 
+class RuleFeatureStatisticsRequest(BaseModel):
+    """패턴 비교값을 정할 때 참고할 Feature 표본 통계 요청."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    field: str = Field(min_length=1, max_length=128)
+    sample_size: int = Field(default=1000, strict=True, ge=1, le=1000)
+
+
+class RuleFeatureStatisticsResponse(BaseModel):
+    """최근 ML 양성 거래에서 계산한 Feature 분포."""
+
+    selection_basis: Literal["LATEST_ML_POSITIVE"] = "LATEST_ML_POSITIVE"
+    requested_count: int = Field(ge=1, le=1000)
+    sample_count: int = Field(ge=0, le=1000)
+    has_more: bool
+    feature_statistics: RulePatternFeatureStatisticsResponse
+
+
 class RulePatternStatisticsItemResponse(BaseModel):
     component_key: str
     matched_count: int = Field(ge=0, le=1000)

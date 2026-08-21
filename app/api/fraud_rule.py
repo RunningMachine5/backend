@@ -41,6 +41,8 @@ from app.dto.fraud_rule import (
     FraudRuleValidationIssue,
     FraudRuleValidationResponse,
     RuleExpressionOperator,
+    RuleFeatureStatisticsRequest,
+    RuleFeatureStatisticsResponse,
     RuleFeatureResponse,
     RulePatternStatisticsRequest,
     RulePatternStatisticsResponse,
@@ -64,6 +66,7 @@ from app.services.rules.feature_builder import (
 from app.services.rules.replay import replay_rule_sets
 from app.services.rules.pattern_statistics import (
     PatternStatisticsDefinition,
+    calculate_feature_statistics,
     calculate_pattern_statistics,
 )
 from app.services.rules.repository import rule_set_definition_from_database
@@ -873,6 +876,45 @@ def list_rule_features() -> list[RuleFeatureResponse]:
     """Return only the allow-listed raw and derived fields usable by rules."""
 
     return list(RULE_FEATURES)
+
+
+@router.post(
+    "/rule-feature-statistics",
+    response_model=RuleFeatureStatisticsResponse,
+)
+def get_rule_feature_statistics(
+    payload: RuleFeatureStatisticsRequest,
+    session: SessionDep,
+) -> RuleFeatureStatisticsResponse:
+    """패턴 추가 화면에서 비교값 결정을 위한 Feature 분포를 계산한다."""
+
+    feature = _FEATURE_BY_FIELD.get(payload.field)
+    if feature is None or feature.value_type not in {
+        "integer",
+        "number",
+        "boolean",
+        "enum",
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="표본 통계를 제공하지 않는 Feature입니다.",
+        )
+
+    value_type = feature.value_type
+    if value_type == "integer" and feature.allowed_values:
+        value_type = "enum"
+    result = calculate_feature_statistics(
+        session=session,
+        field=feature.field,
+        value_type=value_type,
+        sample_size=payload.sample_size,
+    )
+    return RuleFeatureStatisticsResponse(
+        requested_count=result.requested_count,
+        sample_count=result.sample_count,
+        has_more=result.has_more,
+        feature_statistics=asdict(result.feature_statistics),
+    )
 
 
 @router.post(
