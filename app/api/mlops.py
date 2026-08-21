@@ -29,7 +29,6 @@ from app.data.model.derived_features import DerivedFeatures
 from app.data.model.mlops import DatasetVersion, TrainingRun
 from app.data.model.transaction import Transaction
 from app.dto.mlops import (
-    CloudRunOperationResponse,
     DatasetPeriodRequest,
     DatasetPeriodSummaryResponse,
     DatasetVersionResponse,
@@ -912,23 +911,6 @@ def reconcile_training_run(
     }
 
 
-@router.get("/training/status")
-def get_training_status(
-    client: CloudRunAdminClientDep,
-) -> dict[str, Any]:
-    try:
-        job = client.get_training_status()
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
-    return {
-        "name": job.get("name"),
-        "execution_count": job.get("executionCount", 0),
-        "latest_execution": job.get("latestCreatedExecution"),
-        "reconciling": job.get("reconciling", False),
-        "terminal_condition": job.get("terminalCondition"),
-    }
-
-
 @router.get(
     "/training/monitoring",
     response_model=TrainingMonitoringResponse,
@@ -976,20 +958,6 @@ def get_platform_monitoring(
     try:
         return client.get_platform_metrics(window_minutes)
     except CloudMonitoringError as exc:
-        raise _upstream_error(exc) from exc
-
-
-@router.get(
-    "/operations/{operation_id}",
-    response_model=CloudRunOperationResponse,
-)
-def get_operation(
-    operation_id: str,
-    client: CloudRunAdminClientDep,
-) -> dict[str, Any]:
-    try:
-        return client.get_operation(operation_id)
-    except CloudRunAdminError as exc:
         raise _upstream_error(exc) from exc
 
 
