@@ -37,6 +37,7 @@ from app.dto.fraud_rule import (
     FraudRuleSetDraftCreate,
     FraudRuleSetResponse,
     FraudRuleSetSummaryResponse,
+    FraudRuleTypeCreate,
     FraudRuleWeightUpdate,
     FraudRuleValidationIssue,
     FraudRuleValidationResponse,
@@ -1078,6 +1079,69 @@ def delete_draft_rule_set(
         session.delete(rule)
     session.flush()
     session.delete(rule_set)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/rule-sets/{rule_set_id}/rules",
+    response_model=FraudRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_rule(
+    rule_set_id: int,
+    payload: FraudRuleTypeCreate,
+    session: SessionDep,
+) -> FraudRuleResponse:
+    """DRAFT에 새 사기유형을 비활성 상태로 추가한다."""
+
+    rule_set = _get_rule_set(session, rule_set_id)
+    _assert_draft(rule_set)
+    rules = _rules_for_set(session, rule_set_id)
+    if any(rule.type_code == payload.type_code for rule in rules):
+        raise _conflict("같은 유형 코드가 이미 이 룰셋에 있습니다.")
+
+    # Agent 대응 정책이 준비되지 않은 새 유형이 운영 흐름을 막지 않게 한다.
+    rule = _add_rule(
+        session,
+        rule_set,
+        FraudRuleCreate(
+            type_code=payload.type_code,
+            display_name=payload.display_name,
+            description=payload.description,
+            enabled=False,
+            sort_order=max((item.sort_order for item in rules), default=-1) + 1,
+        ),
+    )
+    rule_set.updated_at = datetime.now()
+    session.add(rule_set)
+
+    _commit_or_conflict(session, "같은 유형 코드가 이미 이 룰셋에 있습니다.")
+    session.refresh(rule)
+    return _rule_response(session, rule)
+
+
+@router.delete(
+    "/rule-sets/{rule_set_id}/rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_rule(
+    rule_set_id: int,
+    rule_id: int,
+    session: SessionDep,
+) -> Response:
+    """DRAFT에서 사기유형과 그 유형의 패턴을 함께 삭제한다."""
+
+    rule_set = _get_rule_set(session, rule_set_id)
+    _assert_draft(rule_set)
+    rule = _get_rule(session, rule_set_id, rule_id)
+
+    for component in _components_for_rule(session, rule.id):
+        session.delete(component)
+    session.flush()
+    session.delete(rule)
+    rule_set.updated_at = datetime.now()
+    session.add(rule_set)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
