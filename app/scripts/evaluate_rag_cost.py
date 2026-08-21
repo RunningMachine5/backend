@@ -1,20 +1,6 @@
-"""골든셋으로 실제 RAG 파이프라인(질의 분해·검색·응답 생성)만 돌려 토큰 사용량과
-비용을 리포트한다. RAGAS 심판 LLM은 호출하지 않는다.
+"""RAGAS 채점 없이 챗봇 RAG 경로의 토큰 사용량과 비용을 리포트한다.
 
-evaluate_rag_ragas 의 가장 비싼 부분은 [2/3] RAGAS 채점(사례당 지표 6개, 심판 LLM
-반복 호출)이다. 채점 없이 파이프라인 비용만 먼저 가늠하고 싶을 때 이 스크립트를 쓴다.
-먼저 app.services.rag.docs_embedding 으로 코퍼스를 적재해야 한다.
-
-리포트는 evaluate_rag_ragas 와 동일하게 **항상 파일로 저장한다**. 저장 경로는 --out 으로
-지정하고, 지정하지 않으면 evals/rag/reports/ 아래에 실행 시각으로 파일을 만든다.
-
-진행 상황은 stderr 로 나간다. stdout 은 파이프나 리다이렉트로 넘길 때만 JSON 을
-내보내고(다른 도구에 물릴 수 있게), 터미널에서 그냥 실행하면 화면을 채우지 않는다.
-
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_cost
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_cost --limit 5
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_cost \
-        --out evals/rag/reports/rag-cost-before-chunking-fix.json
+실제 LLM과 임베딩 API를 사용하며, 기본 저장 위치는 ``evals/rag/reports``다.
 """
 
 from __future__ import annotations

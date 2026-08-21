@@ -15,7 +15,6 @@ from app.domain.fraud_type_codes import FINAL_FRAUD_TYPE_CODES
 
 FraudCircumstanceCode = Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]
 FraudTypeCode = Literal[*FINAL_FRAUD_TYPE_CODES]
-# ChatSessionStatus 5종(스키마 3.3). API 응답이 모두 같은 집합을 쓴다.
 ChatSessionStatusValue = Literal[
     "URL_SENT",
     "IN_PROGRESS",
@@ -24,17 +23,12 @@ ChatSessionStatusValue = Literal[
     "FAILED",
 ]
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758132371&cot=14
 class CreateChatRequest(BaseModel):
-    """거래에 연결된 고객 채팅 세션 생성 입력(PRD 2.1).
-
-    세션 생성은 HTTP 로 열지 않으므로 요청 본문이 아니다. FDS 파이프라인과
-    로컬 테스트 스크립트가 ``ChatSessionCreator.create`` 에 넘길 값을 여기서 검증한다.
-    """
+    """거래에 연결할 고객 채팅 세션 생성 입력."""
 
     # transactions.id 와 chat_sessions.transaction_id 는 DB가 발급하는 BIGINT 다.
     transaction_id: int = Field(gt=0)
-    # 룰 채점 점수 내림차순 상위 2개 사기유형. 유형판별 질문(PRD 2.4) 선택에 쓴다.
+    # 룰 채점 점수 내림차순 상위 2개 사기유형. 첫 질문 선택에 쓴다.
     # 룰 채점 실패로 유형 점수가 없으면 생략하며, 그 세션은 일반 질문 폴백을 쓴다.
     top_fraud_types: list[FraudTypeCode] | None = Field(
         default=None,
@@ -54,7 +48,6 @@ class CreateChatRequest(BaseModel):
             raise ValueError("top_fraud_types의 두 사기유형은 서로 달라야 합니다")
         return value
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758232165&cot=14
 class AnswerQualityVerdict(StrEnum):
     """고객 답변 충실도 평가 결과."""
 
@@ -84,7 +77,6 @@ class ExtractedFraudCircumstance(BaseModel):
     type: FraudCircumstanceCode
     evidence: str = Field(min_length=1)
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758280824&cot=14
 class FraudCircumstanceExtractionResult(BaseModel):
     """사기 정황 추출 LLM의 구조화 출력."""
 
@@ -98,7 +90,6 @@ class ChatButtonAction(StrEnum):
     REQUEST_HANDOFF = "REQUEST_HANDOFF"
     END_CHAT = "END_CHAT"
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758326094&cot=14
 class ChatButtonActionRequest(BaseModel):
     """최초 알림 뒤 고객이 누른 버튼."""
 
@@ -109,7 +100,6 @@ class ChatButtonActionRequest(BaseModel):
         ),
     )
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758326541&cot=14
 class SendChatMessageRequest(BaseModel):
     """고객이 질문에 답한 메시지 한 건."""
 
@@ -118,7 +108,6 @@ class SendChatMessageRequest(BaseModel):
         description="고객이 입력한 답변 원문. 빈 문자열은 받지 않는다.",
     )
 
-# https://miro.com/app/board/uXjVH3Y2H3Y=/?moveToWidget=3458764680758326686&cot=14
 class ChatMessageResponse(BaseModel):
     """대화 이력에 쌓인 메시지 한 건."""
 
@@ -131,10 +120,7 @@ class ChatMessageResponse(BaseModel):
 
 
 class ChatVerifyRequest(BaseModel):
-    """출생연도 4자리 간이 본인인증(PRD 2.2).
-
-    실패 횟수 제한·URL 토큰·세션 TTL 은 MVP 범위 밖이다(PRD 3.3).
-    """
+    """출생연도 4자리 본인 확인 입력."""
 
     birth_year: str = Field(
         pattern=r"^\d{4}$",
@@ -158,7 +144,6 @@ class ChatSessionDetailResponse(BaseModel):
             "`HANDOFF_REQUESTED`(상담사 연결 대기) / `DONE`(종료) / `FAILED`(실패)"
         ),
     )
-    # 참이면 고령자 전용 UI 로 간다(PRD 2.2). 화면 분기는 프론트가 한다.
     is_older: bool = Field(
         description="참이면 고령자 전용 UI 로 분기한다(화면 분기는 프론트가 한다).",
     )
@@ -198,10 +183,7 @@ class ChatTurnResponse(BaseModel):
 
 
 class TransactionChatSessionStatusResponse(BaseModel):
-    """담당자 거래 목록 항목 하나의 채팅 세션 상태(PRD 2.7).
-
-    세션이 아직 없는 거래는 두 필드가 모두 ``null`` 이다.
-    """
+    """담당자 거래 목록에 표시할 채팅 세션 상태."""
 
     transaction_id: int = Field(gt=0, description="조회한 거래 id.")
     chat_session_id: str | None = Field(
@@ -215,7 +197,7 @@ class TransactionChatSessionStatusResponse(BaseModel):
 
 
 class ChatFraudTypeScoreResponse(BaseModel):
-    """대화 채점으로 나온 사기유형 하나의 점수(PRD 2.6)."""
+    """대화 채점으로 계산한 사기유형 점수."""
 
     type_code: FraudTypeCode = Field(description="사기유형 코드.")
     display_name: str = Field(description="사기유형의 화면 표시 이름.")
@@ -254,12 +236,7 @@ class TransactionChatSessionDetailResponse(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class FraudCircumstanceExtractionTask:
-    """턴 커밋 뒤 백그라운드로 실행할 사기 정황 추출 작업(PRD 2.6).
-
-    파이프라인이 만들어 ``ChatTurnResult`` 에 실어 보내고, 라우터가
-    ``BackgroundTasks`` 로 넘긴다. 실행하는 쪽은 요청 세션이 이미 닫힌 뒤라
-    자기 세션을 새로 열어야 하므로, ORM 객체가 아니라 id와 원문만 담는다.
-    """
+    """턴 커밋 뒤 별도 DB 세션에서 실행할 사기 정황 추출 작업."""
 
     chat_session_id: str
     transaction_id: int

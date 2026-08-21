@@ -94,8 +94,6 @@ class FraudCircumstanceExtractor:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 raw_result = self.structured_llm.invoke(prompt)
-                # list[ExtractedFraudCircumstance] 형식이 맞는지 검사
-                # LLM 에서 이상한게 들어왔을 수도 있기 때문
                 result = FraudCircumstanceExtractionResult.model_validate(
                     raw_result
                 )

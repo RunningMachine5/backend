@@ -1,22 +1,6 @@
-"""골든셋으로 챗봇 RAG 경로를 평가하고 JSON 리포트를 출력한다.
+"""챗봇 RAG 경로를 평가하고 지표·토큰·비용 리포트를 저장한다.
 
-실제 LLM(질의 분해·응답 생성·RAGAS 심판)과 임베딩 API를 호출하므로 비용이 든다.
-먼저 app.services.rag.docs_embedding 으로 코퍼스를 적재해야 한다.
-
-리포트는 **항상 파일로 저장한다**. 한 번 돌리는 데 실제 비용이 들기 때문에 결과를
-기본값으로 흘려보내지 않는다. 저장 경로는 --out 으로 지정하고, 지정하지 않으면
-evals/rag/reports/ 아래에 실행 시각으로 파일을 만든다.
-
-지표와 함께 이번 실행의 토큰·비용도 리포트 usage 에 남는다. 운영에서 실제로 드는
-파이프라인 비용(usage.pipeline)과 평가할 때만 드는 심판 비용(usage.judge)은 따로 담긴다.
-
-진행 상황은 stderr 로 나간다. stdout 은 파이프나 리다이렉트로 넘길 때만 JSON 을
-내보내고(다른 도구에 물릴 수 있게), 터미널에서 그냥 실행하면 화면을 채우지 않는다.
-
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_ragas
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_ragas --limit 5
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_ragas \
-        --out evals/rag/reports/before-chunking-fix.json
+실제 LLM과 임베딩 API를 사용하며, 기본 저장 위치는 ``evals/rag/reports``다.
 """
 
 from __future__ import annotations

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class AnswerAnalysisOutcome:
-    """통합 분석 결과와 기존 저장 계약에서 사용할 실패 메타데이터."""
+    """통합 분석 결과와 실패 메타데이터."""
 
     quality_verdict: AnswerQualityVerdict | None
     guide_search_queries: tuple[ExtractedGuideSearchQuery, ...] = ()

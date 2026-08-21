@@ -20,22 +20,23 @@ from sqlmodel import Field, SQLModel
 
 from app.data.model.types import BIGINT_PRIMARY_KEY, JSON_COLUMN
 
+
 class ChatSessionStatus(str, Enum):
     """고객 상담 세션의 진행 상태."""
 
-    URL_SENT = "URL_SENT" # 챗봇 URL 이 보내짐
-    IN_PROGRESS = "IN_PROGRESS" # 상담 진행중
-    HANDOFF_REQUESTED = "HANDOFF_REQUESTED" # 아 됐고 담당자 불러와
-    DONE = "DONE" # 상담 끝
-    FAILED = "FAILED" # 실패
+    URL_SENT = "URL_SENT"
+    IN_PROGRESS = "IN_PROGRESS"
+    HANDOFF_REQUESTED = "HANDOFF_REQUESTED"
+    DONE = "DONE"
+    FAILED = "FAILED"
 
 
 class ChatSenderType(str, Enum):
     """상담 메시지 작성 주체."""
 
-    AI = "AI" # AI 응답
-    HUMAN = "HUMAN" # 사람이 쓴
-    SYSTEM = "SYSTEM" # 뭐 오류메시지등
+    AI = "AI"
+    HUMAN = "HUMAN"
+    SYSTEM = "SYSTEM"
 
 
 class ChatSession(SQLModel, table=True):
@@ -44,7 +45,7 @@ class ChatSession(SQLModel, table=True):
     __tablename__ = "chat_sessions"
     __table_args__ = (
         UniqueConstraint(
-            "transaction_id", # 거래 한 건에 대하여 고객 상담은 하나다
+            "transaction_id",
             name="uq_chat_sessions_transaction_id",
         ),
         Index("ix_chat_sessions_status", "status"),
@@ -62,22 +63,20 @@ class ChatSession(SQLModel, table=True):
         sa_type=BIGINT_PRIMARY_KEY,
     )
     status: str = Field(default=ChatSessionStatus.URL_SENT.value, max_length=32)
-    # 현재 '세션에 기록된 마지막 채팅 id' '채팅 마지막 순번 id'는 서로 참조하므로 FK를 미리 박을수가 없는 구조
-    # use_alter=True는 두 테이블을 먼저 만든 후 last_message_id FK를 ALTER TABLE로 추가하도록 지시
+    # 순환 참조를 피하기 위해 테이블 생성 후 FK를 추가한다.
     last_message_id: int | None = Field(
         default=None,
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
             ForeignKey(
                 "chat_messages.message_id",
-                ondelete="SET NULL", # cascade 아님
+                ondelete="SET NULL",
                 use_alter=True,
                 name="fk_chat_sessions_last_message_id",
             ),
             nullable=True,
         ),
     )
-    # 60세이상인가요? 노인전용 UI 를 위해
     is_older: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False),
@@ -88,8 +87,7 @@ class ChatSession(SQLModel, table=True):
         default=None,
         sa_column=Column(JSON_COLUMN, nullable=True),
     )
-    # 질문 스텝
-    # 첫 질문은 유형별 질문을 하기 위함
+    # 0은 상담 시작 전, 1부터 고객이 답변할 질문 번호다.
     question_step: int = Field(
         default=0,
         sa_column=Column(
@@ -103,7 +101,7 @@ class ChatSession(SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
-    # 실제 발생 대상 주소
+    # 알림을 실제로 발송한 주소
     notified_email: str | None = Field(default=None, max_length=255)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
@@ -141,17 +139,13 @@ class ChatMessage(SQLModel, table=True):
         ),
     )
 
-    # 어떤 세션에 속한 메시지인지
     chat_session_id: str = Field(
         foreign_key="chat_sessions.chat_session_id",
         ondelete="CASCADE",
         max_length=64,
     )
-    # 메시지 발화 주체 (AI/사람/시스템)
     sender_type: str = Field(max_length=16)
-    # 메시지 원문
     message_text: str = Field(sa_column=Column(Text, nullable=False))
-    # 전송 시간
     sent_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
@@ -225,11 +219,8 @@ class ChatAnswer(SQLModel, table=True):
         ondelete="CASCADE",
         max_length=64,
     )
-    # 몇번째 질문단계에서의 응답이였는지
     question_step: int = Field(sa_column=Column(Integer, nullable=False))
-    # 몇번째 재시도중인건지
     attempt_no: int = Field(sa_column=Column(Integer, nullable=False))
-    # 메시지 원래 id
     message_id: int = Field(
         sa_column=Column(
             BIGINT_PRIMARY_KEY,
@@ -237,11 +228,10 @@ class ChatAnswer(SQLModel, table=True):
             nullable=False,
         ),
     )
-    # 답변 품질 평가 결과
     quality_verdict: str | None = Field(default=None, max_length=16)
-    # 답변 평가하지못해 quality_verdict 을 갱신하지 못한 이유 MAX_RETRY_EXCEEDED(재질문 한도를 초과해 평가를 생략),LLM 오류 등
+    # 분석을 완료하지 못한 경우의 사유
     verdict_skip_reason: str | None = Field(default=None, max_length=24)
-    # 최종적으로 선정된 답변인지, 답변 평가 로직 때문에 존재
+    # 같은 질문의 여러 시도 중 최종 채택 여부
     is_adopted: bool = Field(
         default=False,
         sa_column=Column(
@@ -323,7 +313,6 @@ class ChatFraudCircumstance(SQLModel, table=True):
         ),
     )
 
-    # 상황이 영어로 circumstance
     circumstance_id: int | None = Field(
         default=None,
         sa_column=Column(
@@ -337,7 +326,6 @@ class ChatFraudCircumstance(SQLModel, table=True):
         ondelete="CASCADE",
         max_length=64,
     )
-    # fraud_circumstance(상황) enum 코드다.
     circumstance_code: str = Field(max_length=64)
     # 추출 판단의 근거가 된 고객 답변의 연속된 원문이다.
     evidence: str = Field(sa_column=Column(Text, nullable=False))
@@ -380,7 +368,7 @@ class FraudTypeScoreAfterChat(SQLModel, table=True):
         sa_column=Column(
             JSON_COLUMN,
             nullable=False,
-            server_default=text("'{}'"), # 기본값은 {}
+            server_default=text("'{}'"),
         ),
     )
     scored_at: datetime = Field(

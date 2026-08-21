@@ -1,12 +1,4 @@
-"""거래별 사기 정황 점수를 SSE 구독자에게 발행한다(PRD 2.7).
-
-발행 지점이 둘이라 라우터에서 꺼내 서비스로 옮겼다.
-
-- 답변 턴이 커밋된 뒤 라우터([chat.py](../../api/chat.py))가 그때의 값을 발행한다.
-- 사기 정황 추출이 백그라운드에서 끝난 뒤
-  [fraud_circumstance_task_runner.py](fraud_circumstance_task_runner.py)가
-  갱신된 값을 발행한다. **점수가 실제로 바뀌는 것은 이쪽이다.**
-"""
+"""거래별 사기 정황 점수를 SSE 구독자에게 발행한다."""
 
 from __future__ import annotations
 
@@ -23,12 +15,7 @@ CHAT_SCORE_UPDATED_EVENT = "chat_score_updated"
 
 
 def publish_chat_score_update(session: Session, transaction_id: int) -> None:
-    """커밋된 최신 사기 정황 점수를 구독자에게 발행한다.
-
-    구독자가 없는 거래는 브로커가 즉시 버리므로 SSE를 아무도 안 듣는 상담이
-    다수여도 비용이 없다. 값이 그대로인 발행도 구독자가 같은 값을 다시 받을
-    뿐이라 무해하다.
-    """
+    """커밋된 최신 사기 정황 점수를 구독자에게 발행한다."""
 
     scores = ChatSessionRepository(session).get_fraud_type_scores(transaction_id)
     if scores is None:

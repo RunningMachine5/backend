@@ -1,15 +1,4 @@
-"""
-챗봇 관련 프롬프트 템플릿
-
-- 답변 분석 통합 프롬프트 render_answer_analysis_prompt
-- 사기정황 추출 프롬프트 render_fraud_circumstance_extraction_prompt
-- 대응 가이드 생성 프롬프트 render_guide_response_prompt
-
-사기 정황 enum이 바뀌었을 때 대응할 수 있도록
-app.domain.fraud_circumstance_codes의 정의를 조립하는 형식입니다.
-
-외부에서 사용할 핵심 함수는 위의 3개의 템플릿입니다
-"""
+"""챗봇 분석·사기 정황 추출·가이드 생성 프롬프트."""
 
 from __future__ import annotations
 

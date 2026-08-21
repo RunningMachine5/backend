@@ -1,21 +1,7 @@
-"""골든셋으로 실제 RAG 경로를 돌리고 채점 지표를 산출한다.
+"""골든셋으로 챗봇 RAG 경로를 실행하고 RAGAS 지표를 산출한다.
 
-RAGAS 지표는 4개다.
-    - LLMContextPrecisionWithReference : 검색된 청크가 정답과 얼마나 관련 있나
-    - LLMContextRecall                 : 정답의 주장들이 검색 청크에 얼마나 담겼나
-    - Faithfulness                     : 생성 답변이 검색 청크를 벗어나지 않았나
-    - FactualCorrectness               : 생성 답변이 모범 답변과 사실관계가 맞나
-
-FactualCorrectness 는 mode 를 셋 다 돌려 **precision 과 recall 을 따로 남긴다**. f1 하나만
-남기면 "필수 정보를 빠뜨렸다"와 "맞는 말을 더 했다"가 한 숫자에 섞여 구별되지 않는데,
-고객 응대에서 이 둘은 무게가 전혀 다르다. 실측(골든셋 v1)에서 FP 222개 중 보일러플레이트는
-10개뿐이고 나머지는 대체로 맞는 안내였다 — 즉 f1 하락분의 상당 부분이 벌할 이유가 없는
-precision 손실이었다. 어느 쪽이 깎였는지 보이게 두고 판단은 사람이 한다.
-
-파생 지표는 두지 않는다. 사례별로 실제 검색된 (문서, 페이지)와 정답 근거의 (문서, 페이지)를
-리포트에 그대로 남겨 필요할 때 눈으로 대조한다.
-
-무근거(unanswerable) 사례는 모든 지표를 평균에서 제외하고 abstain_rate 로만 본다.
+답변 가능 사례는 검색 정밀도·재현율, 충실성, 사실 정확도를 계산한다. 무근거 사례는
+지표 평균에서 제외하고 기권율로 집계한다.
 """
 
 from __future__ import annotations
@@ -86,11 +72,7 @@ PhaseCallback = Callable[[str], None]
 
 @dataclass
 class _RecordingRetriever:
-    """실제 리트리버를 그대로 호출하면서 반환 청크를 기록한다.
-
-    GuideResponder 가 retriever 주입을 지원하므로 이것만 끼우면 챗봇 코드를
-    건드리지 않고 질의별 검색 결과를 모을 수 있다.
-    """
+    """검색 결과를 기록하면서 실제 리트리버를 호출한다."""
 
     retriever: RetrieverCallable = retriever_source
     chunks: list[RetrievedChatbotGuideChunkDTO] = field(default_factory=list)
@@ -121,17 +103,7 @@ class RunResult:
 
     @property
     def abstained(self) -> bool:
-        """고객이 받은 응답에 안내가 하나도 담기지 않은 경우.
-
-        질의가 여러 개면 일부만 근거를 찾는 일이 흔하다. 그때 응답에는 답변 섹션과
-        B.5 문구가 함께 들어가는데, 이를 기권으로 세면 절반은 답한 턴까지 기권으로
-        잡혀 abstain_rate 가 부풀려진다. 그래서 문구 포함 여부가 아니라 **모든**
-        섹션이 B.5 문구인지로 판정한다.
-
-        근거를 찾은 질의 수(grounded_query_count)로 판정하면 안 된다. 검색이 성공해도
-        생성 LLM 이 최종 일반 텍스트에서 안내를 내놓지 못하고 B.5만 출력하면 고객은
-        기권을 받았는데 지표는 답변으로 세는 일이 생긴다.
-        """
+        """응답의 모든 섹션이 무근거 안내이면 참을 반환한다."""
 
         if not self.response.strip():
             return True
@@ -139,11 +111,7 @@ class RunResult:
 
 
 def _has_guidance(message_text: str) -> bool:
-    """응답 본문에 B.5 문구가 아닌 안내가 한 섹션이라도 있는가.
-
-    A.4 일반 텍스트는 `■` 소제목 한 줄과 본문으로 섹션을 만든다. 소제목을 걷어낸
-    나머지가 전부 B.5 문구면 고객이 받은 것은 기권 응답이다.
-    """
+    """응답에 무근거 안내가 아닌 본문이 있는지 확인한다."""
 
     head, *sections = message_text.split(GUIDE_SEARCH_QUERY_HEADING_PREFIX)
     # 소제목이 붙은 섹션은 첫 줄이 제목이라 본문에서 뺀다. 소제목보다 앞에 있는
@@ -226,7 +194,7 @@ def _run_case(
 
     queries: list[ExtractedGuideSearchQuery] = list(analysis.guide_search_queries)
     if not queries:
-        # 분해 결과가 없는 턴은 본문이 비므로 메시지를 보내지 않는다(PRD 2.5).
+        # 검색 질의가 없으면 가이드 메시지를 만들지 않는다.
         return _empty_result(case)
 
     try:
@@ -276,14 +244,8 @@ def score_with_ragas(results: list[RunResult]) -> dict[str, dict[str, float]]:
     FactualCorrectness 는 mode 별로 다른 지표 이름을 받는다(METRIC_COLUMNS).
     """
 
-    # ragas 는 eval 전용 의존성(uv sync --group eval)이라 함수 안에서 import 한다.
-    #
-    # ragas.metrics 의 클래스들은 "ragas.metrics.collections 를 쓰라"는 폐기 경고를
-    # 내지만, 0.4.3 의 evaluate() 는 ragas.metrics.base.Metric 만 받는다. collections
-    # 쪽은 BaseMetric 이라는 별도 계층이라 evaluate() 에 넣으면 TypeError 가 난다
-    # ("All metrics must be initialised metric objects"). 같은 이유로 심판 LLM 도
-    # llm_factory(InstructorLLM)가 아니라 BaseRagasLLM 인 LangchainLLMWrapper 여야
-    # 한다. ragas 가 v1.0 에서 evaluate() 를 새 계층으로 옮기면 그때 함께 바꾼다.
+    # eval 전용 의존성이므로 함수 안에서 import한다. evaluate() 계약에 맞는
+    # ragas.metrics.base.Metric 구현을 사용해야 한다.
     from ragas import EvaluationDataset, evaluate
     from ragas.metrics import (
         FactualCorrectness,
@@ -304,10 +266,7 @@ def score_with_ragas(results: list[RunResult]) -> dict[str, dict[str, float]]:
         for result in results
     ]
 
-    # FactualCorrectness 는 mode 를 셋 다 돌린다. f1 하나로는 "필수 정보를 빠뜨렸다"
-    # (recall 손실)와 "맞는 말을 더 했다"(precision 손실)가 구별되지 않는다.
-    # precision 은 한 방향만 판정하지만 recall 은 양방향이 다 필요해(_single_turn_ascore
-    # 가 fn 을 반대 방향에서 센다) 심판 호출이 f1 단독 대비 2.5배로 늘어난다.
+    # 누락과 불필요한 추가 정보를 구분하기 위해 세 mode를 모두 계산한다.
     scores = evaluate(
         dataset=EvaluationDataset.from_list(samples),
         metrics=[
