@@ -1,4 +1,4 @@
-"""운영 시연용 거래 100건을 실제 탐지 Pipeline에 순차 주입한다."""
+"""운영 시연용 거래를 실제 탐지 Pipeline에 순차 주입한다."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from app.services.transaction.transaction_service import TransactionService
 logger = logging.getLogger(__name__)
 
 DEMO_TRANSACTION_COUNT = 100
-DEMO_TRANSACTION_INTERVAL_SECONDS = 1.0
+DEMO_TRANSACTIONS_PER_SECOND = 1
 DEMO_TRANSACTION_CSV = (
     Path(__file__).resolve().parents[1]
     / "resources"
@@ -45,13 +45,18 @@ class DemoTransactionInjectionManager:
         self._lock = Lock()
         self._status = DemoTransactionInjectionStatus(state="IDLE")
 
-    def start(self) -> bool:
+    def start(
+        self,
+        transaction_count: int = DEMO_TRANSACTION_COUNT,
+        transactions_per_second: int = DEMO_TRANSACTIONS_PER_SECOND,
+    ) -> bool:
         with self._lock:
             if self._status.state == "RUNNING":
                 return False
             self._status = DemoTransactionInjectionStatus(
                 state="RUNNING",
-                total_count=DEMO_TRANSACTION_COUNT,
+                total_count=transaction_count,
+                transactions_per_second=transactions_per_second,
                 started_at=datetime.now(UTC),
             )
             return True
@@ -100,6 +105,7 @@ def _nullable(value: str) -> str | None:
 
 
 def load_demo_transaction_rows(
+    transaction_count: int = DEMO_TRANSACTION_COUNT,
     csv_path: Path = DEMO_TRANSACTION_CSV,
 ) -> list[TransactionRequestDTO]:
     rows: list[TransactionRequestDTO] = []
@@ -151,10 +157,12 @@ def load_demo_transaction_rows(
                     ),
                 )
             )
-            if len(rows) == DEMO_TRANSACTION_COUNT:
+            if len(rows) == transaction_count:
                 break
-    if len(rows) < DEMO_TRANSACTION_COUNT:
-        raise ValueError("시연 거래 CSV에는 최소 100건이 있어야 합니다.")
+    if len(rows) < transaction_count:
+        raise ValueError(
+            f"시연 거래 CSV에는 최소 {transaction_count}건이 있어야 합니다."
+        )
     return rows
 
 
@@ -173,12 +181,14 @@ def _pipeline(session: Session, ml_serving_client: MLServingClient) -> DFraudDet
 def run_demo_transaction_injection(
     ml_serving_client: MLServingClient,
     *,
-    interval_seconds: float = DEMO_TRANSACTION_INTERVAL_SECONDS,
+    transaction_count: int = DEMO_TRANSACTION_COUNT,
+    transactions_per_second: int = DEMO_TRANSACTIONS_PER_SECOND,
 ) -> None:
-    """100건을 초당 최대 1건씩 처리하고 진행 상태를 갱신한다."""
+    """선택한 거래를 지정한 최대 속도로 처리하고 진행 상태를 갱신한다."""
 
     try:
-        rows = load_demo_transaction_rows()
+        rows = load_demo_transaction_rows(transaction_count)
+        interval_seconds = 1 / transactions_per_second
         for index, row in enumerate(rows):
             with Session(engine) as session:
                 payload = row.model_copy(
