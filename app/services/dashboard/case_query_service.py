@@ -31,7 +31,8 @@ class CaseQueryService:
         max_amount: int | None = None,
         risk_grades: list[str] | None = None, # risk_grades 이거 덕현님 dto에서 받는 값 아님?
         page: int = 1,
-        page_size: int = 50
+        page_size: int = 50,
+        sort_by: str = "transaction_datetime",
     ) -> tuple[list[CaseListItemResponse], int]:
         if page < 1:
             raise ValueError("page는 1 이상이어야 함")
@@ -48,6 +49,7 @@ class CaseQueryService:
             min_amount=min_amount,
             max_amount=max_amount,
             risk_grades=risk_grades,
+            sort_by=sort_by,
             offset=(page-1)*page_size,
             limit=page_size,
         )
@@ -139,6 +141,7 @@ class CaseQueryService:
             primary_fraud_type=self._get_primary_fraud_type(row),
             transaction_amount=row.transaction.transaction_amount,
             transaction_datetime=row.transaction.transaction_datetime,
+            received_at=row.transaction.created_at,
             ip_address=(
                 str(row.transaction.ip_address)
                 if row.transaction.ip_address is not None

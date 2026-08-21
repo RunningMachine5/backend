@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.common_response import ApiResponse, success_response
@@ -70,7 +72,10 @@ def get_cases(
     max_amount: int | None = Query(default=None, ge=0),
     risk_grades: list[str] | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=500),
+    page_size: int = Query(default=50, ge=1, le=100),
+    sort_by: Literal["transaction_datetime", "received_at"] = Query(
+        default="transaction_datetime"
+    ),
 ) -> ApiResponse[CaseListResponse]:
     service = get_case_query_service(session)
 
@@ -87,6 +92,7 @@ def get_cases(
             risk_grades=risk_grades,
             page=page,
             page_size=page_size,
+            sort_by=sort_by,
         )
     except ValueError as error:
         raise HTTPException(

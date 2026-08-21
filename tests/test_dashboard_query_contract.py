@@ -14,6 +14,7 @@ def _transaction() -> SimpleNamespace:
         source_account_number="source-0001",
         recipient_account_number="recipient-0001",
         transaction_datetime=datetime(2026, 8, 18, tzinfo=UTC),
+        created_at=datetime(2026, 8, 21, 10, 7, tzinfo=UTC),
         transaction_amount=100_000,
         channel="mobile",
         access_medium="a",
@@ -51,6 +52,7 @@ class DashboardQueryContractTest(unittest.TestCase):
             min_amount=None,
             max_amount=None,
             risk_grades=None,
+            sort_by="transaction_datetime",
             offset=0,
             limit=50,
         )

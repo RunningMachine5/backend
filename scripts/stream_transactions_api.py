@@ -155,11 +155,11 @@ def main() -> None:
     args = parse_args()
 
     if not os.path.exists(args.file):
-        print(f"❌ 파일을 찾을 수 없습니다: {args.file}", file=sys.stderr)
+        print(f"[ERROR] 파일을 찾을 수 없습니다: {args.file}", file=sys.stderr)
         sys.exit(1)
 
     print("================================================================================")
-    print(" 🚀 FDS Real-Time Transaction Streamer Started")
+    print(" FDS Real-Time Transaction Streamer Started")
     print(f" - Target Endpoint : {args.url}")
     print(f" - Source CSV File : {args.file}")
     print(f" - Send Interval   : {args.interval}s (TPS: {1.0 / args.interval:.1f}/sec)")
@@ -178,7 +178,7 @@ def main() -> None:
                 reader = csv.DictReader(f)
                 for row_idx, raw_row in enumerate(reader, start=1):
                     if args.max_count is not None and sent_count >= args.max_count:
-                        print("\n🏁 지정된 최대 전송 건수에 도달하여 종료합니다.")
+                        print("\n[DONE] 지정된 최대 전송 건수에 도달하여 종료합니다.")
                         return
 
                     payload = parse_csv_row_to_payload(raw_row, use_current_time=args.use_current_time)
@@ -194,15 +194,16 @@ def main() -> None:
                         tx_id = response.get("transaction_id", "-")
                         proba = response.get("predict_proba")
                         proba_str = f"{proba * 100:.1f}%" if proba is not None else "N/A"
+                        received_at = response.get("created_at", "-")
                         rule_scores = response.get("rule_scores")
 
                         # 상태별 포맷팅
                         if pred_status == "DECLINED":
                             declined_count += 1
-                            tag = "\033[91m[🚨 DECLINED / 차단]\033[0m"
+                            tag = "\033[91m[DECLINED / 차단]\033[0m"
                         else:
                             approved_count += 1
-                            tag = "\033[92m[✅ APPROVED / 정상]\033[0m"
+                            tag = "\033[92m[APPROVED / 정상]\033[0m"
 
                         rule_summary = ""
                         if rule_scores and isinstance(rule_scores, dict):
@@ -212,12 +213,12 @@ def main() -> None:
 
                         print(
                             f"[{sent_count:04d}] {tag} ID:{tx_id} | {src_acc} | {amount_str:>11s} | "
-                            f"{channel:<8s} | Prob: {proba_str:<6s}{rule_summary} ({latency:.1f}ms)"
+                            f"{channel:<8s} | Prob: {proba_str:<6s} | Stored: {received_at}{rule_summary} ({latency:.1f}ms)"
                         )
                     else:
                         error_count += 1
                         print(
-                            f"[{sent_count:04d}] \033[93m[⚠️ HTTP {status_code}]\033[0m {src_acc} | "
+                            f"[{sent_count:04d}] \033[93m[HTTP {status_code}]\033[0m {src_acc} | "
                             f"{amount_str:>11s} | Response: {response} ({latency:.1f}ms)"
                         )
 
@@ -227,10 +228,10 @@ def main() -> None:
                 break
 
     except KeyboardInterrupt:
-        print("\n\n⏹️ 사용자에 의해 전송이 중단되었습니다.")
+        print("\n\n[STOPPED] 사용자에 의해 전송이 중단되었습니다.")
 
     print("\n================================================================================")
-    print(" 📊 Transmission Summary")
+    print(" Transmission Summary")
     print(f" - Total Sent : {sent_count:,} requests")
     print(f" - Approved   : {approved_count:,} (정상 승인)")
     print(f" - Declined   : {declined_count:,} (이상 탐지 차단)")

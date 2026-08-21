@@ -45,6 +45,7 @@ class CaseQueryRepository:
         min_amount: int | None = None,
         max_amount: int | None = None,
         risk_grades: list[str] | None = None,
+        sort_by: str = "transaction_datetime",
         offset: int = 0,
         limit: int = 50,
     ) -> tuple[list[CaseListRow], int]:
@@ -99,9 +100,14 @@ class CaseQueryRepository:
 
         count_statement = select(func.count()).select_from(statement.subquery())
         total_count = self.session.exec(count_statement).one()
+        sort_column = (
+            Transaction.created_at
+            if sort_by == "received_at"
+            else Transaction.transaction_datetime
+        )
         rows = self.session.exec(
             statement.order_by(
-                Transaction.transaction_datetime.desc(),
+                sort_column.desc(),
                 Transaction.id.desc(),
             )
             .offset(offset)

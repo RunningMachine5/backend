@@ -113,6 +113,7 @@ class CaseListItemResponse(BaseModel):
     primary_fraud_type: str | None = None
     transaction_amount: int
     transaction_datetime: datetime
+    received_at: datetime
     ip_address: str | None = None
     review_status: str
 

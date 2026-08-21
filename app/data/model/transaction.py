@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
 from sqlalchemy import (
@@ -138,7 +138,8 @@ class Transaction(SQLModel, table=True):
     )
 
     created_at: datetime = Field(
-        default_factory=datetime.now,
+        # 거래 원본 시각과 별개로, 서버가 실제로 저장한 시각을 기록한다.
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
