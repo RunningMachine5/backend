@@ -1,9 +1,4 @@
-"""고객에게 그대로 출력하는 안내 문구.
-
-문구의 출처는 docs/customer-chatbot/messages.md 한 곳뿐이다.
-코드에서 문구를 새로 쓰지 않고, 바꿔야 하면 문서를 먼저 고친 뒤 여기로 옮긴다.
-LLM이 생성하지 않고 애플리케이션 코드가 그대로 출력한다.
-"""
+"""고객에게 직접 출력하는 고정 안내 문구."""
 
 from __future__ import annotations
 
@@ -11,7 +6,7 @@ from datetime import datetime
 from string import Template
 
 
-# B.1 최초 알림 메시지 — 챗봇 접속 직후 1회
+# 챗봇 최초 접속 알림
 INITIAL_NOTIFICATION_TEMPLATE = Template(
     "고객님의\n"
     "$transaction_datetime $transaction_amount $transaction_direction\n"
@@ -21,7 +16,7 @@ INITIAL_NOTIFICATION_TEMPLATE = Template(
     "챗봇 상담 버튼을 눌러주세요"
 )
 
-# B.2 버튼 선택 시 출력 — "챗봇 상담"은 문구 없이 바로 question_step 1 질문으로 간다.
+# 버튼 선택 결과
 HANDOFF_WAITING_MESSAGE = (
     "정확한 안내를 위해 상담사를 연결해드릴게요. 잠시만 기다려주세요."
 )
@@ -30,18 +25,16 @@ END_CHAT_MESSAGE = (
     " 거래 제한 해제와 관련된 자세한 안내는 고객센터로 문의해 주세요."
 )
 
-# B.3 평가 판정별 안내 — SUFFICIENT는 문구가 없고 WANT_END는 B.6을 쓴다.
+# 답변 분석 결과 안내
 TOO_VAGUE_MESSAGE = "저는 금융사기와 관련된 질문에만 대답이 가능해요 관련된 내용을 좀 더 구체적으로 말씀해주실 수 있을까요?"
-# B.4 재시도 소진 또는 평가 LLM 장애 시 다음 질문 전환 안내
 NEXT_QUESTION_MESSAGE = "알겠습니다 다음 질문을 할게요"
 
-# B.5 안내를 만들지 못한 가이드 검색 질의 — 검색 0건이거나 Generate가 답하지 못한 경우
+# 가이드 검색 또는 생성 실패 안내
 UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE = (
     "말씀해주신 이 부분은 제가 안내해드릴 수 있는 자료를 찾지 못했어요.\n"
     "정확한 안내가 필요하시면 상담사를 연결해드릴게요."
 )
 
-# B.6 상담 종료 요청(WANT_END) 시 종료 안내
 WANT_END_MESSAGE = "상담을 종료하겠습니다."
 
 def render_initial_notification(
@@ -49,11 +42,7 @@ def render_initial_notification(
     transaction_datetime: datetime,
     transaction_amount: int,
 ) -> str:
-    """B.1의 거래시각·거래금액·입금/출금을 거래 원장 값으로 치환한다.
-
-    입금/출금은 PRD 2.3대로 금액의 부호로 판정한다(음수=출금, 양수=입금).
-    치환값의 표기 형식은 설계 문서가 정하지 않아 여기서 고정한다.
-    """
+    """거래 원장 값으로 최초 알림을 렌더링한다."""
 
     return INITIAL_NOTIFICATION_TEMPLATE.substitute(
         transaction_datetime=_format_datetime(transaction_datetime),
@@ -71,7 +60,7 @@ def _format_amount(transaction_amount: int) -> str:
 
 
 def _format_direction(transaction_amount: int) -> str:
-    """음수=출금, 양수=입금 (PRD 2.3)."""
+    """금액 부호로 입금과 출금을 구분한다."""
 
     return "출금" if transaction_amount < 0 else "입금"
 

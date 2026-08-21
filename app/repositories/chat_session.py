@@ -27,18 +27,14 @@ VerdictSkipReason = Literal["MAX_RETRY_EXCEEDED", "EVALUATOR_FAILED"]
 
 
 class ChatSessionRepository:
-
     def __init__(self, session: Session) -> None:
         self.session = session
 
     def get(self, chat_session_id: str) -> ChatSession | None:
         return self.session.get(ChatSession, chat_session_id)
 
-    # 트렌젝션 아이디로 그에 해당하는 세션을 찾는다
     def find_by_transaction(self, transaction_id: int) -> ChatSession | None:
-        """
-        트렌젝션 아이디로 그에 해당하는 세션을 찾는다
-        """
+        """거래에 연결된 채팅 세션을 조회한다."""
         return self.session.exec(
             select(ChatSession).where(
                 ChatSession.transaction_id == transaction_id
@@ -53,17 +49,12 @@ class ChatSessionRepository:
         top_fraud_types: list[str] | None = None,
         is_older: bool = False,
     ) -> ChatSession:
-        """
-        거래에 연결된 세션이 있으면 반환하고, 없으면 새로 추가한다.
-        """
+        """거래에 연결된 세션이 있으면 반환하고 없으면 생성한다."""
 
-        # 연결된 세션이 있는지 확인
         existing = self.find_by_transaction(transaction_id)
-        # 있으면 그거 그대로 반환
         if existing is not None:
             return existing
 
-        # 없으면 만들어낸다
         chat_session = ChatSession(
             chat_session_id=chat_session_id,
             transaction_id=transaction_id,
@@ -120,8 +111,7 @@ class ChatSessionRepository:
         *,
         completed_at: datetime | None = None,
     ) -> ChatSession:
-        """상담사 연결 대기로 전이
-        """
+        """세션을 상담사 연결 대기 상태로 변경한다."""
 
         chat_session.status = ChatSessionStatus.HANDOFF_REQUESTED.value
         if completed_at is not None:
@@ -149,7 +139,7 @@ class ChatSessionRepository:
         sender_type: ChatSenderType,
         message_text: str,
     ) -> ChatMessage:
-        """대화 저장 + 세션의 마지막 메시지를 갱신"""
+        """메시지를 저장하고 세션의 마지막 메시지를 갱신한다."""
 
         message = ChatMessage(
             chat_session_id=chat_session.chat_session_id,
@@ -157,9 +147,8 @@ class ChatSessionRepository:
             message_text=message_text,
         )
         self.session.add(message)
-        self.session.flush() # 여기서 flush를 해야 DB 오토인크리먼트값이 들어간다
+        self.session.flush()
 
-        # 세션에는 마지막 메시지가 뭔지 기록하는 컬럼이 있는데 이를 변경한다
         chat_session.last_message_id = message.message_id
         self.session.add(chat_session)
         return message
@@ -206,9 +195,9 @@ class ChatSessionRepository:
             message_id=message.message_id,
             quality_verdict=(
                 quality_verdict.value if quality_verdict is not None else None
-            ), # 평가 LLM 호출이 실패할 경우 None으로 들어갈 수도 있다 
+            ),
             verdict_skip_reason=verdict_skip_reason,
-            is_adopted=is_adopted, # 동일 질문에 대해 여러번 재질문하는 경우가 있다 그 중 최종적으로 사용하기로 한 사용자 응답
+            is_adopted=is_adopted,
         )
         self.session.add(answer)
         return answer
@@ -290,10 +279,7 @@ class ChatSessionRepository:
         self,
         chat_session: ChatSession,
     ) -> list[ChatFraudCircumstance]:
-        """
-        세션에서 추출된 사기 정황을 모두 조회한다.
-        채점을 진행할때 사용
-        """
+        """세션에서 추출된 사기 정황을 저장 순서대로 조회한다."""
 
         return list(
             self.session.exec(
@@ -346,7 +332,6 @@ class ChatSessionRepository:
         볼 수 있다. 정황이 한 번도 추출되지 않았으면 ``None`` 이다.
         """
 
-        # transaction_id 가 PK 라 그대로 조회한다.
         return self.session.get(FraudTypeScoreAfterChat, transaction_id)
 
     def get_status_by_transaction(
@@ -365,14 +350,14 @@ class ChatSessionRepository:
         chat_session: ChatSession,
         source_answer: ChatAnswer | None,
     ) -> int | None:
-        """추출된 행동·사기 정황이 어떤 고객 답변에서 나온 것인지 연결할 answer_id를 준비"""
-        if source_answer is None: # source_answer가 없으면 None 반환
+        """추출 결과에 연결할 답변 id를 검증하고 반환한다."""
+        if source_answer is None:
             return None
-        if source_answer.chat_session_id != chat_session.chat_session_id: # 다른 채팅 세션의 답변이면 오류 발생
+        if source_answer.chat_session_id != chat_session.chat_session_id:
             raise ValueError("다른 세션의 답변을 추출 근거로 연결할 수 없습니다")
-        if source_answer.answer_id is None: # 아직 DB에서 answer_id가 발급되지 않았다면 flush() 실행
+        if source_answer.answer_id is None:
             self.session.flush()
-        if source_answer.answer_id is None: # 그럼에도 없다면
+        if source_answer.answer_id is None:
             raise ValueError("저장되지 않은 답변은 추출 근거로 연결할 수 없습니다")
         return source_answer.answer_id
 
@@ -383,11 +368,10 @@ class ChatSessionRepository:
         values: dict[str, object],
         index_elements: list[str],
     ) -> bool:
-        """중복 삽입 안되게 하는 로직"""
+        """고유 키가 이미 존재하면 삽입하지 않는다."""
         statement = (
             postgresql_insert(model)
             .values(**values)
-            # index_elements 컬럼 조합이 이미 존재하면 예외를 내지 않고 INSERT를 건너뜀
             .on_conflict_do_nothing(index_elements=index_elements)
         )
         result = self.session.exec(statement)

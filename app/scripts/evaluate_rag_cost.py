@@ -1,20 +1,6 @@
-"""골든셋으로 실제 RAG 파이프라인(질의 분해·검색·응답 생성)만 돌려 토큰 사용량과
-비용을 리포트한다. RAGAS 심판 LLM은 호출하지 않는다.
+"""RAGAS 채점 없이 챗봇 RAG 경로의 토큰 사용량과 비용을 리포트한다.
 
-evaluate_rag_ragas 의 가장 비싼 부분은 [2/3] RAGAS 채점(사례당 지표 6개, 심판 LLM
-반복 호출)이다. 채점 없이 파이프라인 비용만 먼저 가늠하고 싶을 때 이 스크립트를 쓴다.
-먼저 app.services.rag.docs_embedding 으로 코퍼스를 적재해야 한다.
-
-리포트는 evaluate_rag_ragas 와 동일하게 **항상 파일로 저장한다**. 저장 경로는 --out 으로
-지정하고, 지정하지 않으면 evals/rag/reports/ 아래에 실행 시각으로 파일을 만든다.
-
-진행 상황은 stderr 로 나간다. stdout 은 파이프나 리다이렉트로 넘길 때만 JSON 을
-내보내고(다른 도구에 물릴 수 있게), 터미널에서 그냥 실행하면 화면을 채우지 않는다.
-
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_cost
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_cost --limit 5
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_cost \
-        --out evals/rag/reports/rag-cost-before-chunking-fix.json
+실제 LLM과 임베딩 API를 사용하며, 기본 저장 위치는 ``evals/rag/reports``다.
 """
 
 from __future__ import annotations
@@ -36,7 +22,7 @@ from sqlmodel import Session  # noqa: E402
 from app.core.db import engine  # noqa: E402
 from app.services.rag.golden_dataset import CATEGORIES, load_golden_cases  # noqa: E402
 from app.services.rag.ragas_evaluation import RunResult, run_cases  # noqa: E402
-from app.services.rag.token_pricing import estimate_costs  # noqa: E402
+from app.services.rag.token_pricing import build_usage_report  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
@@ -115,26 +101,10 @@ class _ProgressPrinter:
 def _build_report(results: list[RunResult], usage_metadata: dict) -> dict:
     """RAGAS 채점 없이 실행 결과와 토큰/비용만 담은 리포트."""
 
-    cost_estimates = estimate_costs(usage_metadata)
-    total_cost = sum(e.cost_usd for e in cost_estimates if e.cost_usd is not None)
-    total_cost_known = all(e.cost_usd is not None for e in cost_estimates)
-
     return {
         "case_count": len(results),
-        "usage": {
-            "by_model": [
-                {
-                    "model": e.model_name,
-                    "input_tokens": e.input_tokens,
-                    "output_tokens": e.output_tokens,
-                    "cached_input_tokens": e.cached_input_tokens,
-                    "cost_usd": e.cost_usd,
-                }
-                for e in cost_estimates
-            ],
-            "total_cost_usd": round(total_cost, 6),
-            "total_cost_known": total_cost_known,
-        },
+        # evaluate_rag_ragas 리포트의 usage.pipeline 과 같은 형식이라 두 리포트를 그대로 비교할 수 있다.
+        "usage": build_usage_report(usage_metadata, case_count=len(results)),
         "avg_elapsed_seconds": round(
             sum(r.elapsed_seconds for r in results) / len(results), 4
         )
@@ -182,10 +152,12 @@ def _print_summary(report: dict) -> None:
             f"출력 {row['output_tokens']:>8,}{cached} → {cost_text}"
         )
 
-    total = report["usage"]["total_cost_usd"]
-    known = report["usage"]["total_cost_known"]
-    suffix = "" if known else " (일부 모델 단가 미상, 과소 추정)"
-    _log(f"  합계 비용                   ${total:.4f}{suffix}")
+    usage = report["usage"]
+    suffix = "" if usage["total_cost_known"] else " (일부 모델 단가 미상, 과소 추정)"
+    _log(f"  합계 비용                   ${usage['total_cost_usd']:.4f}{suffix}")
+    per_case = usage.get("cost_usd_per_case")
+    if per_case is not None:
+        _log(f"  사례당 비용                 ${per_case:.4f}")
 
     if report["errors"]:
         _log(f"\n  오류 {len(report['errors'])}건: {report['errors']}")

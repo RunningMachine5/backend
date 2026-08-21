@@ -7,17 +7,20 @@ ragas 자체(지표 계산)는 eval 전용 의존성이라 여기서 부르지 �
 import unittest
 
 from app.dto.chatbot import (
+    AnswerQualityVerdict,
     ExtractedGuideSearchQuery,
-    GuideSearchQueryExtractionResult,
     RetrievedChatbotGuideChunkDTO,
 )
+from app.services.chatbot.answer_analyzer import AnswerAnalysisOutcome
 from app.services.chatbot.guide_responder import GuideResponse
 from app.services.chatbot.messages import UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
 from app.services.rag.golden_dataset import GoldenCase, GoldenContext
 from app.services.rag.ragas_evaluation import (
+    RAG_EVALUATION_QUESTION,
     RunResult,
     _pick_scores,
     build_report,
+    build_usage_section,
     run_cases,
 )
 
@@ -49,22 +52,25 @@ def _case(case_id, category, contexts=(), difficulty=None):
     )
 
 
-class _StubExtractor:
-    """질의 분해 LLM 대역. queries_by_case 에 없는 사례는 0건을 낸다."""
+class _StubAnalyzer:
+    """통합 분석 LLM 대역. queries_by_case 에 없는 사례는 질의 0건을 낸다."""
 
     def __init__(self, queries_by_case):
         self.queries_by_case = queries_by_case
+        self.calls = []
 
-    def extract(self, *, user_answers):
-        case_id = user_answers.split()[0]
+    def analyze(self, *, question_text, customer_answer):
+        self.calls.append((question_text, customer_answer))
+        case_id = customer_answer.split()[0]
         queries = self.queries_by_case.get(case_id, [])
-        return GuideSearchQueryExtractionResult(
-            guide_search_queries=[
+        return AnswerAnalysisOutcome(
+            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
+            guide_search_queries=tuple(
                 ExtractedGuideSearchQuery(
                     title="소제목", search_query=q, evidence="근거"
                 )
                 for q in queries
-            ]
+            ),
         )
 
 
@@ -109,10 +115,11 @@ class RunCasesTest(unittest.TestCase):
         def fake_retriever(question, session, top_k=3):
             return found
 
+        self.analyzer = _StubAnalyzer(queries)
         return run_cases(
             tuple(cases),
             session=None,
-            extractor=_StubExtractor(queries),
+            analyzer=self.analyzer,
             retriever=fake_retriever,
             responder_factory=lambda recorder, top_k: _StubResponder(
                 recorder, message, grounded
@@ -127,6 +134,10 @@ class RunCasesTest(unittest.TestCase):
         self.assertEqual(results[0].retrieved_locators, (("C02.pdf", 2),))
         self.assertEqual(results[0].search_queries, ("스미싱 신고",))
         self.assertFalse(results[0].abstained)
+        self.assertEqual(
+            self.analyzer.calls,
+            [(RAG_EVALUATION_QUESTION, case.user_input)],
+        )
 
     def test_질의_분해가_0건이면_응답이_비고_기권으로_본다(self):
         case = _case("unans-001", "unanswerable")
@@ -276,6 +287,51 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(first["expected_locators"], ["C02.pdf p2"])
         self.assertEqual(first["retrieved_locators"], ["C02.pdf p2"])
         self.assertEqual(report["errors"], [])
+
+
+class UsageSectionTest(unittest.TestCase):
+    """리포트에 함께 남기는 토큰·비용 집계."""
+
+    def setUp(self):
+        self.pipeline = {
+            "gpt-5.6-luna": {
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+                "total_tokens": 1_000_000,
+            }
+        }
+        self.judge = {
+            "gpt-5.6-terra": {
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+                "total_tokens": 1_000_000,
+            }
+        }
+
+    def test_파이프라인과_심판_비용을_섞지_않는다(self):
+        # pipeline 은 운영에서 한 턴에 실제로 나가는 비용, judge 는 평가에만 드는 비용이다.
+        usage = build_usage_section(self.pipeline, self.judge, case_count=100)
+
+        self.assertAlmostEqual(usage["pipeline"]["total_cost_usd"], 0.20)
+        self.assertAlmostEqual(usage["judge"]["total_cost_usd"], 2.00)
+        self.assertAlmostEqual(usage["total_cost_usd"], 2.20)
+        self.assertTrue(usage["total_cost_known"])
+        self.assertAlmostEqual(usage["pipeline"]["cost_usd_per_case"], 0.002)
+
+    def test_한쪽이라도_단가를_모르면_합계가_과소_추정으로_표시된다(self):
+        usage = build_usage_section(
+            self.pipeline,
+            {"some-unlisted-model": {"input_tokens": 10, "output_tokens": 10}},
+            case_count=1,
+        )
+        self.assertFalse(usage["total_cost_known"])
+
+    def test_usage_를_주면_리포트에_담기고_안_주면_키가_없다(self):
+        usage = build_usage_section(self.pipeline, self.judge, case_count=3)
+        report = build_report([], {}, usage=usage)
+
+        self.assertEqual(report["usage"], usage)
+        self.assertNotIn("usage", build_report([], {}))
 
 
 class PickScoresTest(unittest.TestCase):

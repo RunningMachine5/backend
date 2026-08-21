@@ -46,6 +46,7 @@ SQLAlchemy, SQLModel, langchain-openai.
 조립(`app/services/chatbot/`), LangGraph 턴 파이프라인
 ([customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)),
 Agent 통합 세션·메일 조정([session_alert_notifier.py](../../app/services/chatbot/session_alert_notifier.py)),
+턴 응답 뒤에 도는 사기 정황 추출 작업([fraud_circumstance_task_runner.py](../../app/services/chatbot/fraud_circumstance_task_runner.py)),
 [2.8의 API 6종](#28-api-엔드포인트)이 모두 있다. 세션 개념이 없던 `POST /chat/ask`와 그
 Fake 체인 `app/services/chatbot/customer_chatbot.py`는 제거했다.
 
@@ -289,6 +290,10 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 질문과 무관한 답변, 모름·기억 안 남, 현재 질문에 대한 답변 거부·회피는 모두
 `TOO_VAGUE`다. 전체 상담 종료 의사가 명확할 때만 `WANT_END`로 판정한다.
 
+판정과 가이드 검색 질의 분해는 `AnswerAnalysisResult`의 `verdict`와
+`guide_search_queries`로 **한 번에 반환한다.** `SUFFICIENT` 경로도 이 노드 이후 별도 분해
+LLM을 호출하지 않으며, 다른 판정에서 모델이 질의를 반환하더라도 서비스가 폐기한다.
+
 종료 안내(추가 질문 멘트의 「없으시면 "종료할게요"라고 말씀해주세요」)는 `question_step`
 2 이상에 포함되지만, `WANT_END` 판정 자체는 유형판별 질문 단계(1)를 포함한 모든 단계에서
 나올 수 있다.
@@ -306,9 +311,10 @@ LLM 질의로 평가하고 다음 질문으로 넘어갈지 결정한다.
 ([app/core/config.py](../../app/core/config.py)), 재시도 중 고객에게는 아무것도 출력하지
 않는다.
 
-A.1~A.3은 `CHAT_LLM_MODEL`(기본 `gpt-5.6-luna`)을 쓴다. 고객에게 나가는 생성 A.4는
+A.1~A.3은 `CHAT_LLM_MODEL`(기본 `gpt-5.6-luna`)을 쓴다. 운영 턴과 RAG 평가 모두
+A.1+A.2를 한 번의 `AnswerAnalyzer` 호출로 수행한다. 고객에게 나가는 생성 A.4는
 `CHAT_RESPONSE_LLM_MODEL`을 사용한다. 두 변수의 기본값은 같으므로 **기본 설정에서는
-네 호출이 같은 모델**이고, 필요하면 A.4만 따로 갈아끼울 수 있다
+세 운영 호출이 같은 모델**이고, 필요하면 A.4만 따로 갈아끼울 수 있다
 ([2.5](#25-정보-응답--rag-대응-가이드-4-1)).
 
 ##### 모델·reasoning effort와 타임아웃 예산
@@ -316,7 +322,7 @@ A.1~A.3은 `CHAT_LLM_MODEL`(기본 `gpt-5.6-luna`)을 쓴다. 고객에게 나�
 **작은 모델을 고르는 것으로는 지연이 줄지 않는다.** 추론 모델의 지연을 지배하는 것은
 파라미터 수가 아니라 생성한 토큰 수, 그중에서도 reasoning 토큰이다. 같은 `low` effort에서
 `gpt-5-nano`가 상위 모델보다 추론 토큰을 훨씬 많이 써서 **모든 호출에서 더 느렸다.**
-그래서 "중간 단계는 작은 모델" 방침을 버리고 네 호출을 `gpt-5.6-luna`로 통일했다.
+그래서 "중간 단계는 작은 모델" 방침을 버리고 A.1~A.4를 `gpt-5.6-luna`로 통일했다.
 
 | 호출 | `gpt-5-nano` / `low` | `gpt-5.6-luna` / `low` |
 | --- | --- | --- |
@@ -325,7 +331,20 @@ A.1~A.3은 `CHAT_LLM_MODEL`(기본 `gpt-5.6-luna`)을 쓴다. 고객에게 나�
 | 사기 정황 추출 (A.3) | 3.31초 (288토큰) | **1.32초** (52토큰) |
 | 대응 가이드 생성 (A.4) | 4.54초 (476토큰) | **1.44초** (62토큰) |
 
-reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 함께 적용한다
+##### 평가·분해 통합 실측 (2026-08-20)
+
+`gpt-5.6-luna` / `low`에서 명확한 `SUFFICIENT` 사례 5개를 각 3회, 순차·통합 순서를
+교대해 실제 호출했다.
+
+| 방식 | 성공 | LLM 호출 | 평균 | 중앙값 | p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 기존 평가 → 분해 | 15/15 | 30 | 3389.6ms | 2937.7ms | 6041.9ms |
+| 통합 분석 | 15/15 | 15 | 2988.0ms | 2790.2ms | 4610.9ms |
+
+통합 후 중앙값은 **147.5ms(5.02%) 감소**, p95는 **1431.0ms 감소**했고 호출 수는
+절반이 됐다. 실행별 네트워크 변동을 포함하므로 비율은 재측정 때 달라질 수 있다.
+
+reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 모든 챗봇 호출에 함께 적용한다
 ([llm.py](../../app/services/chatbot/llm.py)). 값이 비어 있으면 인자를 넘기지 않으므로
 추론 모델이 아닌 모델로 바꿔 끼울 수 있다.
 
@@ -333,7 +352,7 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 충실한 답변을 `TOO_VAGUE`로 오판하는 것을 확인했다. `low`는 같은 답변을 `SUFFICIENT`로
 판정한다.
 
-**타임아웃은 가장 느리게 측정된 호출에 맞춘다.** 현재 측정에서는 A.2가 가장 느렸고,
+**타임아웃은 가장 느리게 측정된 호출에 맞춘다.** 과거 분리 측정에서는 A.2가 가장 느렸고,
 질의가 5개까지 나오는 긴 답변에서 최악 4.9초였다. `CHAT_LLM_TIMEOUT_SECONDS`를 이보다 짧게 잡으면
 **정상 응답이 매번 타임아웃으로 버려져 모든 턴이 이 절의 기술 실패 경로로 빠진다.**
 기본값 30초는 그 여유분이다.
@@ -352,8 +371,8 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 
 ### 2.5 정보 응답 — RAG 대응 가이드 (4-1)
 
-`SUFFICIENT` 판정을 받으면 해당 고객 응답을 분석한다. 즉 **질문 한 턴이 통과할 때마다
-이 단계가 한 번씩 실행된다.**
+`SUFFICIENT` 판정과 함께 이미 생성된 검색 질의를 사용한다. 판정 이후 별도 분석 LLM은
+실행하지 않는다.
 
 #### 가이드 검색 질의 분해
 
@@ -361,6 +380,7 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 
 ```json
 {
+  "verdict": "SUFFICIENT",
   "guide_search_queries": [
     {
       "title": "고객에게 보여줄 소제목",
@@ -371,8 +391,8 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 }
 ```
 
-현재 고객 답변만 입력해 금융사기 대응에 의미 있는 행동·정보 노출·접촉을 검색 단위로
-만든다. 각 `search_query`는 다른 대화 문맥 없이도 검색 가능해야 한다.
+직전 질문과 현재 고객 답변을 함께 입력해 판정하면서, 금융사기 대응에 의미 있는 행동·정보
+노출·접촉을 검색 단위로 만든다. 각 `search_query`는 다른 대화 문맥 없이도 검색 가능해야 한다.
 
 **그런 행동이 없어도 금융과 관련된 질문이면 질의를 만든다.** 계좌·카드·이체·결제·대출·
 금융 보안 서비스에 관한 물음이나 걱정이면 사기 행동이 아직 없어도 대상이다 —
@@ -387,12 +407,14 @@ reasoning effort는 `CHAT_LLM_REASONING_EFFORT`(기본 `low`)로 네 호출에 �
 `title`·`search_query`의 길이 상한도 마찬가지로 스키마가 강제한다. 자세한 근거는
 [A.2 규칙을 줄인 이유](prompts.md#규칙을-줄인-이유)에 있다.
 
-`evidence`는 프롬프트의 규칙 목록에서 **답변 원문의 연속 문자열**이라고 명시하지 않는다.
-분해 결과가 원문과 달라도 [extractors.py](../../app/services/chatbot/extractors.py)는 검색 질의를
-버리지 않으므로 RAG 응답에는 사용할 수 있다. 다만 출력 형식 예시는 `사용자 답변의 정확한
-원문`이라고 안내하고, [chat_session.py](../../app/repositories/chat_session.py)는 실제 고객
-답변에 포함된 `evidence`만 `chat_guide_search_queries`에 저장한다. 불일치한 질의는 RAG에는
-쓰이지만 감사 행은 남지 않는다. [외부 조회(추가 기능)](#외부-조회-추가-기능)은 `evidence`의
+`evidence`는 프롬프트에서 **답변 원문의 연속 문자열**이라고 요구하지 않는다. 규칙 목록에도
+없고, 그렇게 안내하던 출력 형식 예시도 [구조화 출력 원칙](prompts.md#프롬프트에-적용한-출력-원칙)에
+따라 뺐다.
+분해 결과가 원문과 달라도 [answer_analyzer.py](../../app/services/chatbot/answer_analyzer.py)의
+공유 정규화 로직은 검색 질의를
+버리지 않으므로 RAG 응답에는 사용할 수 있다. 다만
+[chat_session.py](../../app/repositories/chat_session.py)는 실제 고객 답변에 포함된 `evidence`만
+`chat_guide_search_queries`에 저장한다. 불일치한 질의는 RAG에는 쓰이지만 감사 행은 남지 않는다. [외부 조회(추가 기능)](#외부-조회-추가-기능)은 `evidence`의
 URL·전화번호·계좌를 읽는 설계이므로, 구현 전에 이 차이를 먼저 해소해야 한다.
 
 #### 검색 질의 구성
@@ -425,7 +447,7 @@ for position, query in enumerate(guide_search_queries, start=1):
     augmented.append(augment(position, query, chunks))
 
 grounded = [item for item in augmented if item.chunks]
-response = generate(grounded)
+response = generate_text(augmented) if grounded else assemble_b5(augmented)
 ```
 
 Generate를 1회로 묶으면 LLM 호출 수가 요구 개수와 무관하게 1회로 고정되고 응답 문체가
@@ -442,19 +464,18 @@ Generate를 1회로 묶으면 LLM 호출 수가 요구 개수와 무관하게 1�
 0건을 "드물게 발생하는 예외"로 보고
 세션 전체를 상담사 연결로 넘기면 대부분의 상담이 챗봇을 거치지 못한다.
 
-**규칙: LLM 프롬프트에서만 제외하고, 고객 응답에서는 반드시 언급한다.
+**규칙: 0건도 입력 위치와 함께 프롬프트에 명시하고, 고객 응답에서는 B.5로 반드시 언급한다.
 0건은 어떤 경우에도 상태를 전이시키지 않는다.**
 
 1. **리트리버는 구조화된 결과를 돌려준다.** 0건은 빈 리스트로 표현하고, 문장
    (`"관련 문서를 찾지 못했습니다."`)을 컨텍스트로 넣지 않는다. 문장을 넣으면 LLM이
    그것을 무시하고 사전지식으로 답할 여지가 남는다.
-2. **0건 가이드 검색 질의는 Generate 프롬프트에 넣지 않는다.** Generate가 1회 통합이므로, 근거 있는
-   요구와 없는 요구를 한 프롬프트에 섞으면 LLM이 A 요구의 청크를 근거 삼아 B 요구까지
-   답하는 교차 오염이 일어난다. "모르면 모른다고 답하라"는 지시는 강제가 아니므로
-   프롬프트에 의존하지 않는다.
-3. **제외한 요구는 `assemble` 단계에서 고정 문구로 채운다.** 소제목은 분해 결과의
-   `title`을 사용하므로 근거가 있든 없든 모든 요구가 분해 LLM이 반환한 순서대로 나타난다.
-   → 문구: [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내)
+2. **0건 위치도 Generate 프롬프트에 `근거: 없음`으로 넣는다.** A.4는 해당 위치 본문을
+   [B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내) 두 줄과 정확히 같게
+   출력하고, 다른 위치의 근거를 사용하지 않도록 지시한다.
+3. **최종 텍스트 조립은 LLM이 한다.** `■ {title}` 소제목, 입력 순서, 섹션 사이 빈 줄을
+   포함한 고객 표시용 일반 텍스트를 한 번에 스트리밍한다. 위치별 JSON 파싱이나 서버 조립은
+   하지 않는다.
 4. **모든 요구가 0건이어도 상담사 연결로 넘기지 않는다.** 모든 요구가 3번의 고정 문구로
    채워질 뿐이고 `chat_sessions.status`는 그대로다. 0건은 코퍼스 커버리지 문제이지
    사람이 개입해야 한다는 신호가 아니며, 위에 적었듯 **0건은 흔한 경우**라 세션을 넘기면
@@ -467,11 +488,8 @@ Generate를 1회로 묶으면 LLM 호출 수가 요구 개수와 무관하게 1�
 grounded   = [a for a in augmented if a.chunks]
 ungrounded = [a for a in augmented if not a.chunks]
 
-# 근거가 하나도 없으면 LLM 호출을 건너뛴다. 상태는 전이하지 않는다.
-guidance = generate(grounded) if grounded else {}
-
-# 안내를 얻지 못한 요구는 코드가 B.5 고정 문구로 채운다
-response = assemble(augmented, guidance)
+# 하나라도 근거가 있으면 전체 최종 본문을 일반 텍스트 한 번으로 생성한다.
+response = generate_text(augmented) if grounded else assemble_b5(augmented)
 ```
 
 분해된 가이드 검색 질의가 하나도 없는 턴은 응답 본문이 비므로 대응 가이드 메시지를 보내지 않고
@@ -502,19 +520,19 @@ response = assemble(augmented, guidance)
 `CHAT_RESPONSE_LLM_MODEL`과 `CHAT_LLM_MODEL`의 기본값이 모두 `gpt-5.6-luna`이며,
 변수를 둘로 남긴 것은 A.4만 갈아끼울 여지를 두기 위해서다.
 
-이 단계에서 가장 느린 것은 Generate가 아니라 **가이드 검색 질의 분해(A.2)**다. 위 절의
-측정표를 참고해 타임아웃을 잡는다.
+통합 분석과 Generate 모두 같은 공용 타임아웃·재시도 예산을 쓴다. 최신 지연은 위의
+평가·분해 통합 실측표를 기준으로 관찰한다.
 
 | 실패 지점 | 동작 |
 | --- | --- |
 | 가이드 검색 질의 하나의 Retrieve 실패 | 그 질의만 0건으로 떨어뜨리고 나머지 질의로 응답을 계속 만든다 |
 | Generate(A.4) 재시도 상한 소진 | 안내를 한 줄도 만들지 못한 것과 같게 보고 모든 요구를 B.5 문구로 채운다 |
-| Generate는 성공했으나 모든 `guidance`가 비어 있음 | 위와 같다 |
+| Generate는 성공했으나 최종 텍스트가 비어 있음 | 재시도하며, 상한 소진 시 위와 같다 |
 
 근거가 있는데도 챗봇이 할 말이 없는 상태는 전체 0건과 구분할 실익이 없으므로 같은
 분기로 처리한다. **어느 실패도 상태를 전이시키지 않는다** — 한 턴의 응답이 부실해질 뿐
-상담은 다음 질문으로 이어진다. 프롬프트에 넣지 않은 위치에 대한 안내가 응답에 섞여 오면
-근거가 없는 내용이므로 버린다.
+상담은 다음 질문으로 이어진다. 별도의 위치별 텍스트 파서는 만들지 않으며, 최종 형식과
+근거 분리는 A.4 프롬프트에 맡긴다.
 
 #### 응답 후 흐름
 
@@ -538,7 +556,9 @@ response = assemble(augmented, guidance)
 ### 2.6 사기 정황 추출과 채점 (4-2)
 
 사기 정황을 분석해서 내부 채점표에 따라 사기 의심 점수를 누적한다.
-[2.5](#25-정보-응답--rag-대응-가이드-4-1)와 마찬가지로 `SUFFICIENT` 판정마다 실행된다.
+[2.5](#25-정보-응답--rag-대응-가이드-4-1)와 마찬가지로 `SUFFICIENT` 판정마다 실행되지만,
+**턴 응답 경로 안에서 돌지 않고 응답을 보낸 뒤 백그라운드로 돈다**(아래
+[비동기 실행](#비동기-실행)).
 
 → 프롬프트: [A.3](prompts.md#a3-사기-정황-추출-프롬프트)
 
@@ -552,6 +572,39 @@ response = assemble(augmented, guidance)
   ]
 }
 ```
+
+#### 비동기 실행
+
+추출 결과는 그 턴에 고객에게 보낼 메시지에 쓰이지 않고 담당자 화면의 점수만 바꾼다.
+그래서 추출 LLM 호출을 턴 응답 경로에서 빼 응답 뒤로 미룬다 — 고객은 [2.5](#25-정보-응답--rag-대응-가이드-4-1)의
+가이드 응답과 다음 질문을 추출이 끝나기를 기다리지 않고 받고, 턴 지연에서 추출 LLM
+호출 한 번이 통째로 빠진다.
+
+```
+POST /chat/{id}/messages
+  └ 파이프라인: 평가 → 가이드 응답(RAG) → 다음 질문 → 커밋
+      └ ChatTurnResult.pending_extraction  (추출할 답변 id + 원문)
+  └ 응답 반환 ─────────────────────────────── 고객은 여기서 끝
+      └ BackgroundTasks: 사기 정황 추출 → 저장 → 재채점 → 커밋 → SSE 발행
+```
+
+- 파이프라인(`_process_sufficient_answer`)은 추출을 **예약만** 한다. 실행할 답변 id와
+  원문을 `ChatTurnResult.pending_extraction`으로 돌려주고, 라우터가 턴을 커밋한 뒤
+  `BackgroundTasks`에 등록한다. Agent 백그라운드 실행
+  ([task_runner.py](../../app/services/agent/task_runner.py))과 같은 방침이다.
+- 실행은 [fraud_circumstance_task_runner.py](../../app/services/chatbot/fraud_circumstance_task_runner.py)가
+  맡는다. 요청 세션이 이미 닫힌 뒤이므로 **자기 Session을 새로 열어** 저장·재채점까지
+  커밋하고, 그 뒤에 점수를 SSE로 발행한다([2.7](#사기-정황-점수-실시간-스트림-sse)).
+- 추출 실패는 상담을 막지 않는다. 그 답변의 정황만 비고 다음 턴에서 다시 추출한다.
+  추출 작업의 어떤 실패도 밖으로 올리지 않고 로그만 남긴다 — 고객 응답은 이미 나갔다.
+- 같은 세션의 추출 작업은 **한 번에 하나만** 돈다. 채점이 "정황 전체를 다시 읽어
+  덮어쓰는" 방식이라, 두 턴의 추출이 겹치면 늦게 시작한 쪽의 갱신을 먼저 시작한 쪽이
+  옛 값으로 덮을 수 있기 때문이다. 세션 id별 프로세스 내 락으로 직렬화한다(진행 상태가
+  이미 프로세스에 묶여 있으므로 — [스키마 3.4](schema.md#34-chat_sessions) — 프로세스
+  범위 직렬화로 충분하다).
+
+**담당자 화면에서 보이는 차이**: 점수는 고객의 턴 응답보다 조금 늦게 갱신된다. 갱신
+시점을 화면이 알 필요가 없도록 SSE로 밀어준다.
 
 #### 내부 채점표
 
@@ -567,25 +620,25 @@ response = assemble(augmented, guidance)
 1. 가이드 검색 질의는 `chat_guide_search_queries`에 답변별 위치로 저장하고, 사기 정황은
    `chat_fraud_circumstances`의 `UNIQUE (chat_session_id, circumstance_code)`로
    세션당 enum 1행만 저장한다.
-2. 점수 계산은 매 턴 더하지 않는다. **사기 정황이 추출될 때마다(`SUFFICIENT` 판정으로
-   `_process_sufficient_answer`가 실행될 때마다) `chat_fraud_circumstances` 행 전체를
-   다시 읽어 처음부터 다시 집계**해 `fraud_type_score_after_chat`에 upsert한다
-   (`ON CONFLICT (transaction_id) DO UPDATE`). 증분 가산이 아니라 매번 전체 재계산이므로
-   같은 정황이 여러 턴에 걸쳐 다시 추출돼도 이중 가산되지 않는다.
-   구현은 [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)의
-   `_update_fraud_type_scores`다.
+2. 점수 계산은 매 턴 더하지 않는다. **사기 정황이 추출될 때마다(백그라운드 추출 작업이
+   끝날 때마다) `chat_fraud_circumstances` 행 전체를 다시 읽어 처음부터 다시 집계**해
+   `fraud_type_score_after_chat`에 upsert한다(`ON CONFLICT (transaction_id) DO UPDATE`).
+   증분 가산이 아니라 매번 전체 재계산이므로 같은 정황이 여러 턴에 걸쳐 다시 추출돼도
+   이중 가산되지 않는다. 구현은
+   [chat_scoring.py](../../app/services/chatbot/chat_scoring.py)의 `rescore_chat_session`이고,
+   부르는 곳은 백그라운드 추출 작업과 종료 턴의 안전망 두 곳이다.
 
 담당자 화면은 상담이 끝나기 전에도 그때까지의 집계 결과를 볼 수 있다. `WANT_END`
 전이(`_finish`) 시점에도 같은 재계산을 한 번 더 부르는데, 이는 한 번도 정황이 추출되지
 않은 세션(첫 질문에서 바로 종료 의사를 밝힌 경우)도 0점 행을 남기기 위한 안전망이다 —
 정상적으로 정황이 추출된 세션은 이미 마지막 추출 시점에 최신값으로 갱신돼 있어 이 호출이
-값을 바꾸지 않는다.
+값을 바꾸지 않는다. 마지막 턴의 백그라운드 추출이 종료 턴보다 늦게 끝나도 양쪽 모두
+정황 전체를 다시 읽어 덮어쓰므로 나중에 끝난 쪽의 값이 남고, 결과는 같다.
 
-**계산 비용**: 매 턴 다시 읽어 집계하더라도 세션당 정황은 최대 20종
+**계산 비용**: 매번 다시 읽어 집계하더라도 세션당 정황은 최대 20종
 (`FINAL_FRAUD_CIRCUMSTANCE_CODES`)으로 상한이 있어 조회·합산·upsert 모두 인메모리 수준의
-비용이다. LLM 호출이 추가되는 것이 아니라(추출 LLM 호출은 기존과 동일하게 `SUFFICIENT`
-판정마다 한 번뿐이다) 그 결과를 반영하는 시점만 상담 종료에서 매 추출 시점으로 앞당긴
-것이므로, 턴당 지연에 유의미한 영향을 주지 않는다.
+비용이다. LLM 호출도 늘지 않는다 — 추출 LLM 호출은 `SUFFICIENT` 판정마다 한 번뿐이고,
+그마저 [비동기 실행](#비동기-실행)으로 턴 응답 경로 밖으로 나갔다.
 
 집계 결과는 4개 유형 점수를 전부 `type_scores`에 남긴다. 최고점 유형과 동점·정황 없음
 상태는 저장하지 않고 `type_scores`에서 계산한다([스키마 3.7](schema.md#37-fraud_type_score_after_chat)).
@@ -621,8 +674,10 @@ response = assemble(augmented, guidance)
 **위 폴링 방침은 `status`에만 해당한다.** 유형별 점수(`type_scores`)는 별도로
 `GET /transactions/{transaction_id}/chat-session/score-events`가 SSE로 밀어준다.
 [2.6](#26-사기-정황-추출과-채점-4-2)대로 사기 정황이 추출될 때마다(`SUFFICIENT`
-판정 턴마다) 서버가 `type_scores` 전체를 다시 계산해 upsert하는데, 그 갱신을 담당자
-화면이 폴링 없이 그 자리에서 받아볼 수 있게 하는 경로다. 이벤트 이름은
+판정 턴마다, [턴 응답 뒤 백그라운드로](#비동기-실행)) 서버가 `type_scores` 전체를 다시
+계산해 upsert하는데, 그 갱신을 담당자 화면이 폴링 없이 그 자리에서 받아볼 수 있게 하는
+경로다. 추출이 비동기라 갱신은 그 턴의 HTTP 응답보다 늦게 오므로, 폴링 대신 이 스트림을
+쓰는 이유가 더 분명하다. 이벤트 이름은
 `chat_score_updated`이고, `data`는 상세 조회(`.../chat-session/detail`)의
 `type_scores`와 같은 형태(`type_code`/`display_name`/`score` 목록, 점수 내림차순)에
 `transaction_id`를 더한 것이다.
@@ -631,11 +686,19 @@ response = assemble(augmented, guidance)
 대시보드 SSE([dashboard_event_broker.py](../../app/services/dashboard/dashboard_event_broker.py))와
 같은 큐 기반 브로커 패턴을 쓰되 **거래 단위로 구독을 나눈다** — 동시에 여러 상담이
 진행되므로 전체 브로드캐스트가 아니라 담당자가 연 거래의 점수만 받아야 하기 때문이다.
-발행은 `POST /chat/{chat_session_id}/messages` 턴이 커밋된 뒤 라우터가 호출한다
-(대시보드 SSE와 같은 방침 — 파이프라인이 아니라 커밋을 소유한 라우터가 발행한다).
-어떤 판정이었는지와 무관하게 매 턴 최신 점수를 다시 읽어 발행하므로, 점수가 그대로인
-턴(`TOO_VAGUE` 등)도 같은 값을 다시 받을 뿐이라 무해하다. 구독자가 없는 거래는 발행
-자체가 비용 없이 버려진다.
+발행 지점은 둘이고, 둘 다 **자기 커밋을 마친 뒤** 발행한다(대시보드 SSE와 같은 방침 —
+커밋을 소유한 쪽이 발행한다). 공통 구현은
+[chat_score_publisher.py](../../app/services/chatbot/chat_score_publisher.py)다.
+
+| 발행 지점 | 시점 | 값 |
+| --- | --- | --- |
+| 라우터(`POST /chat/{chat_session_id}/messages`) | 턴 커밋 직후 | 이번 답변의 정황이 아직 반영되기 전 값 |
+| 백그라운드 추출 작업 | 추출·재채점 커밋 직후 | **실제로 점수가 바뀌는 쪽** |
+
+[2.6의 비동기 실행](#비동기-실행)대로 추출이 응답 뒤에 돌기 때문에, 갱신된 점수는 그 턴의
+HTTP 응답보다 늦게 도착한다. 어느 쪽이든 최신 점수를 다시 읽어 발행하므로 같은 값을 두 번
+받는 턴(`TOO_VAGUE` 등)이 있을 수 있으나, 화면이 다시 그릴 뿐이라 무해하다. 구독자가 없는
+거래는 발행 자체가 비용 없이 버려진다.
 
 **상태(`status`)는 여전히 이 스트림에 없다.** 상담사 반환 여부(`HANDOFF_REQUESTED`
 전이)는 위 폴링 경로로만 확인한다 — 점수 스트림을 상태 변경 알림으로 확장하는 것은
@@ -676,22 +739,40 @@ response = assemble(augmented, guidance)
 | `POST /chat/{chat_session_id}/verify` | 출생연도 4자리 본인인증. **고객이 처음 접속할 때 부르는 경로**이며 첫 진입이면 최초 알림을 만들어 함께 돌려준다 | [2.2](#22-채팅-접속-및-본인인증), [2.3](#23-최초-알림-메시지와-버튼) |
 | `GET /chat/{chat_session_id}` | 세션 상태와 대화 이력 조회. 인증을 마친 화면의 **새로고침·재접속 전용**이라 최초 알림을 만들지 않는다 | [2.2](#22-채팅-접속-및-본인인증) |
 | `POST /chat/{chat_session_id}/actions` | 버튼 3종 처리. `status`가 `URL_SENT`일 때만 받는다 | [2.3](#23-최초-알림-메시지와-버튼) |
-| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 그 턴의 응답을 돌려준다. `status`가 `IN_PROGRESS`이고 답변을 기다리는 질문이 있을 때만 받는다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
+| `POST /chat/{chat_session_id}/messages` | 고객 답변 한 건을 평가하고 가이드 누적 스냅샷과 완료 결과를 SSE로 돌려준다. 사기 정황 추출은 완료 뒤 백그라운드로 돈다 | [2.4](#24-정보-수집--챗봇-질문)~[2.6](#26-사기-정황-추출과-채점-4-2) |
 | `GET /transactions/{transaction_id}/chat-session` | 거래별 세션 상태 조회. 담당자 화면이 폴링하는 경로. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 | `GET /transactions/{transaction_id}/chat-session/score-events` | 사기 정황 점수 실시간 스트림(SSE, `text/event-stream`). 정황이 추출될 때마다 `chat_score_updated` 이벤트로 `type_scores` 전체를 다시 밀어준다. `status`는 포함하지 않는다 | [2.7](#사기-정황-점수-실시간-스트림-sse) |
 | `GET /transactions/{transaction_id}/chat-session/detail` | 거래별 상담 내역 조회. 대화 전문 + 유형별 점수. 세션이 없는 거래는 404가 아니라 빈 값 | [2.7](#27-상담사-반환-경로-거래별-상태-조회) |
 
-- 응답은 레포 공통 봉투 `ApiResponse`(`success`/`data`/`error`)를 쓴다.
+- 메시지 POST의 성공 응답만 `text/event-stream`이다. 나머지 API와 메시지 POST의 스트림
+  시작 전 오류(404·409·422)는 공통 `ApiResponse` JSON을 유지한다.
 - **현재 세션 상태에서 받을 수 없는 입력은 `409`다.** 버튼·답변 경로의 상태 조건이 그것이고,
   판정에 따른 흐름 분기는 오류가 아니라 정상 응답이다.
-- 버튼·답변 응답의 `messages`는 **그 턴에 챗봇이 보낸 메시지 본문만** 담는다. 누적 이력은
-  세션 조회로 받는다.
+- 버튼 응답과 메시지 POST의 `chat_turn_completed.messages`는 **그 턴에 챗봇이 보낸 메시지
+  본문만** 담는다. 누적 이력은 세션 조회로 받는다.
 - 본인인증은 토큰을 발급하지 않으므로 `GET /chat/{chat_session_id}`를 포함한 나머지 경로에
   인증 게이트가 없다. 세션 id를 아는 사람은 이력을 볼 수 있다([3.3](#33-보안운영)의 MVP 제외).
 - 담당자 화면의 두 조회 경로는 `/transactions` 하위에 둔다. Agent(`app/services/agent/`)와는
   무관한 채팅 세션 조회이므로 `/agent` 접두사를 쓰지 않는다.
 - 트랜잭션은 라우터가 소유한다(`get_session`은 commit하지 않는다). 턴 실행의 커밋은
   [customer_chatbot_pipeline.py](../../app/pipelines/customer_chatbot_pipeline.py)가 처리한다.
+
+메시지 POST의 성공 이벤트 순서는 다음과 같다. 스냅샷은 증가분이 아니라 현재까지 누적된
+가이드 전체 본문이다. 가이드가 없는 판정은 스냅샷 없이 시작·완료만 보낸다.
+
+```text
+event: chat_turn_started
+data: {"chat_session_id":"CHAT-..."}
+
+event: chat_message_snapshot
+data: {"message_index":0,"message_text":"■ 의심스러운 링크\n공식"}
+
+event: chat_turn_completed
+data: {"chat_session_id":"CHAT-...","status":"IN_PROGRESS","question_step":2,"messages":["최종 가이드","다음 질문"]}
+```
+
+`chat_turn_completed`는 전체 메시지 저장과 턴 커밋이 끝난 뒤에만 전송한다. 스트림 시작 뒤
+예상하지 못한 오류는 트랜잭션을 롤백하고 `chat_turn_error`를 보낸다.
 
 ---
 
@@ -703,7 +784,7 @@ response = assemble(augmented, guidance)
   호출당 타임아웃(`CHAT_LLM_TIMEOUT_SECONDS`)과 재시도 상한(`CHAT_LLM_MAX_ATTEMPTS`)을
   [app/core/config.py](../../app/core/config.py)에 두고, 상한을 소진하면 별도 기술 실패 경로로
   다음 질문에 진행하며 `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다.
-  구현은 [answer_evaluator.py](../../app/services/chatbot/answer_evaluator.py)이고
+  구현은 [answer_analyzer.py](../../app/services/chatbot/answer_analyzer.py)이고
   확정된 동작은 [2.4 평가 LLM 실패 시 동작](#평가-llm-실패-시-동작)에 있다.
 - **가이드 검색 질의 수 상한.** 한 답변에서 최대 5개를 만들고 질의당 최대 3개 청크를 사용한다.
 - **추가 질문이 대화 히스토리를 쓰지 않는다.** "그럼 그건 어떻게 해요?"처럼 이전 답변의
@@ -716,10 +797,10 @@ response = assemble(augmented, guidance)
 
 - **프롬프트 입력을 최소화했다.** 응답 평가는 직전 질문과 고객 답변만
   사용하고, 가이드 검색 질의 분해와 사기 정황 추출은 고객 답변만 사용한다.
-- ~~**프롬프트의 JSON 지시만으로 출력 형식을 제한한다.**~~ 해결됐다.
-  평가·가이드 검색 질의 분해·사기 정황 추출·대응 가이드 생성 모두
-  [build_structured_llm](../../app/services/chatbot/llm.py)과 각 Pydantic 응답 스키마로
-  구조화 출력을 강제한다. 프롬프트의 JSON 문구는 보조 지시일 뿐 유일한 검증 수단이 아니다.
+- **A.4 일반 텍스트 형식은 프롬프트가 소유한다.** 평가·가이드 검색 질의 분해·사기 정황
+  추출은 계속 구조화 출력이지만, 대응 가이드는 SSE 표시를 위해 일반 텍스트로 생성한다.
+  `■` 소제목·순서·B.5 정확 일치는 [A.4](prompts.md#a4-대응-가이드-생성-프롬프트)가 정하고
+  서버는 비어 있지 않은지만 검사한다.
 - ~~**리트리버가 아직 문자열을 돌려준다.**~~ 해결됐다.
   [retriever_source](../../app/services/rag/chatbot_retriever.py)가 0건을 빈 리스트로
   반환하고, 문자열을 돌려주던 옛 `retriever`와 그 유일한 호출부
@@ -743,7 +824,7 @@ response = assemble(augmented, guidance)
   새고, 근거를 못 찾은 위치에 B.5 폴백이 붙어 `factual_correctness`가 깎였다.
   A.2에 범위 제한 규칙 두 줄을 넣고 `search_query`의 `구체적인`을 뺐다
   ([A.2 고객이 묻지 않은 하위 항목을 막은 이유](prompts.md#고객이-묻지-않은-하위-항목을-막은-이유)).
-  **A.2 지연 재측정과 골든셋 재실행 비교는 아직 하지 않았다.**
+  A.1+A.2 통합 지연은 [평가·분해 통합 실측](#평가분해-통합-실측-2026-08-20)에서 재측정했다.
 - **A.2에서 「부정한 행동 제외」 규칙을 뺐다.** 지연을 줄이려고 서술 규칙을 정리하면서
   환각 가드 하나를 함께 걷어냈다([A.2 규칙을 줄인 이유](prompts.md#규칙을-줄인-이유)).
   「링크는 안 눌렀어요」처럼 고객이 **하지 않았다고 부정한 행동**에 대해 대응 가이드가

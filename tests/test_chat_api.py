@@ -4,9 +4,10 @@
 옮기는 것까지만 본다. 그래프 내부 분기는 tests/test_chatbot_pipeline.py 가 맡는다.
 
 LLM 은 부르지 않는다 — CI 가 ``OPENAI_API_KEY=test-only-key`` 로 돌기 때문에 실호출이
-있으면 깨진다. 평가 LLM 이 필요한 경로는 파이프라인이 지연 생성하는 자리를 대역으로 바꾼다.
+있으면 깨진다. 통합 분석 LLM 이 필요한 경로는 파이프라인이 지연 생성하는 자리를 대역으로 바꾼다.
 """
 
+import json
 import os
 import unittest
 from datetime import UTC, date, datetime
@@ -39,10 +40,18 @@ from app.domain.fraud_type_codes import (
     VOICE_PHISHING,
     get_fraud_type_display_name,
 )
-from app.dto.chatbot import AnswerQualityVerdict
-from app.services.chatbot.answer_evaluator import AnswerEvaluationOutcome
+from app.dto.chatbot import (
+    AnswerQualityVerdict,
+    ExtractedGuideSearchQuery,
+    FraudCircumstanceExtractionTask,
+)
+from app.services.chatbot.answer_analyzer import AnswerAnalysisOutcome
 from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
 from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
+from app.services.chatbot.fraud_circumstance_task_runner import (
+    get_fraud_circumstance_task_runner,
+)
+from app.services.chatbot.guide_responder import GuideResponse
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
     HANDOFF_WAITING_MESSAGE,
@@ -57,27 +66,75 @@ NOW = datetime(2026, 8, 16, 14, 3, tzinfo=UTC)
 BIRTH_YEAR = "1958"
 
 
-class _FakeEvaluator:
-    """평가 LLM 자리에 끼워 넣는 대역. 판정을 고정한다."""
+class _FakeAnswerAnalyzer:
+    """통합 분석 LLM 자리에 끼워 넣는 대역."""
 
-    def __init__(self, verdict: AnswerQualityVerdict) -> None:
+    def __init__(
+        self,
+        verdict: AnswerQualityVerdict,
+        guide_search_queries: tuple[ExtractedGuideSearchQuery, ...] = (),
+    ) -> None:
         self.verdict = verdict
+        self.guide_search_queries = guide_search_queries
 
-    def evaluate(
+    def analyze(
         self,
         *,
         question_text: str,
         customer_answer: str,
-    ) -> AnswerEvaluationOutcome:
-        return AnswerEvaluationOutcome(quality_verdict=self.verdict)
+    ) -> AnswerAnalysisOutcome:
+        return AnswerAnalysisOutcome(
+            quality_verdict=self.verdict,
+            guide_search_queries=(
+                self.guide_search_queries
+                if self.verdict is AnswerQualityVerdict.SUFFICIENT
+                else ()
+            ),
+        )
 
 
-def _evaluating(verdict: AnswerQualityVerdict):
-    """파이프라인이 지연 생성하는 ``AnswerEvaluator`` 를 대역으로 바꾼다."""
+class _FakeStreamingAnswerAnalyzer:
+    def analyze(
+        self,
+        *,
+        question_text: str,
+        customer_answer: str,
+    ) -> AnswerAnalysisOutcome:
+        return AnswerAnalysisOutcome(
+            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
+            guide_search_queries=(
+                ExtractedGuideSearchQuery(
+                    title="의심스러운 링크",
+                    search_query="의심스러운 링크 확인 방법",
+                    evidence=customer_answer,
+                ),
+            ),
+        )
+
+
+class _FakeStreamingGuideResponder:
+    def respond(self, *, guide_search_queries, session, on_snapshot=None):
+        snapshots = [
+            "■ 의심스러운 링크\n공식",
+            "■ 의심스러운 링크\n공식 금융회사에 확인해 주세요.",
+        ]
+        if on_snapshot is not None:
+            for snapshot in snapshots:
+                on_snapshot(snapshot)
+        return GuideResponse(message_text=snapshots[-1])
+
+
+class _FailingAnalyzer:
+    def analyze(self, *, question_text: str, customer_answer: str):
+        raise RuntimeError("unexpected evaluator failure")
+
+
+def _analyzing(verdict: AnswerQualityVerdict):
+    """파이프라인이 지연 생성하는 ``AnswerAnalyzer`` 를 대역으로 바꾼다."""
 
     return patch(
-        "app.pipelines.customer_chatbot_pipeline.AnswerEvaluator",
-        lambda: _FakeEvaluator(verdict),
+        "app.pipelines.customer_chatbot_pipeline.AnswerAnalyzer",
+        lambda: _FakeAnswerAnalyzer(verdict),
     )
 
 
@@ -103,6 +160,13 @@ class ChatApiTest(unittest.TestCase):
                 yield session
 
         app.dependency_overrides[get_session] = override_session
+
+        # 사기 정황 추출은 응답 뒤 백그라운드로 도는 작업이라 실행하지 않고
+        # 예약된 작업만 모은다(실행 자체는 tests/test_chatbot_fraud_circumstance_task.py).
+        self.scheduled_extractions: list[FraudCircumstanceExtractionTask] = []
+        app.dependency_overrides[get_fraud_circumstance_task_runner] = (
+            lambda: self.scheduled_extractions.append
+        )
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -200,6 +264,34 @@ class ChatApiTest(unittest.TestCase):
                 .order_by(ChatMessage.message_id)
             ).all()
         )
+
+    def _sse_events(self, response) -> list[tuple[str, dict]]:
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
+        events = []
+        normalized = response.text.replace("\r\n", "\n")
+        for block in normalized.split("\n\n"):
+            if not block.strip() or block.startswith(":"):
+                continue
+            event = "message"
+            data_lines = []
+            for line in block.splitlines():
+                if line.startswith("event:"):
+                    event = line.removeprefix("event:").strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.removeprefix("data:").lstrip())
+            events.append((event, json.loads("\n".join(data_lines))))
+        return events
+
+    def _completed_data(self, response) -> dict:
+        completed = [
+            data
+            for event, data in self._sse_events(response)
+            if event == "chat_turn_completed"
+        ]
+        self.assertEqual(len(completed), 1, response.text)
+        return completed[0]
 
     # -- 2.2 본인인증과 첫 진입 ---------------------------------------
 
@@ -349,11 +441,16 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.TOO_VAGUE):
+        with _analyzing(AnswerQualityVerdict.TOO_VAGUE):
             response = self._send(chat_session.chat_session_id)
 
         self.assertEqual(response.status_code, 200, response.text)
-        data = response.json()["data"]
+        events = self._sse_events(response)
+        self.assertEqual(
+            [event for event, _ in events],
+            ["chat_turn_started", "chat_turn_completed"],
+        )
+        data = events[-1][1]
         self.assertEqual(data["status"], ChatSessionStatus.IN_PROGRESS.value)
         self.assertEqual(data["question_step"], 1)
         self.assertEqual(data["messages"], [TOO_VAGUE_MESSAGE])
@@ -367,11 +464,11 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.WANT_END):
+        with _analyzing(AnswerQualityVerdict.WANT_END):
             response = self._send(chat_session.chat_session_id, message_text="그만할래요")
 
         self.assertEqual(response.status_code, 200, response.text)
-        data = response.json()["data"]
+        data = self._completed_data(response)
         self.assertEqual(data["status"], ChatSessionStatus.DONE.value)
         self.assertEqual(data["messages"], [WANT_END_MESSAGE])
         scores = self.session.exec(select(FraudTypeScoreAfterChat)).all()
@@ -391,7 +488,7 @@ class ChatApiTest(unittest.TestCase):
             subscriber_queue,
         )
 
-        with _evaluating(AnswerQualityVerdict.WANT_END):
+        with _analyzing(AnswerQualityVerdict.WANT_END):
             self._send(chat_session.chat_session_id, message_text="그만할래요")
 
         event = subscriber_queue.get_nowait()
@@ -411,6 +508,108 @@ class ChatApiTest(unittest.TestCase):
             },
         )
 
+    def test_sufficient_turn_schedules_background_extraction(self) -> None:
+        """사기 정황 추출은 응답을 보낸 뒤 백그라운드로 돈다(PRD 2.6)."""
+
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+
+        with _analyzing(AnswerQualityVerdict.SUFFICIENT):
+            response = self._send(
+                chat_session.chat_session_id,
+                message_text="검찰이라고 전화가 왔어요",
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        answer = self.session.exec(select(ChatAnswer)).one()
+        self.assertEqual(
+            self.scheduled_extractions,
+            [
+                FraudCircumstanceExtractionTask(
+                    chat_session_id=chat_session.chat_session_id,
+                    transaction_id=chat_session.transaction_id,
+                    answer_id=answer.answer_id,
+                    message_text="검찰이라고 전화가 왔어요",
+                )
+            ],
+        )
+        # 추출은 아직 돌지 않았으므로 정황 행도 없다.
+        self.assertEqual(self.session.exec(select(ChatFraudCircumstance)).all(), [])
+
+    def test_sufficient_answer_streams_cumulative_guide_snapshots(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+
+        with (
+            patch(
+                "app.pipelines.customer_chatbot_pipeline.AnswerAnalyzer",
+                _FakeStreamingAnswerAnalyzer,
+            ),
+            patch(
+                "app.pipelines.customer_chatbot_pipeline.GuideResponder",
+                _FakeStreamingGuideResponder,
+            ),
+        ):
+            response = self._send(chat_session.chat_session_id)
+
+        events = self._sse_events(response)
+        self.assertEqual(
+            [event for event, _ in events],
+            [
+                "chat_turn_started",
+                "chat_message_snapshot",
+                "chat_message_snapshot",
+                "chat_turn_completed",
+            ],
+        )
+        self.assertEqual(
+            [data["message_text"] for event, data in events if event == "chat_message_snapshot"],
+            [
+                "■ 의심스러운 링크\n공식",
+                "■ 의심스러운 링크\n공식 금융회사에 확인해 주세요.",
+            ],
+        )
+        completed = events[-1][1]
+        self.assertEqual(
+            completed["messages"][0],
+            "■ 의심스러운 링크\n공식 금융회사에 확인해 주세요.",
+        )
+        self.assertEqual(completed["question_step"], 2)
+
+    def test_unexpected_stream_error_rolls_back_and_emits_error_event(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+
+        with patch(
+            "app.pipelines.customer_chatbot_pipeline.AnswerAnalyzer",
+            _FailingAnalyzer,
+        ):
+            response = self._send(chat_session.chat_session_id)
+
+        self.assertEqual(
+            [event for event, _ in self._sse_events(response)],
+            ["chat_turn_started", "chat_turn_error"],
+        )
+        self.assertEqual(self._messages(chat_session.chat_session_id), [])
+        self.assertEqual(self.session.exec(select(ChatAnswer)).all(), [])
+
+    def test_non_sufficient_turn_schedules_nothing(self) -> None:
+        chat_session = self._seed_session(
+            status=ChatSessionStatus.IN_PROGRESS,
+            question_step=1,
+        )
+
+        with _analyzing(AnswerQualityVerdict.TOO_VAGUE):
+            self._send(chat_session.chat_session_id)
+
+        self.assertEqual(self.scheduled_extractions, [])
+
     def test_message_turn_with_no_subscriber_does_not_raise(self) -> None:
         """구독자가 없는 거래에 대한 발행은 조용히 버려진다."""
 
@@ -419,7 +618,7 @@ class ChatApiTest(unittest.TestCase):
             question_step=1,
         )
 
-        with _evaluating(AnswerQualityVerdict.WANT_END):
+        with _analyzing(AnswerQualityVerdict.WANT_END):
             response = self._send(
                 chat_session.chat_session_id, message_text="그만할래요"
             )

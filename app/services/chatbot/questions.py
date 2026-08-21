@@ -1,9 +1,4 @@
-"""question_step과 top_fraud_types로 결정되는 챗봇 질문 문구.
-
-문구의 출처는 docs/customer-chatbot/README.md 의 2.4 정보 수집 — 챗봇 질문이다.
-질문은 분기 조건과 붙어 있어야 읽히므로 messages.md 가 아니라 PRD 본문에 있고,
-여기로 옮길 때도 문구를 새로 쓰지 않는다.
-"""
+"""질문 단계와 상위 사기유형에 맞는 챗봇 질문을 선택한다."""
 
 from __future__ import annotations
 

@@ -1,19 +1,6 @@
-"""골든셋으로 챗봇 RAG 경로를 평가하고 JSON 리포트를 출력한다.
+"""챗봇 RAG 경로를 평가하고 지표·토큰·비용 리포트를 저장한다.
 
-실제 LLM(질의 분해·응답 생성·RAGAS 심판)과 임베딩 API를 호출하므로 비용이 든다.
-먼저 app.services.rag.docs_embedding 으로 코퍼스를 적재해야 한다.
-
-리포트는 **항상 파일로 저장한다**. 한 번 돌리는 데 실제 비용이 들기 때문에 결과를
-기본값으로 흘려보내지 않는다. 저장 경로는 --out 으로 지정하고, 지정하지 않으면
-evals/rag/reports/ 아래에 실행 시각으로 파일을 만든다.
-
-진행 상황은 stderr 로 나간다. stdout 은 파이프나 리다이렉트로 넘길 때만 JSON 을
-내보내고(다른 도구에 물릴 수 있게), 터미널에서 그냥 실행하면 화면을 채우지 않는다.
-
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_ragas
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_ragas --limit 5
-    uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_ragas \
-        --out evals/rag/reports/before-chunking-fix.json
+실제 LLM과 임베딩 API를 사용하며, 기본 저장 위치는 ``evals/rag/reports``다.
 """
 
 from __future__ import annotations
@@ -146,8 +133,33 @@ def _print_summary(report: dict) -> None:
         )
         _log(f"    {category:<15} {row['count']:>3}건  {values}  [{pair}]")
 
+    _print_usage(report.get("usage"))
+
     if report["errors"]:
         _log(f"\n  오류 {len(report['errors'])}건: {report['errors']}")
+
+
+def _print_usage(usage: dict | None) -> None:
+    """토큰·비용을 파이프라인(운영에서 실제로 드는 몫)과 심판으로 나눠 찍는다."""
+
+    if not usage:
+        return
+
+    _log("\n  토큰·비용 (모델별 내역은 리포트 JSON 의 usage)")
+    # 한글은 터미널에서 두 칸을 차지해 폭 지정이 어긋난다. 라벨은 눈으로 맞춘
+    # 고정 문자열로 두고, 폭을 맞춰야 하는 자리에는 숫자만 넣는다.
+    for phase, label in (("pipeline", "파이프라인 "), ("judge", "RAGAS 심판 ")):
+        row = usage[phase]
+        suffix = "" if row["total_cost_known"] else " (일부 모델 단가 미상, 과소 추정)"
+        per_case = row.get("cost_usd_per_case")
+        per_case_text = "" if per_case is None else f" | 사례당 ${per_case:.4f}"
+        _log(
+            f"    {label} 입력 {row['input_tokens']:>9,} / 출력 {row['output_tokens']:>8,}"
+            f" → ${row['total_cost_usd']:.4f}{per_case_text}{suffix}"
+        )
+
+    total_suffix = "" if usage["total_cost_known"] else " (과소 추정)"
+    _log(f"    합계        ${usage['total_cost_usd']:.4f}{total_suffix}")
 
 
 def main() -> None:

@@ -1,28 +1,12 @@
-"""고객 대응 챗봇 라우터.
-
-설계는 docs/customer-chatbot/README.md 의 2.2~2.3, 2.7 이다. 라우터는 두 개다.
-
-- ``/chat`` — 고객이 쓰는 경로(접속·본인인증, 버튼, 답변 송수신)
-- ``/transactions`` — 담당자 화면이 쓰는 경로(거래별 세션 상태 조회, 상담 내역 조회)
-
-**세션 생성은 HTTP 로 열지 않는다.** PRD 2.1 대로 FDS 파이프라인이
-[session_creator.py](../services/chatbot/session_creator.py)를 함수로 호출하고, 로컬에서
-접속 URL 이 필요하면 `scripts/seed_chat_session.py` 를 쓴다.
-
-트랜잭션은 이 라우터가 소유한다(``get_session`` 은 commit 하지 않는다). 턴 실행은
-[customer_chatbot_pipeline.py](../pipelines/customer_chatbot_pipeline.py)가 커밋과 상태
-변경 발행을 함께 처리한다.
-
-본인인증은 출생연도 4자리 대조뿐이고 토큰을 발급하지 않는다. 실패 횟수 제한·URL 토큰·
-세션 TTL 은 MVP 범위 밖이다(PRD 3.3).
-"""
+"""고객용 채팅 API와 담당자용 상담 조회 API."""
 
 import json
-from collections.abc import Iterator
+import logging
+from collections.abc import Callable, Iterator
 from queue import Empty
-from typing import Annotated, Any
+from typing import Annotated, Any, TypeVar
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, status
 from fastapi.responses import StreamingResponse
 
 from app.core.common_response import ApiResponse, success_response
@@ -31,12 +15,9 @@ from app.data.model.chatbot import (
     ChatMessage,
     ChatSession,
     ChatSessionStatus,
-    FraudTypeScoreAfterChat,
 )
-from app.domain.fraud_type_codes import get_fraud_type_display_name
 from app.dto.chatbot import (
     ChatButtonActionRequest,
-    ChatFraudTypeScoreResponse,
     ChatMessageResponse,
     ChatSessionDetailResponse,
     ChatTurnResponse,
@@ -48,10 +29,18 @@ from app.dto.chatbot import (
 from app.pipelines.customer_chatbot_pipeline import (
     ChatTurnRejectedError,
     ChatTurnResult,
+    ChatTurnStreamEvent,
     CustomerChatbotPipeline,
 )
 from app.repositories.chat_session import ChatSessionRepository
 from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
+from app.services.chatbot.chat_score_publisher import (
+    build_type_score_responses,
+    publish_chat_score_update,
+)
+from app.services.chatbot.fraud_circumstance_task_runner import (
+    FraudCircumstanceTaskRunnerDep,
+)
 from app.services.chatbot.identity_verifier import verify_birth_year
 
 
@@ -59,6 +48,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 transaction_chat_router = APIRouter(
     prefix="/transactions", tags=["chat-sessions"]
 )
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
+SSE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 # ----------------------------------------------------------------------
@@ -144,19 +140,7 @@ def verify_chat_session(
     payload: ChatVerifyRequest,
     session: SessionDep,
 ) -> ApiResponse[ChatSessionDetailResponse]:
-    """출생연도 4자리로 본인을 확인하고 챗봇 화면 진입 상태를 돌려준다(PRD 2.2).
-
-    고객이 이메일의 접속 URL 을 열면 화면은 출생연도 입력만 띄우고 이 API 를 부른다.
-    **고객이 처음 접속할 때 가장 먼저 호출하는 API** 이며, 조회 전용인
-    `GET /chat/{chat_session_id}` 는 인증을 마친 뒤의 새로고침·재접속에만 쓴다.
-
-    - 첫 진입(`status` 가 `URL_SENT` 이고 아직 메시지가 없는 세션)이면 최초 알림을
-      생성해 `messages` 에 담아 돌려준다. 프론트는 이 메시지 뒤에 버튼 3종을 표시한다.
-    - 이미 대화가 시작된 세션은 이력만 돌려주므로 재인증해도 알림이 다시 쌓이지 않는다.
-    - `is_older` 가 참이면 고령자 전용 UI 로 분기한다(화면 분기는 프론트가 한다).
-
-    인증 토큰은 발급하지 않는다. 실패 횟수 제한·URL 토큰·세션 TTL 은 MVP 범위 밖이다(PRD 3.3).
-    """
+    """출생연도를 확인하고 최초 알림을 포함한 세션 상태를 반환한다."""
 
     chat_session = _require_session(session, chat_session_id)
     if not verify_birth_year(session, chat_session, payload.birth_year):
@@ -186,14 +170,7 @@ def get_chat_session(
     chat_session_id: ChatSessionIdPath,
     session: SessionDep,
 ) -> ApiResponse[ChatSessionDetailResponse]:
-    """세션 상태와 대화 이력을 조회한다(새로고침·재접속).
-
-    인증을 마친 화면이 대화를 다시 그릴 때 쓴다. 응답 형태가 본인인증 API 와 같아
-    렌더링 코드를 그대로 재사용할 수 있다.
-
-    최초 알림을 생성하지 않으므로 **첫 접속 경로로 쓰지 않는다**. 첫 접속은
-    `POST /chat/{chat_session_id}/verify` 다.
-    """
+    """새로고침과 재접속에 필요한 세션 상태와 대화 이력을 조회한다."""
 
     chat_session = _require_session(session, chat_session_id)
     return success_response(_session_detail(session, chat_session))
@@ -217,20 +194,7 @@ def send_chat_button_action(
     payload: ChatButtonActionRequest,
     session: SessionDep,
 ) -> ApiResponse[ChatTurnResponse]:
-    """최초 알림 뒤의 버튼 3종을 처리한다(PRD 2.3).
-
-    `status` 가 `URL_SENT` 인 동안에만 받는다. 이미 상담이 시작됐거나 끝난 세션에 다시
-    보내면 409 다.
-
-    | `action` | 동작 | 처리 후 `status` |
-    | --- | --- | --- |
-    | `START_CHAT` | 안내 문구 없이 첫 질문을 출력 | `IN_PROGRESS` |
-    | `REQUEST_HANDOFF` | 상담사 연결 대기 안내 출력 | `HANDOFF_REQUESTED` |
-    | `END_CHAT` | 상담 종료 안내 출력 | `DONE` |
-
-    응답의 `messages` 는 **이번 턴에 챗봇이 보낸 메시지 본문만** 담는다(누적 이력이
-    아니다).
-    """
+    """최초 알림 화면의 상담 시작·상담사 연결·종료 액션을 처리한다."""
 
     chat_session = _require_session(session, chat_session_id)
     result = _run_turn(
@@ -241,9 +205,26 @@ def send_chat_button_action(
 
 @router.post(
     "/{chat_session_id}/messages",
-    response_model=ApiResponse[ChatTurnResponse],
-    summary="고객 답변 전송",
+    summary="고객 답변 전송(SSE)",
     responses={
+        status.HTTP_200_OK: {
+            "description": "챗봇 턴 이벤트 스트림",
+            "content": {
+                "text/event-stream": {
+                    "example": (
+                        "event: chat_turn_started\n"
+                        'data: {"chat_session_id":"CHAT-20260816-A1B2C3D4"}\n\n'
+                        "event: chat_message_snapshot\n"
+                        'data: {"message_index":0,"message_text":"■ 안내\\n공식"}\n\n'
+                        "event: chat_turn_completed\n"
+                        'data: {"chat_session_id":"CHAT-20260816-A1B2C3D4",'
+                        '"status":"IN_PROGRESS","question_step":2,'
+                        '"messages":["■ 안내\\n공식 금융회사에 확인해 주세요.",'
+                        '"다음 질문"]}\n\n'
+                    )
+                }
+            },
+        },
         status.HTTP_404_NOT_FOUND: _SESSION_NOT_FOUND_RESPONSE,
         status.HTTP_409_CONFLICT: _error_response(
             "상담 중이 아니거나 답변을 기다리는 질문이 없음",
@@ -256,37 +237,73 @@ def send_chat_message(
     chat_session_id: ChatSessionIdPath,
     payload: SendChatMessageRequest,
     session: SessionDep,
-) -> ApiResponse[ChatTurnResponse]:
-    """고객 답변 한 건을 평가하고 그 턴의 챗봇 응답을 돌려준다(PRD 2.4~2.6).
+    background_tasks: BackgroundTasks,
+    fraud_circumstance_task_runner: FraudCircumstanceTaskRunnerDep,
+) -> StreamingResponse:
+    """고객 답변을 처리하고 가이드 스냅샷과 최종 결과를 SSE로 반환한다.
 
-    `status` 가 `IN_PROGRESS` 이고 답변을 기다리는 질문이 있을 때만 받는다. 그 외에는 409 다.
-
-    답변 충실도 판정에 따라 그 턴의 출력이 갈린다.
-
-    | 판정 | 이번 턴 출력 | 처리 후 `status` |
-    | --- | --- | --- |
-    | `SUFFICIENT` | 대응 가이드(RAG) 안내 + 다음 질문 | `IN_PROGRESS` |
-    | `TOO_VAGUE` | 재질문 안내(`question_step` 유지) | `IN_PROGRESS` |
-    | `WANT_END` | 사기 정황 채점을 집계한 뒤 상담 종료 안내 | `DONE` |
-
-    한 질문에서 허용하는 응답은 최초 1회 + 재질문 2회다. `TOO_VAGUE` 가 3회째까지
-    이어지면 마지막 답변을 채택하고 전환 안내와 함께 다음 질문으로 넘어간다.
-
-    평가·추출 LLM 이 실패해도 턴은 실패하지 않는다. 그 결과만 건너뛰고 다음 질문으로 진행한다.
+    사기 정황 추출은 턴 커밋 후 백그라운드에서 실행한다.
     """
 
     chat_session = _require_session(session, chat_session_id)
-    result = _run_turn(
-        lambda: _pipeline(session, chat_session).handle_message(
-            payload.message_text
+    transaction_id = chat_session.transaction_id
+    # handle_message_stream은 iterator를 만들기 전에 상태를 검증한다. 409는 SSE 응답
+    # 헤더를 보내기 전 기존 ApiResponse JSON으로 유지된다.
+    stream = _run_turn(
+        lambda: _pipeline(session, chat_session).handle_message_stream(
+            payload.message_text,
         )
     )
-    _publish_score_update(session, chat_session.transaction_id)
-    return success_response(_turn_response(chat_session_id, result))
+
+    def event_stream() -> Iterator[str]:
+        yield _sse_event(
+            "chat_turn_started",
+            {"chat_session_id": chat_session_id},
+        )
+
+        try:
+            for item in stream:
+                if isinstance(item, ChatTurnStreamEvent):
+                    yield _sse_event(item.event, item.data)
+                    continue
+
+                # 이 지점에는 턴 커밋과 세션 refresh가 끝나 있다. 아직 이번 답변의
+                # 정황이 반영되기 전 점수를 발행하고, 추출은 응답 종료 뒤 예약한다.
+                publish_chat_score_update(session, transaction_id)
+                if item.pending_extraction is not None:
+                    background_tasks.add_task(
+                        fraud_circumstance_task_runner,
+                        item.pending_extraction,
+                    )
+                yield _sse_event(
+                    "chat_turn_completed",
+                    _turn_response(chat_session_id, item).model_dump(mode="json"),
+                )
+        except Exception:
+            # 파이프라인이 아직 커밋 전이라면 자체적으로 rollback한다. 응답 헤더가 이미
+            # 전송됐으므로 HTTP 상태를 바꾸는 대신 명시적인 오류 이벤트로 끝낸다.
+            logger.exception(
+                "챗봇 턴 스트림 처리에 실패했습니다: session=%s",
+                chat_session_id,
+            )
+            yield _sse_event(
+                "chat_turn_error",
+                {
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "message": "서버 내부 오류가 발생했습니다.",
+                },
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers=SSE_RESPONSE_HEADERS,
+        background=background_tasks,
+    )
 
 
 # ----------------------------------------------------------------------
-# 담당자 경로 (PRD 2.7)
+# 담당자 경로
 # ----------------------------------------------------------------------
 
 
@@ -299,14 +316,7 @@ def get_transaction_chat_session_status(
     transaction_id: TransactionIdPath,
     session: SessionDep,
 ) -> ApiResponse[TransactionChatSessionStatusResponse]:
-    """거래 목록 항목 하나에 연결된 채팅 세션의 현재 상태를 조회한다(PRD 2.7).
-
-    담당자 화면이 주기적으로 폴링해 현재값을 확인하는 경로다.
-    거래 한 건에 세션은 하나뿐이다.
-
-    세션이 없는 거래도 목록에 그대로 남아야 하므로 404 가 아니라 빈 값을 돌려준다
-    (`chat_session_id` 와 `status` 가 모두 `null`).
-    """
+    """거래에 연결된 채팅 세션의 상태를 조회한다."""
 
     chat_session = ChatSessionRepository(session).find_by_transaction(
         transaction_id
@@ -329,19 +339,9 @@ def get_transaction_chat_session_status(
 def stream_transaction_chat_score_events(
     transaction_id: TransactionIdPath,
 ) -> StreamingResponse:
-    """거래의 사기 정황 점수가 갱신될 때마다 SSE로 내보낸다(PRD 2.6~2.7).
+    """거래의 사기유형 점수 변경을 SSE로 전송한다.
 
-    사기 정황이 추출될 때마다(매 `SUFFICIENT` 판정 턴) 서버가 `type_scores` 전체를
-    다시 계산해 이 스트림으로 밀어준다. 담당자 화면이 상담 도중에도 점수 변화를
-    폴링 없이 바로 볼 수 있게 하기 위한 경로다.
-
-    **세션 상태(`status`)는 이 스트림에 포함되지 않는다** — 상태는 여전히
-    [2.7](README.md#27-상담사-반환-경로-거래별-상태-조회)의 폴링 경로
-    (`GET /transactions/{transaction_id}/chat-session`)로만 확인한다. 이 스트림은
-    점수 전용이다.
-
-    세션이 아직 없거나 정황이 한 번도 추출되지 않은 거래에 연결해도 200으로 연결을
-    유지한다 — 이후 정황이 추출되면 그때 첫 이벤트가 온다.
+    세션 상태는 포함하지 않으며 이벤트가 없을 때는 keep-alive를 보낸다.
     """
 
     def event_stream() -> Iterator[str]:
@@ -359,10 +359,9 @@ def stream_transaction_chat_score_events(
                     yield ": keep-alive\n\n"
                     continue
 
-                data = json.dumps(chat_score_event.data, ensure_ascii=False)
-                yield (
-                    f"event: {chat_score_event.event}\n"
-                    f"data: {data}\n\n"
+                yield _sse_event(
+                    chat_score_event.event,
+                    chat_score_event.data,
                 )
 
         finally:
@@ -371,11 +370,7 @@ def stream_transaction_chat_score_events(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=SSE_RESPONSE_HEADERS,
     )
 
 
@@ -417,11 +412,8 @@ def _pipeline(
     )
 
 
-def _run_turn(run) -> ChatTurnResult:
-    """턴 실행 중 거절된 입력을 409 로 옮긴다.
-
-    커밋·롤백과 상태 변경 발행은 파이프라인이 턴 단위로 처리한다.
-    """
+def _run_turn(run: Callable[[], T]) -> T:
+    """파이프라인이 거절한 입력을 HTTP 409로 변환한다."""
 
     try:
         return run()
@@ -430,6 +422,15 @@ def _run_turn(run) -> ChatTurnResult:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+
+
+def _sse_event(event: str, data: dict[str, Any]) -> str:
+    """한 SSE 이벤트를 UTF-8 JSON data 한 줄로 직렬화한다."""
+
+    return (
+        f"event: {event}\n"
+        f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    )
 
 
 def _require_session(
@@ -476,57 +477,10 @@ def _transaction_session_detail(
             _message_response(message)
             for message in repository.list_messages(chat_session)
         ],
-        type_scores=_type_score_responses(
+        type_scores=build_type_score_responses(
             repository.get_fraud_type_scores(transaction_id)
         ),
     )
-
-
-def _publish_score_update(session: SessionDep, transaction_id: int) -> None:
-    """턴 커밋 뒤 최신 사기 정황 점수를 SSE 구독자에게 발행한다.
-
-    구독자가 없는 거래는 브로커가 즉시 버리므로 SSE를 아무도 안 듣는 상담이
-    다수여도 비용이 없다. 턴마다(판정 종류와 무관하게) 부르는 이유는 라우터가
-    이번 턴에서 실제로 정황이 추출됐는지 알지 못하기 때문이다 — 값이 그대로면
-    구독자가 같은 값을 다시 받을 뿐이라 무해하다.
-    """
-
-    scores = ChatSessionRepository(session).get_fraud_type_scores(transaction_id)
-    if scores is None:
-        return
-
-    chat_score_event_broker.publish(
-        transaction_id,
-        event="chat_score_updated",
-        data={
-            "transaction_id": transaction_id,
-            "type_scores": [
-                response.model_dump()
-                for response in _type_score_responses(scores)
-            ],
-        },
-    )
-
-
-def _type_score_responses(
-    scores: FraudTypeScoreAfterChat | None,
-) -> list[ChatFraudTypeScoreResponse]:
-    """점수 내림차순으로 정렬한다. 동점이면 코드 오름차순이라 순서가 흔들리지 않는다."""
-
-    if scores is None:
-        return []
-
-    return [
-        ChatFraudTypeScoreResponse(
-            type_code=type_code,
-            display_name=get_fraud_type_display_name(type_code),
-            score=int(score),
-        )
-        for type_code, score in sorted(
-            scores.type_scores.items(),
-            key=lambda item: (-item[1], item[0]),
-        )
-    ]
 
 
 def _message_response(message: ChatMessage) -> ChatMessageResponse:

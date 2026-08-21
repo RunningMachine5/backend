@@ -1,23 +1,7 @@
-"""고객 대응 챗봇의 한 턴을 LangGraph 그래프로 실행한다.
+"""고객 입력 한 건을 LangGraph 턴 하나로 처리한다.
 
-설계는 docs/customer-chatbot/README.md 의 2.3~2.6 이다.
-
-**구동 방식: 턴 단위 invoke.** 고객 입력 하나가 그래프 한 번의 실행이고, 그 턴에
-고객에게 보낼 메시지를 만든 뒤 그래프는 END 로 끝난다. 다음 질문을 기다리는 동안
-그래프는 살아 있지 않으며, 진행 상태(``question_step``·재시도 횟수)만
-``InMemorySaver`` 체크포인터에 ``thread_id = chat_session_id`` 로 남아 다음 invoke 가
-이어받는다.
-
-``interrupt()`` + ``Command(resume=...)`` 로 그래프를 대화 중간에 멈춰 세우지 않은 이유:
-
-- 챗봇의 입력 경로가 HTTP 요청 하나뿐이라 멈춤 지점이 곧 요청 경계다. 요청마다
-  그래프가 끝나는 편이 API(7단계)와 1:1로 대응하고, 재개 지점을 따로 관리할 필요가 없다.
-- 체크포인터가 ``InMemorySaver`` 라 서버 재시작 시 진행 상태가 사라진다(스키마 3.4).
-  턴 단위 invoke 는 ``attempt_no`` 만 유실되고 ``question_step`` 은
-  DB(``chat_sessions.question_step``)에서 다시 seed 할 수 있지만, 재개 방식은 멈춘
-  노드 자체가 사라져 그 턴을 이어갈 수 없다.
-- 분기(판정 3종·버튼 3종)를 노드와 조건부 엣지로 그대로 표현할 수 있어, 재개 흐름을
-  모킹하지 않고 분기만 검증하는 테스트가 가능하다.
+질문 단계와 재시도 횟수는 세션별 체크포인트에 저장한다. 사기 정황 추출은 턴 커밋 후
+실행할 작업으로 반환한다.
 """
 
 from __future__ import annotations
@@ -25,10 +9,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from collections.abc import Callable, Iterator
 from typing import Any, Literal, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import StreamWriter
 from sqlmodel import Session
 
 from app.data.model.chatbot import (
@@ -38,15 +24,15 @@ from app.data.model.chatbot import (
     ChatSessionStatus,
 )
 from app.data.model.transaction import Transaction
-from app.dto.chatbot import AnswerQualityVerdict, ChatButtonAction
-from app.repositories.chat_session import ChatSessionRepository
-from app.services.chatbot.answer_evaluator import AnswerEvaluator
-from app.services.chatbot.chat_scoring import score_chat_fraud_circumstances
-from app.services.chatbot.extractors import (
-    ChatbotExtractionError,
-    FraudCircumstanceExtractor,
-    GuideSearchQueryExtractor,
+from app.dto.chatbot import (
+    AnswerQualityVerdict,
+    ChatButtonAction,
+    ExtractedGuideSearchQuery,
+    FraudCircumstanceExtractionTask,
 )
+from app.repositories.chat_session import ChatSessionRepository
+from app.services.chatbot.answer_analyzer import AnswerAnalyzer
+from app.services.chatbot.chat_scoring import rescore_chat_session
 from app.services.chatbot.guide_responder import GuideResponder
 from app.services.chatbot.messages import (
     END_CHAT_MESSAGE,
@@ -62,7 +48,7 @@ from app.services.chatbot.questions import render_question
 logger = logging.getLogger(__name__)
 
 
-# 한 질문에서 허용하는 최대 응답 수. 최초 응답 1회 + 재질문 2회 (PRD 2.4 조건 1).
+# 최초 답변 1회와 재질문 2회를 허용한다.
 MAX_ATTEMPTS_PER_QUESTION = 3
 
 # 프로세스 전역 체크포인터. 턴과 턴 사이의 진행 상태는 여기에만 있다.
@@ -75,18 +61,24 @@ class ChatTurnRejectedError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ChatTurnResult:
-    """한 턴에서 고객에게 보낸 메시지와 턴이 끝난 뒤의 세션 상태."""
+    """한 턴의 출력과 커밋 후 실행할 사기 정황 추출 작업."""
 
     messages: tuple[str, ...]
     status: ChatSessionStatus
     question_step: int
+    pending_extraction: FraudCircumstanceExtractionTask | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTurnStreamEvent:
+    """그래프가 턴 처리 중 라우터로 전달하는 SSE 이벤트."""
+
+    event: str
+    data: dict[str, Any]
 
 
 class ChatGraphState(TypedDict, total=False):
-    """그래프 상태.
-
-    answer 와 chat_session 은 id로 저장한다
-    """
+    """체크포인트에 저장되는 그래프 상태."""
 
     # 이번 턴의 입력
     event: Literal[
@@ -97,11 +89,17 @@ class ChatGraphState(TypedDict, total=False):
     button_action: str | None  # event가 BUTTON_ACTION일 때만 사용
     message_text: str | None
     question_step: int  # 턴 사이에 유지되는 진행 상태
-    attempt_no: int # 현재 시도 횟수 
+    attempt_no: int  # 현재 시도 횟수
     # 턴 안에서만 쓰는 값
-    route: str # 다음 경로의 위치
+    route: str  # 다음 경로의 위치
     answer_id: int | None
+    # Pydantic 객체 대신 직렬화 가능한 dict를 저장한다.
+    guide_search_queries: list[dict[str, str]]
     outbound: list[str]
+    # 턴 커밋 뒤 백그라운드 추출에 넘길 답변 id.
+    pending_extraction_answer_id: int | None
+    # 메시지 API에서만 가이드 생성 중간 스냅샷을 custom stream으로 내보낸다.
+    stream_output: bool
 
 
 class CustomerChatbotPipeline:
@@ -112,29 +110,24 @@ class CustomerChatbotPipeline:
         *,
         session: Session,
         chat_session: ChatSession,
-        evaluator: AnswerEvaluator | None = None,
-        guide_search_query_extractor: GuideSearchQueryExtractor | None = None,
-        fraud_circumstance_extractor: FraudCircumstanceExtractor | None = None,
+        answer_analyzer: AnswerAnalyzer | None = None,
         guide_responder: GuideResponder | None = None,
         checkpointer: Any | None = None,
     ) -> None:
         self.session = session
         self.chat_session = chat_session
         self.repository = ChatSessionRepository(session)
-        # LLM 클라이언트는 첫 호출까지 만들지 않는다. 최초 알림과 버튼 처리만 하는
-        # 턴에서 OPENAI_API_KEY 가 없다는 이유로 실패하지 않게 한다.
-        self._evaluator = evaluator
-        self._guide_search_query_extractor = guide_search_query_extractor
-        self._fraud_circumstance_extractor = fraud_circumstance_extractor
+        # LLM이 필요 없는 턴에서는 클라이언트를 생성하지 않는다.
+        self._answer_analyzer = answer_analyzer
         self._guide_responder = guide_responder
         self.graph = self._build_graph(checkpointer or _CHECKPOINTER)
 
     # ------------------------------------------------------------------
-    # 공개 진입점 — API(7단계)가 부르는 턴 단위 실행
+    # 공개 진입점
     # ------------------------------------------------------------------
 
     def send_initial_notification(self) -> ChatTurnResult:
-        """B.1 최초 알림을 출력한다. 상태는 바뀌지 않는다(PRD 2.3)."""
+        """최초 알림을 출력한다. 세션 상태는 변경하지 않는다."""
 
         return self._run_turn({"event": "INITIAL_NOTIFICATION"})
 
@@ -152,15 +145,31 @@ class CustomerChatbotPipeline:
     def handle_message(self, message_text: str) -> ChatTurnResult:
         """고객 답변 한 건을 평가하고 다음 흐름까지 진행한다."""
 
+        self._validate_message_turn()
+        return self._run_turn(
+            {"event": "CUSTOMER_MESSAGE", "message_text": message_text}
+        )
+
+    def handle_message_stream(
+        self,
+        message_text: str,
+    ) -> Iterator[ChatTurnStreamEvent | ChatTurnResult]:
+        """고객 답변 턴의 가이드 스냅샷과 최종 결과를 반환한다."""
+
+        self._validate_message_turn()
+        return self._stream_turn(
+            {"event": "CUSTOMER_MESSAGE", "message_text": message_text}
+        )
+
+    def _validate_message_turn(self) -> None:
+        """현재 세션이 고객 답변을 받을 수 있는지 확인한다."""
+
         if self.chat_session.status != ChatSessionStatus.IN_PROGRESS.value:
             raise ChatTurnRejectedError(
                 "고객 답변은 IN_PROGRESS 상태에서만 처리할 수 있습니다"
             )
         if self.chat_session.question_step < 1:
             raise ChatTurnRejectedError("답변을 기다리는 질문이 없습니다")
-        return self._run_turn(
-            {"event": "CUSTOMER_MESSAGE", "message_text": message_text}
-        )
 
     # ------------------------------------------------------------------
     # 턴 실행과 트랜잭션 소유
@@ -169,44 +178,120 @@ class CustomerChatbotPipeline:
     def _run_turn(self, turn_input: dict[str, Any]) -> ChatTurnResult:
         """챗봇 그래프 한 주기"""
 
-        config = {
-            "configurable": {"thread_id": self.chat_session.chat_session_id}
-        }
-        # outbound 는 턴마다 비운다. 리듀서를 두지 않아 입력이 이전 턴 값을 덮는다.
-        # 이번 턴의 입력 상태
-        state_input: dict[str, Any] = {
-            "button_action": None,# 이전 턴의 버튼 선택 제거
-            "message_text": None,# 이전 고객 답변 제거
-            "answer_id": None,# 이전 ChatAnswer ID 제거 (고객응답과 평가 결과가 저장된 객체 id)
-            "outbound": [],# 이전 턴에 보낸 메시지 제거
-            **turn_input,
-        }
-        state_input.update(self._seed_progress_state(config))
+        config = self._turn_config()
+        state_input = self._turn_state_input(
+            turn_input,
+            config=config,
+            stream_output=False,
+        )
 
         try:
             final_state = self.graph.invoke(state_input, config=config)
-            self.repository.update_question_step(
-                self.chat_session,
-                final_state.get("question_step", 0),
-            )
-            self.session.commit()
+            self._commit_turn(final_state)
         except Exception:
             self.session.rollback()
             raise
 
+        return self._turn_result(final_state)
+
+    def _stream_turn(
+        self,
+        turn_input: dict[str, Any],
+    ) -> Iterator[ChatTurnStreamEvent | ChatTurnResult]:
+        """LangGraph custom stream을 전달하고 커밋 뒤 최종 결과를 마지막에 보낸다."""
+
+        config = self._turn_config()
+        state_input = self._turn_state_input(
+            turn_input,
+            config=config,
+            stream_output=True,
+        )
+        final_state: dict[str, Any] | None = None
+
+        try:
+            for stream_mode, value in self.graph.stream(
+                state_input,
+                config=config,
+                stream_mode=["custom", "values"],
+            ):
+                if stream_mode == "custom":
+                    yield ChatTurnStreamEvent(
+                        event=value["event"],
+                        data=value["data"],
+                    )
+                elif stream_mode == "values":
+                    final_state = value
+
+            if final_state is None:
+                raise RuntimeError("챗봇 그래프가 최종 상태를 반환하지 않았습니다")
+
+            self._commit_turn(final_state)
+            # 최종 결과는 DB 커밋과 refresh가 모두 끝난 다음에만 내보낸다.
+            yield self._turn_result(final_state)
+        except BaseException:
+            self.session.rollback()
+            raise
+
+    def _turn_config(self) -> dict[str, Any]:
+        return {
+            "configurable": {"thread_id": self.chat_session.chat_session_id}
+        }
+
+    def _turn_state_input(
+        self,
+        turn_input: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        stream_output: bool,
+    ) -> dict[str, Any]:
+        # 리듀서를 두지 않으므로 턴 전용 값은 매번 명시적으로 이전 값을 덮는다.
+        state_input: dict[str, Any] = {
+            "button_action": None,
+            "message_text": None,
+            "answer_id": None,
+            "guide_search_queries": [],
+            "outbound": [],
+            "pending_extraction_answer_id": None,
+            "stream_output": stream_output,
+            **turn_input,
+        }
+        state_input.update(self._seed_progress_state(config))
+        return state_input
+
+    def _commit_turn(self, final_state: dict[str, Any]) -> None:
+        self.repository.update_question_step(
+            self.chat_session,
+            final_state.get("question_step", 0),
+        )
+        self.session.commit()
         self.session.refresh(self.chat_session)
+
+    def _turn_result(self, final_state: dict[str, Any]) -> ChatTurnResult:
         return ChatTurnResult(
             messages=tuple(final_state.get("outbound", [])),
             status=ChatSessionStatus(self.chat_session.status),
             question_step=self.chat_session.question_step,
+            pending_extraction=self._pending_extraction(final_state),
+        )
+
+    def _pending_extraction(
+        self,
+        final_state: dict[str, Any],
+    ) -> FraudCircumstanceExtractionTask | None:
+        """이번 턴이 예약한 사기 정황 추출 작업을 만든다(없으면 ``None``)."""
+
+        answer_id = final_state.get("pending_extraction_answer_id")
+        if answer_id is None:
+            return None
+        return FraudCircumstanceExtractionTask(
+            chat_session_id=self.chat_session.chat_session_id,
+            transaction_id=self.chat_session.transaction_id,
+            answer_id=answer_id,
+            message_text=final_state.get("message_text") or "",
         )
 
     def _seed_progress_state(self, config: dict[str, Any]) -> dict[str, Any]:
-        """체크포인트가 없는 첫 턴(또는 서버 재시작 후)의 진행 상태를 만든다.
-
-        ``question_step`` 은 DB 값에서 복구할 수 있지만 재시도 횟수는 메모리에만
-        있으므로 유실을 감수하고 초기화한다(스키마 3.4).
-        """
+        """체크포인트가 없으면 DB의 질문 단계와 초기 시도 횟수를 사용한다."""
 
         if self.graph.get_state(config).values:
             return {}
@@ -259,7 +344,7 @@ class CustomerChatbotPipeline:
             },
         )
         builder.add_edge("reask", END)
-        # SUFFICIENT 와 전이 안내는 모두 다음 질문으로 이어진다(PRD 2.5 응답 후 흐름).
+        # 채택 답변과 전환 안내 뒤에는 다음 질문을 보낸다.
         builder.add_edge("process_sufficient_answer", "ask_question")
         builder.add_edge("announce_next", "ask_question")
         builder.add_edge("finish", END)
@@ -270,7 +355,7 @@ class CustomerChatbotPipeline:
     # ------------------------------------------------------------------
 
     def _notify(self, state: ChatGraphState) -> dict[str, Any]:
-        """B.1 최초 알림. 버튼 3종은 이 메시지 뒤에 프론트가 표시한다."""
+        """거래 정보를 포함한 최초 알림을 만든다."""
 
         transaction = self._load_transaction()
         return {
@@ -284,7 +369,7 @@ class CustomerChatbotPipeline:
         }
 
     def _button(self, state: ChatGraphState) -> dict[str, Any]:
-        """챗봇시작/상담사연결/상담종료 버튼 눌렀을때 분기"""
+        """상담 시작·상담사 연결·종료 액션을 처리한다."""
 
         action = state.get("button_action")
         if action == ChatButtonAction.START_CHAT.value:
@@ -292,7 +377,6 @@ class CustomerChatbotPipeline:
                 self.chat_session,
                 ChatSessionStatus.IN_PROGRESS,
             )
-            # "챗봇 상담"은 출력 문구 없이 바로 첫 질문으로 간다(B.2).
             return {"route": "ask_question"}
 
         if action == ChatButtonAction.REQUEST_HANDOFF.value:
@@ -319,7 +403,6 @@ class CustomerChatbotPipeline:
         """다음 질문을 출력하고 재시도 횟수를 초기화한다."""
 
         question_step = state.get("question_step", 0) + 1
-        # 몇번째 질문인지, 어떤 사기유형인지에 따라 질문이 달라진다
         question_text = render_question(
             question_step=question_step,
             top_fraud_types=self.chat_session.top_fraud_types,
@@ -331,7 +414,7 @@ class CustomerChatbotPipeline:
         }
 
     def _evaluate(self, state: ChatGraphState) -> dict[str, Any]:
-        """고객 답변을 저장·평가하고 판정별 경로를 정한다(PRD 2.4 조건 2)."""
+        """고객 답변을 저장·분석하고 다음 경로를 정한다."""
 
         message_text = state.get("message_text") or ""
         question_step = state["question_step"]
@@ -340,14 +423,12 @@ class CustomerChatbotPipeline:
             MAX_ATTEMPTS_PER_QUESTION,
         )
 
-        # 고객 답변 저장
         message = self.repository.add_message(
             self.chat_session,
             sender_type=ChatSenderType.HUMAN,
             message_text=message_text,
         )
-        # 고객 답변 평가
-        outcome = self.evaluator.evaluate(
+        outcome = self.answer_analyzer.analyze(
             question_text=render_question(
                 question_step=question_step,
                 top_fraud_types=self.chat_session.top_fraud_types,
@@ -375,7 +456,6 @@ class CustomerChatbotPipeline:
                 retry_exhausted=retry_exhausted,
             )
 
-        # 고객 메시지에 대한 평가 데이터를 맵핑한다
         answer = self.repository.add_answer(
             self.chat_session,
             message=message,
@@ -387,15 +467,19 @@ class CustomerChatbotPipeline:
         )
         self.session.flush()
 
-        # 이 응답을 보고 _follow_route 가 실행된다
         return {
             "attempt_no": attempt_no,
             "answer_id": answer.answer_id,
+            "guide_search_queries": [
+                query.model_dump() for query in outcome.guide_search_queries
+            ]
+            if verdict is AnswerQualityVerdict.SUFFICIENT
+            else [],
             "route": route,
         }
 
     def _reask(self, state: ChatGraphState) -> dict[str, Any]:
-        """재질문 안내만 출력한다. question_step 은 그대로다(PRD 2.4)."""
+        """질문 단계를 유지하고 재질문 안내를 출력한다."""
 
         return {
             "outbound": self._emit(
@@ -405,41 +489,51 @@ class CustomerChatbotPipeline:
         }
 
     def _announce_next(self, state: ChatGraphState) -> dict[str, Any]:
-        """재시도 소진 또는 평가 장애 후 다음 질문 전환 안내(B.4).
-
-        평가 LLM 실패(EVALUATOR_FAILED)와 재시도 초과가 같은 문구를 쓴다.
-        """
+        """재시도 소진 또는 분석 장애 후 다음 질문 전환을 알린다."""
 
         return {"outbound": self._emit(state.get("outbound", []), NEXT_QUESTION_MESSAGE)}
 
     def _process_sufficient_answer(
         self,
         state: ChatGraphState,
+        writer: StreamWriter,
     ) -> dict[str, Any]:
-        """채택 답변에서 가이드 검색 질의와 사기 정황을 각각 독립 실행한다.
-
-        한 경로가 실패해도 다른 경로의 결과는 반영하고 다음 질문으로 넘어간다.
-        """
+        """채택 답변의 가이드를 만들고 커밋 후 실행할 추출 작업을 예약한다."""
 
         answer = self._load_answer(state)
-        message_text = state.get("message_text") or ""
+        guide_search_queries = [
+            ExtractedGuideSearchQuery.model_validate(query)
+            for query in state.get("guide_search_queries", [])
+        ]
 
         outbound = list(state.get("outbound", []))
-        guide_message = self._build_guide_response(answer, message_text)
+        on_snapshot: Callable[[str], None] | None = None
+        if state.get("stream_output"):
+            on_snapshot = lambda message_text: writer(
+                {
+                    "event": "chat_message_snapshot",
+                    "data": {
+                        "message_index": 0,
+                        "message_text": message_text,
+                    },
+                }
+            )
+
+        guide_message = self._build_guide_response(
+            answer,
+            guide_search_queries,
+            on_snapshot=on_snapshot,
+        )
         if guide_message:
             outbound = self._emit(outbound, guide_message)
 
-        self._extract_fraud_circumstances(answer, message_text)
-        return {"outbound": outbound}
+        return {
+            "outbound": outbound,
+            "pending_extraction_answer_id": answer.answer_id,
+        }
 
     def _finish(self, state: ChatGraphState) -> dict[str, Any]:
-        """WANT_END — 상담을 종료한다(PRD 2.6).
-
-        채점은 이미 정황이 추출될 때마다 ``_update_fraud_type_scores``로 갱신되어
-        있다. 여기서 다시 부르는 것은 정황이 한 번도 추출되지 않은 세션(예:
-        첫 질문에서 바로 종료 의사를 밝힌 경우)도 담당자 화면에 0점 행을 남기기
-        위한 안전망이다.
-        """
+        """최종 점수를 저장하고 상담을 종료한다."""
 
         self._update_fraud_type_scores()
         self.repository.set_session_complete(
@@ -457,23 +551,14 @@ class CustomerChatbotPipeline:
     def _build_guide_response(
         self,
         answer: ChatAnswer,
-        message_text: str,
+        guide_search_queries: list[ExtractedGuideSearchQuery],
+        *,
+        on_snapshot: Callable[[str], None] | None = None,
     ) -> str:
-        """가이드 검색 질의를 분해·저장하고 RAG 응답 본문을 만든다."""
-
-        try:
-            extraction = self.guide_search_query_extractor.extract(
-                user_answers=message_text
-            )
-        except ChatbotExtractionError:
-            logger.warning(
-                "가이드 검색 질의 분해를 건너뜁니다: session=%s",
-                self.chat_session.chat_session_id,
-            )
-            return ""
+        """통합 분석에서 받은 가이드 검색 질의를 저장하고 RAG 응답을 만든다."""
 
         for position, query in enumerate(
-            extraction.guide_search_queries,
+            guide_search_queries,
             start=1,
         ):
             self.repository.add_guide_search_query(
@@ -485,15 +570,18 @@ class CustomerChatbotPipeline:
                 source_answer=answer,
             )
 
-        # 분해 결과가 없는 턴은 본문이 비므로 메시지를 보내지 않는다(PRD 2.5).
-        if not extraction.guide_search_queries:
+        # 검색 질의가 없으면 가이드 메시지를 만들지 않는다.
+        if not guide_search_queries:
             return ""
 
         try:
-            response = self.guide_responder.respond(
-                guide_search_queries=extraction.guide_search_queries,
-                session=self.session,
-            )
+            respond_kwargs: dict[str, Any] = {
+                "guide_search_queries": guide_search_queries,
+                "session": self.session,
+            }
+            if on_snapshot is not None:
+                respond_kwargs["on_snapshot"] = on_snapshot
+            response = self.guide_responder.respond(**respond_kwargs)
         except Exception:
             logger.warning(
                 "대응 가이드 응답 조립에 실패했습니다: session=%s",
@@ -502,55 +590,10 @@ class CustomerChatbotPipeline:
             return ""
         return response.message_text
 
-    def _extract_fraud_circumstances(
-        self,
-        answer: ChatAnswer,
-        message_text: str,
-    ) -> None:
-        """사기 정황을 추출해 세션당 enum 한 행으로 저장한다(PRD 2.6)."""
-
-        try:
-            extraction = self.fraud_circumstance_extractor.extract(
-                user_answers=message_text
-            )
-        except ChatbotExtractionError:
-            logger.warning(
-                "사기 정황 추출을 건너뜁니다: session=%s",
-                self.chat_session.chat_session_id,
-            )
-            return
-
-        for circumstance in extraction.fraud_circumstances:
-            self.repository.add_fraud_circumstance(
-                self.chat_session,
-                circumstance_code=circumstance.type,
-                evidence=circumstance.evidence,
-                source_answer=answer,
-            )
-
-        # 이 턴에서 새 정황이 없었어도(전부 중복이거나 0건) 재계산 자체는 저렴하므로
-        # 그대로 갱신한다 — 세션당 최대 20종이라 매번 다시 읽어 합산해도 무시할 비용이다.
-        self._update_fraud_type_scores()
-
     def _update_fraud_type_scores(self) -> None:
-        """세션에 쌓인 사기 정황 전체를 다시 읽어 유형별 점수를 갱신한다.
+        """세션의 사기 정황 전체로 유형별 점수를 갱신한다."""
 
-        정황 추출마다(PRD 2.6) 호출된다. 세션당 정황은 최대 20종
-        (``FINAL_FRAUD_CIRCUMSTANCE_CODES``)으로 상한이 있어, 매 턴 다시 읽어
-        합산해도 응답 시간에 영향을 줄 만큼의 비용이 아니다 — LLM 호출은
-        추가되지 않고 인덱스 조회 1회와 in-memory 합산, upsert 1회뿐이다.
-        """
-
-        circumstance_codes = [
-            circumstance.circumstance_code
-            for circumstance in self.repository.list_fraud_circumstances(
-                self.chat_session
-            )
-        ]
-        self.repository.upsert_fraud_type_scores(
-            self.chat_session,
-            type_scores=score_chat_fraud_circumstances(circumstance_codes),
-        )
+        rescore_chat_session(self.repository, self.chat_session)
 
     def _emit(self, outbound: list[str], message_text: str) -> list[str]:
         """챗봇 메시지를 대화 로그에 남기고 이번 턴 출력에 덧붙인다."""
@@ -574,7 +617,7 @@ class CustomerChatbotPipeline:
         return answer
 
     def _load_transaction(self) -> Transaction:
-        """B.1 치환에 쓰는 거래 원장을 읽는다."""
+        """최초 알림에 사용할 거래를 조회한다."""
 
         transaction = self.session.get(
             Transaction,
@@ -589,22 +632,10 @@ class CustomerChatbotPipeline:
     # ------------------------------------------------------------------
 
     @property
-    def evaluator(self) -> AnswerEvaluator:
-        if self._evaluator is None:
-            self._evaluator = AnswerEvaluator()
-        return self._evaluator
-
-    @property
-    def guide_search_query_extractor(self) -> GuideSearchQueryExtractor:
-        if self._guide_search_query_extractor is None:
-            self._guide_search_query_extractor = GuideSearchQueryExtractor()
-        return self._guide_search_query_extractor
-
-    @property
-    def fraud_circumstance_extractor(self) -> FraudCircumstanceExtractor:
-        if self._fraud_circumstance_extractor is None:
-            self._fraud_circumstance_extractor = FraudCircumstanceExtractor()
-        return self._fraud_circumstance_extractor
+    def answer_analyzer(self) -> AnswerAnalyzer:
+        if self._answer_analyzer is None:
+            self._answer_analyzer = AnswerAnalyzer()
+        return self._answer_analyzer
 
     @property
     def guide_responder(self) -> GuideResponder:
@@ -624,7 +655,7 @@ def _route_for_verdict(
     *,
     retry_exhausted: bool,
 ) -> str:
-    """판정 3종을 그래프 경로로 옮긴다(PRD 2.4 조건 2 표)."""
+    """답변 판정을 그래프 경로로 변환한다."""
 
     if verdict is AnswerQualityVerdict.WANT_END:
         return "finish"
@@ -638,6 +669,7 @@ __all__ = [
     "ChatGraphState",
     "ChatTurnRejectedError",
     "ChatTurnResult",
+    "ChatTurnStreamEvent",
     "CustomerChatbotPipeline",
     "MAX_ATTEMPTS_PER_QUESTION",
 ]

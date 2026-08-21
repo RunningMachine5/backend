@@ -1,21 +1,7 @@
-"""골든셋으로 실제 RAG 경로를 돌리고 채점 지표를 산출한다.
+"""골든셋으로 챗봇 RAG 경로를 실행하고 RAGAS 지표를 산출한다.
 
-RAGAS 지표는 4개다.
-    - LLMContextPrecisionWithReference : 검색된 청크가 정답과 얼마나 관련 있나
-    - LLMContextRecall                 : 정답의 주장들이 검색 청크에 얼마나 담겼나
-    - Faithfulness                     : 생성 답변이 검색 청크를 벗어나지 않았나
-    - FactualCorrectness               : 생성 답변이 모범 답변과 사실관계가 맞나
-
-FactualCorrectness 는 mode 를 셋 다 돌려 **precision 과 recall 을 따로 남긴다**. f1 하나만
-남기면 "필수 정보를 빠뜨렸다"와 "맞는 말을 더 했다"가 한 숫자에 섞여 구별되지 않는데,
-고객 응대에서 이 둘은 무게가 전혀 다르다. 실측(골든셋 v1)에서 FP 222개 중 보일러플레이트는
-10개뿐이고 나머지는 대체로 맞는 안내였다 — 즉 f1 하락분의 상당 부분이 벌할 이유가 없는
-precision 손실이었다. 어느 쪽이 깎였는지 보이게 두고 판단은 사람이 한다.
-
-파생 지표는 두지 않는다. 사례별로 실제 검색된 (문서, 페이지)와 정답 근거의 (문서, 페이지)를
-리포트에 그대로 남겨 필요할 때 눈으로 대조한다.
-
-무근거(unanswerable) 사례는 모든 지표를 평균에서 제외하고 abstain_rate 로만 본다.
+답변 가능 사례는 검색 정밀도·재현율, 충실성, 사실 정확도를 계산한다. 무근거 사례는
+지표 평균에서 제외하고 기권율로 집계한다.
 """
 
 from __future__ import annotations
@@ -32,7 +18,7 @@ from langchain_core.callbacks import get_usage_metadata_callback
 from sqlmodel import Session
 
 from app.dto.chatbot import ExtractedGuideSearchQuery, RetrievedChatbotGuideChunkDTO
-from app.services.chatbot.extractors import GuideSearchQueryExtractor
+from app.services.chatbot.answer_analyzer import AnswerAnalyzer
 from app.services.chatbot.guide_responder import (
     GUIDE_SEARCH_QUERY_HEADING_PREFIX,
     RETRIEVE_TOP_K,
@@ -42,9 +28,15 @@ from app.services.chatbot.messages import UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
 from app.services.rag.chatbot_retriever import retriever_source
 from app.services.rag.golden_dataset import ANSWERABLE_CATEGORIES, GoldenCase
 from app.services.rag.ragas_judge import build_judge_llm
-from app.services.rag.token_pricing import format_usage_summary
+from app.services.rag.token_pricing import build_usage_report, format_usage_summary
 
 logger = logging.getLogger(__name__)
+
+# 골든셋의 user_input을 운영 턴의 customer_answer 자리에 넣을 때 사용하는 직전 질문.
+# 답변 가능 여부와 targeted query 생성을 운영과 같은 통합 분석기로 평가한다.
+RAG_EVALUATION_QUESTION = (
+    "금융사기 대응과 관련해 겪은 상황이나 궁금한 점을 구체적으로 말씀해 주세요."
+)
 
 # 모든 지표를 답변 가능 사례에서만 평균낸다. 무근거 사례는 abstain_rate 로 본다.
 ANSWERABLE_METRICS = (
@@ -80,11 +72,7 @@ PhaseCallback = Callable[[str], None]
 
 @dataclass
 class _RecordingRetriever:
-    """실제 리트리버를 그대로 호출하면서 반환 청크를 기록한다.
-
-    GuideResponder 가 retriever 주입을 지원하므로 이것만 끼우면 챗봇 코드를
-    건드리지 않고 질의별 검색 결과를 모을 수 있다.
-    """
+    """검색 결과를 기록하면서 실제 리트리버를 호출한다."""
 
     retriever: RetrieverCallable = retriever_source
     chunks: list[RetrievedChatbotGuideChunkDTO] = field(default_factory=list)
@@ -115,18 +103,7 @@ class RunResult:
 
     @property
     def abstained(self) -> bool:
-        """고객이 받은 응답에 안내가 하나도 담기지 않은 경우.
-
-        질의가 여러 개면 일부만 근거를 찾는 일이 흔하다. 그때 응답에는 답변 섹션과
-        B.5 문구가 함께 들어가는데, 이를 기권으로 세면 절반은 답한 턴까지 기권으로
-        잡혀 abstain_rate 가 부풀려진다. 그래서 문구 포함 여부가 아니라 **모든**
-        섹션이 B.5 문구인지로 판정한다.
-
-        근거를 찾은 질의 수(grounded_query_count)로 판정하면 안 된다. 검색이 성공해도
-        생성 LLM 이 그 자리의 안내를 내놓지 못하면 GuideResponder 는 B.5 문구로
-        메워 내보내므로(guide_responder._assemble), 고객은 기권을 받았는데 지표는
-        답변으로 세는 일이 생긴다. 실측 100건에서 5건이 여기 걸렸다.
-        """
+        """응답의 모든 섹션이 무근거 안내이면 참을 반환한다."""
 
         if not self.response.strip():
             return True
@@ -134,11 +111,7 @@ class RunResult:
 
 
 def _has_guidance(message_text: str) -> bool:
-    """응답 본문에 B.5 문구가 아닌 안내가 한 섹션이라도 있는가.
-
-    GuideResponder 는 소제목 한 줄과 본문을 붙여 섹션을 만든다. 소제목을 걷어낸
-    나머지가 전부 B.5 문구면 고객이 받은 것은 기권 응답이다.
-    """
+    """응답에 무근거 안내가 아닌 본문이 있는지 확인한다."""
 
     head, *sections = message_text.split(GUIDE_SEARCH_QUERY_HEADING_PREFIX)
     # 소제목이 붙은 섹션은 첫 줄이 제목이라 본문에서 뺀다. 소제목보다 앞에 있는
@@ -160,7 +133,7 @@ def run_cases(
     cases: tuple[GoldenCase, ...],
     session: Session,
     *,
-    extractor: GuideSearchQueryExtractor | None = None,
+    analyzer: AnswerAnalyzer | None = None,
     retriever: RetrieverCallable = retriever_source,
     responder_factory: Callable[[Any, int], Any] = _default_responder,
     top_k: int = RETRIEVE_TOP_K,
@@ -168,12 +141,12 @@ def run_cases(
 ) -> list[RunResult]:
     """골든셋 질문을 실제 RAG 경로에 태워 응답과 검색 청크를 모은다.
 
-    extractor / retriever / responder_factory 는 테스트에서 LLM·DB 호출을
+    analyzer / retriever / responder_factory 는 테스트에서 LLM·DB 호출을
     대체하려고 열어 둔다. 기본값이 곧 운영 경로다.
     on_case 는 사례가 끝날 때마다 불린다(진행 상황 출력용).
     """
 
-    extractor = extractor or GuideSearchQueryExtractor()
+    analyzer = analyzer or AnswerAnalyzer()
     total = len(cases)
     results = []
     for index, case in enumerate(cases, start=1):
@@ -181,7 +154,7 @@ def run_cases(
         result = _run_case(
             case,
             session,
-            extractor=extractor,
+            analyzer=analyzer,
             retriever=retriever,
             responder_factory=responder_factory,
             top_k=top_k,
@@ -197,7 +170,7 @@ def _run_case(
     case: GoldenCase,
     session: Session,
     *,
-    extractor: GuideSearchQueryExtractor,
+    analyzer: AnswerAnalyzer,
     retriever: RetrieverCallable,
     responder_factory: Callable[[Any, int], Any],
     top_k: int,
@@ -206,14 +179,22 @@ def _run_case(
     responder = responder_factory(recorder, top_k)
 
     try:
-        extraction = extractor.extract(user_answers=case.user_input)
-    except Exception as exc:  # 분해 실패는 그 턴 전체가 안내 없이 끝난다
-        logger.warning("질의 분해 실패: id=%s error=%s", case.id, type(exc).__name__)
-        return _empty_result(case, error=f"extract:{type(exc).__name__}")
+        analysis = analyzer.analyze(
+            question_text=RAG_EVALUATION_QUESTION,
+            customer_answer=case.user_input,
+        )
+    except Exception as exc:  # 분석 실패는 그 턴 전체가 안내 없이 끝난다
+        logger.warning("통합 분석 실패: id=%s error=%s", case.id, type(exc).__name__)
+        return _empty_result(case, error=f"analyze:{type(exc).__name__}")
 
-    queries: list[ExtractedGuideSearchQuery] = list(extraction.guide_search_queries)
+    if analysis.quality_verdict is None:
+        reason = analysis.verdict_skip_reason or "UNKNOWN"
+        logger.warning("통합 분석 실패: id=%s reason=%s", case.id, reason)
+        return _empty_result(case, error=f"analyze:{reason}")
+
+    queries: list[ExtractedGuideSearchQuery] = list(analysis.guide_search_queries)
     if not queries:
-        # 분해 결과가 없는 턴은 본문이 비므로 메시지를 보내지 않는다(PRD 2.5).
+        # 검색 질의가 없으면 가이드 메시지를 만들지 않는다.
         return _empty_result(case)
 
     try:
@@ -263,14 +244,8 @@ def score_with_ragas(results: list[RunResult]) -> dict[str, dict[str, float]]:
     FactualCorrectness 는 mode 별로 다른 지표 이름을 받는다(METRIC_COLUMNS).
     """
 
-    # ragas 는 eval 전용 의존성(uv sync --group eval)이라 함수 안에서 import 한다.
-    #
-    # ragas.metrics 의 클래스들은 "ragas.metrics.collections 를 쓰라"는 폐기 경고를
-    # 내지만, 0.4.3 의 evaluate() 는 ragas.metrics.base.Metric 만 받는다. collections
-    # 쪽은 BaseMetric 이라는 별도 계층이라 evaluate() 에 넣으면 TypeError 가 난다
-    # ("All metrics must be initialised metric objects"). 같은 이유로 심판 LLM 도
-    # llm_factory(InstructorLLM)가 아니라 BaseRagasLLM 인 LangchainLLMWrapper 여야
-    # 한다. ragas 가 v1.0 에서 evaluate() 를 새 계층으로 옮기면 그때 함께 바꾼다.
+    # eval 전용 의존성이므로 함수 안에서 import한다. evaluate() 계약에 맞는
+    # ragas.metrics.base.Metric 구현을 사용해야 한다.
     from ragas import EvaluationDataset, evaluate
     from ragas.metrics import (
         FactualCorrectness,
@@ -291,10 +266,7 @@ def score_with_ragas(results: list[RunResult]) -> dict[str, dict[str, float]]:
         for result in results
     ]
 
-    # FactualCorrectness 는 mode 를 셋 다 돌린다. f1 하나로는 "필수 정보를 빠뜨렸다"
-    # (recall 손실)와 "맞는 말을 더 했다"(precision 손실)가 구별되지 않는다.
-    # precision 은 한 방향만 판정하지만 recall 은 양방향이 다 필요해(_single_turn_ascore
-    # 가 fn 을 반대 방향에서 센다) 심판 호출이 f1 단독 대비 2.5배로 늘어난다.
+    # 누락과 불필요한 추가 정보를 구분하기 위해 세 mode를 모두 계산한다.
     scores = evaluate(
         dataset=EvaluationDataset.from_list(samples),
         metrics=[
@@ -358,11 +330,19 @@ def _pick_scores(row: dict) -> dict[str, float]:
 def build_report(
     results: list[RunResult],
     scores: dict[str, dict[str, float]],
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """전체 평균과 category·difficulty 슬라이스를 모은다."""
+    """전체 평균과 category·difficulty 슬라이스를 모은다.
 
-    return {
-        "case_count": len(results),
+    usage 를 주면 토큰·비용 집계(build_usage_section)를 리포트 앞쪽에 함께 담는다.
+    한 번 돌리는 데 실제 비용이 드는 실행이라, 점수와 비용을 같은 파일에 남겨야
+    "지표가 이만큼 오르는 데 얼마가 들었나"를 나중에 대조할 수 있다.
+    """
+
+    report: dict[str, Any] = {"case_count": len(results)}
+    if usage is not None:
+        report["usage"] = usage
+    report.update({
         "overall": _aggregate(results, scores),
         "by_category": {
             category: _aggregate(rows, scores)
@@ -392,6 +372,31 @@ def build_report(
             }
             for r in results
         ],
+    })
+    return report
+
+
+def build_usage_section(
+    pipeline_usage: dict[str, Any],
+    judge_usage: dict[str, Any],
+    case_count: int,
+) -> dict[str, Any]:
+    """파이프라인 비용과 RAGAS 심판 비용을 나눠 담은 usage 섹션.
+
+    둘을 합쳐 놓으면 안 된다. pipeline 은 운영에서 고객 한 턴에 실제로 나가는 비용이고,
+    judge 는 평가할 때만 드는 비용(사례당 지표 6개 호출)이라 성격이 전혀 다르다.
+    total 은 이번 실행에 실제로 청구될 금액을 확인하는 용도다.
+    """
+
+    pipeline = build_usage_report(pipeline_usage, case_count=case_count)
+    judge = build_usage_report(judge_usage, case_count=case_count)
+    return {
+        "pipeline": pipeline,
+        "judge": judge,
+        "total_cost_usd": round(
+            pipeline["total_cost_usd"] + judge["total_cost_usd"], 6
+        ),
+        "total_cost_known": pipeline["total_cost_known"] and judge["total_cost_known"],
     }
 
 
@@ -454,15 +459,26 @@ def evaluate_rag(
             on_phase(message)
 
     notify(f"[1/3] 파이프라인 실행 ({len(cases)}건) — 질의 분해·검색·응답 생성")
-    with get_usage_metadata_callback() as usage_callback:
+    with get_usage_metadata_callback() as pipeline_usage:
         results = run_cases(cases, session, top_k=top_k, on_case=on_case)
-    notify(format_usage_summary(usage_callback.usage_metadata))
+    pipeline_usage_by_model = dict(pipeline_usage.usage_metadata)
+    notify(format_usage_summary(pipeline_usage_by_model))
 
     notify(f"[2/3] RAGAS 채점 ({len(cases)}건 x 지표 6개) — 심판 LLM 호출")
-    scores = score_with_ragas(results)
+    # 심판 비용은 파이프라인 비용과 섞지 않는다. ragas 는 asyncio.run 으로 같은
+    # 스레드에서 돌아 컨텍스트 변수가 그대로 이어지므로 이 콜백에 심판 호출이 잡힌다.
+    with get_usage_metadata_callback() as judge_usage:
+        scores = score_with_ragas(results)
+    judge_usage_by_model = dict(judge_usage.usage_metadata)
 
     notify("[3/3] 리포트 집계")
-    return build_report(results, scores)
+    return build_report(
+        results,
+        scores,
+        usage=build_usage_section(
+            pipeline_usage_by_model, judge_usage_by_model, len(results)
+        ),
+    )
 
 
 __all__ = [
@@ -471,6 +487,7 @@ __all__ = [
     "PhaseCallback",
     "RunResult",
     "build_report",
+    "build_usage_section",
     "evaluate_rag",
     "run_cases",
     "score_with_ragas",

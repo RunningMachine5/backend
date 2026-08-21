@@ -147,33 +147,32 @@ FDS·Agent 결합.
 프롬프트 렌더링은 [prompts.py](../../app/services/chatbot/prompts.py)에 이미 있으므로
 **호출부만** 만든다. 프롬프트·문구를 코드에 새로 쓰지 않는다.
 
-- [x] `app/services/chatbot/answer_evaluator.py` — A.1 평가 호출.
-  structured output으로 판정 3종을 강제(프롬프트 지시에 의존하지 않는다, PRD 3.2).
-  타임아웃·재시도는 1단계 env var 사용.
-  - **실패 폴백은 PRD 3.1의 권장안을 채택한다**: 호출당 타임아웃 + 재시도 상한,
-    상한 소진 시 고객 판정과 분리된 경로로 다음 질문에 진행하고
-    `verdict_skip_reason = EVALUATOR_FAILED`로 기록한다. → 확정 내용을 README 2.4·3.1에 반영 (9단계)
-- [x] `app/services/chatbot/extractors.py` — A.2 가이드 검색 질의 분해 / A.3 사기 정황 추출 호출.
-  structured output 스키마는 1단계 DTO. A.2는 원문과 다른 `evidence`도 RAG 질의로 유지하되
-  리포지토리가 해당 감사 행을 저장하지 않고, A.3는 원문과 다른 정황을 추출 단계에서 버린다
-- [x] 테스트 `tests/test_chatbot_evaluator.py` / `test_chatbot_extractors.py`:
+- [x] `app/services/chatbot/answer_analyzer.py` — 운영 경로의 A.1 판정과 A.2 검색 질의 분해를
+  `AnswerAnalysisResult` 한 번의 구조화 출력으로 통합한다. `SUFFICIENT`만 질의를 다음 노드로
+  전달한다. 호출당 타임아웃과 재시도 상한을 소진하면 고객 판정과 분리된
+  `EVALUATOR_FAILED` 경로로 다음 질문을 진행한다.
+- [x] `app/services/chatbot/extractors.py` — A.2 검색 질의 공통 정규화와 A.3 사기 정황 추출.
+  A.2는 원문과 다른 `evidence`도 RAG 질의로 유지하되 리포지토리가 해당 감사 행을 저장하지
+  않고, A.3는 원문과 다른 정황을 추출 단계에서 버린다
+- [x] 테스트 `tests/test_chatbot_answer_analyzer.py` / `test_chatbot_extractors.py`:
   LLM 모킹(실호출 금지 — CI는 `OPENAI_API_KEY=test-only-key`), 판정 3종 분기,
   재시도 소진 폴백, evidence 원문 대조 성공·실패
+- [x] 실제 지연 비교: 5개 사례 × 3회에서 LLM 호출 30→15회, 중앙값
+  2937.7→2790.2ms(5.02% 감소), p95 6041.9→4610.9ms.
 
 ## 5단계 — RAG 응답 조립 + 채점 집계
 
 **참조**: [PRD 2.5](README.md#25-정보-응답--rag-대응-가이드-4-1), [PRD 2.6](README.md#26-사기-정황-추출과-채점-4-2),
 [messages.md B.5](messages.md#b5-안내를-만들지-못한-가이드-검색-질의-안내), [scoring.md](scoring.md)
 
-- [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) 신설 — Generate 프롬프트가
-  설계 문서에 없었다. 소제목·목록 조립은 LLM이 하지 않고 코드가 한다는 것을 문서에 못박고,
-  [prompts.py](../../app/services/chatbot/prompts.py)의 `render_guide_response_prompt`로 옮겼다
+- [x] [prompts.md A.4](prompts.md#a4-대응-가이드-생성-프롬프트) — 최종 고객 본문을 일반
+  텍스트로 한 번 생성한다. 소제목·입력 순서·B.5 형식은 프롬프트가 소유하며,
+  [prompts.py](../../app/services/chatbot/prompts.py)의 `render_guide_response_prompt`로 관리한다
 - [x] [guide_responder.py](../../app/services/chatbot/guide_responder.py) — PRD 2.5의 의사코드 그대로:
   - 검색 질의 = 분해 결과의 독립적인 `guide_search_query.search_query`
   - Retrieve는 가이드 검색 질의당 독립, `top_k = 3` 고정
-  - `grounded` / `ungrounded` 분리 → **Generate는 grounded만으로 1회 호출**
-    (0건 요구를 프롬프트에 넣지 않아 교차 오염 차단)
-  - `assemble`: ungrounded 요구는 분해 결과의 `title` 소제목 + B.5 고정 문구.
+  - `grounded` / `ungrounded`를 모두 원래 순서로 전달 → **Generate는 일반 텍스트 1회 호출**
+  - ungrounded 요구는 프롬프트가 `title` 소제목 + B.5 고정 문구로 출력
   - **`GuideResponder`는 상태 전이 신호를 내지 않는다.** 전체 0건이면 Generate를 건너뛰고
     모든 요구를 B.5로 채운다. 요구가 하나도 없으면 빈 본문을 돌려주고 파이프라인이
     메시지를 보내지 않는다 (README 2.5 4번)
@@ -181,7 +180,7 @@ FDS·Agent 결합.
     Generate 실패·전원 빈 안내도 B.5로 채우고 상담 계속)
   - B.5 문구는 [messages.py](../../app/services/chatbot/messages.py)로 옮겼다(B.1~B.4·B.6은 6단계)
 - [x] [chat_scoring.py](../../app/services/chatbot/chat_scoring.py) — 사기 정황이 추출될 때마다
-  재집계(증분 가산이 아니라 매번 전체 재계산):
+  `rescore_chat_session`으로 재집계(증분 가산이 아니라 매번 전체 재계산):
   `chat_fraud_circumstances` 전체 × `FRAUD_CIRCUMSTANCE_SCORES` → 4개 유형 점수 전부
   `type_scores`로. 대표 유형·동점·정황 없음은 저장하지 않는다 (스키마 3.7)
 - [x] 외부 조회(더치트·Safe Browsing·경찰청 링크)는 **이번 범위에서 제외** (아래 "제외 범위")
@@ -214,7 +213,8 @@ FDS·Agent 결합.
   3. 답변 평가 — 4단계 서비스 호출. 판정별 전이는 PRD 2.4 표 그대로
      (`TOO_VAGUE`는 재질문 최대 2회, 초과 시 마지막 응답 채택
      `is_adopted = true` 후 다음 질문)
-  4. `SUFFICIENT` → 가이드 검색 질의 분해·저장·RAG와 사기 정황 추출·저장을 독립 실행한다.
+  4. `SUFFICIENT` → 가이드 검색 질의 분해·저장·RAG는 이 턴 안에서 끝내고,
+     **사기 정황 추출은 예약만 한다**(`ChatTurnResult.pending_extraction`).
      한 경로가 재시도 후 실패해도 성공한 경로는 반영하고 다음 질문으로 진행한다
   5. `WANT_END` → 채점 집계(5단계) + `DONE` + `completed_at`. 문구는 B.6
   6. `HANDOFF_REQUESTED` 진입 경로는 1번의 "상담사 연결" 버튼뿐이다. `WANT_END`와
@@ -272,13 +272,25 @@ FDS·Agent 결합.
 - [x] ~~SSE — `GET /agent/chat-sessions/events`~~ — **제거했다.** 상태 확인을 프론트 폴링으로
   바꾸면서 스트림과 그 뒤의 in-process pub/sub(`session_event_broker.py`)에 소비자가 없어져
   브로커·이벤트 DTO·발행 호출까지 함께 걷어냈다(PRD 2.7)
+- [x] **사기 정황 추출을 비동기로 돌린다**(PRD 2.6 비동기 실행). 추출 결과는 그 턴의 고객
+  메시지에 쓰이지 않으므로 `POST /chat/{chat_session_id}/messages`가 응답을 보낸 뒤
+  `BackgroundTasks`로 실행한다. 실행부
+  ([fraud_circumstance_task_runner.py](../../app/services/chatbot/fraud_circumstance_task_runner.py))는
+  자기 Session을 새로 열어 저장·재채점까지 커밋한 뒤 점수를 SSE로 발행하고, 어떤 실패도
+  밖으로 올리지 않는다(Agent 백그라운드 실행과 같은 방침). 같은 세션의 추출은 세션 id별
+  프로세스 내 락으로 직렬화해 재채점이 옛 값으로 덮이지 않게 한다.
+  SSE 발행 공통부는 라우터에서 꺼내
+  [chat_score_publisher.py](../../app/services/chatbot/chat_score_publisher.py)로 옮겼다
+- [x] 테스트 [tests/test_chatbot_fraud_circumstance_task.py](../../tests/test_chatbot_fraud_circumstance_task.py):
+  추출기 대역으로 저장·재채점·SSE 발행, 같은 정황 반복 시 중복 가산 없음, 추출 실패·세션
+  없음·예기치 못한 실패가 밖으로 새지 않는 것까지 확인한다
 - [x] 두 조회 경로는 `/agent`가 아니라 `/transactions` 하위에 둔다. Agent
   (`app/services/agent/`)와 무관한 채팅 세션 조회이기 때문이다
 - [x] 테스트 [tests/test_chat_api.py](../../tests/test_chat_api.py): TestClient로 본인인증·버튼
   상태 전이, 상태에 맞지 않는 입력의 `409`, 거래별 세션 상태·상담 내역 조회.
   세션 생성 멱등·폴백 이메일은 `tests/test_chat_session_creator.py`가, 스크립트 인자 계약은
   `tests/test_seed_chat_session_script.py`가 맡는다
-  - 평가 LLM 이 필요한 턴은 파이프라인이 지연 생성하는 `AnswerEvaluator` 자리를 대역으로
+  - 통합 분석 LLM 이 필요한 턴은 파이프라인이 지연 생성하는 `AnswerAnalyzer` 자리를 대역으로
     바꾼다. 라우터에 서비스 주입 지점이 없어 생성자 주입 대신 패치를 쓴다
 
 ## 8단계 — FDS·Agent 파이프라인 결합

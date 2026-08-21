@@ -95,7 +95,7 @@ class FraudAlertEmailService:
         command: FraudAlertEmailCommand,
         *,
         chatbot_url: str,
-    ) -> bool: # 응답을 불리언으로 바꾼 이유: ChatSessionAlertNotifier 가 메일이 잘 보내졌는지 확인하기 위해
+    ) -> bool:
         context = self.repository.get_email_context(command.transaction_id)
         if context is None:
             return False

@@ -1,10 +1,4 @@
-"""
-챗봇 전용 리트리버
-
-MAX_DISTANCE 를 놓아 관련없는 청크를 억지로 가져오는 경우를 방지
-상위 객체로부터 DB 세션을 주입받아 사용해야함
-각 청크를 어디서 가져왔는지 추적할 수 있도록 
-"""
+"""거리 상한을 적용해 고객 대응 가이드 청크를 검색한다."""
 from sqlmodel import Session, select
 
 from app.data.model.cs_guide_document import CsGuideDocument
@@ -12,7 +6,7 @@ from app.data.model.cs_guide_document_chunk import CsGuideDocumentChunk
 from app.dto.chatbot import RetrievedChatbotGuideChunkDTO
 from app.services.rag.docs_embedding import query_embedding
 
-MAX_DISTANCE = 0.6  # 코사인 거리 이보다 멀면 관련 없는 청크로 본다
+MAX_DISTANCE = 0.6
 
 def retriever_source(
     question: str,
@@ -22,7 +16,6 @@ def retriever_source(
     """질문과 가까운 고객 대응 가이드 청크를 출처 정보와 함께 반환한다."""
 
     question_vector = query_embedding(question)
-    # 코사인 유사도 높은 질문 찾아오기
     distance = CsGuideDocumentChunk.embedding.cosine_distance(question_vector)
 
     stmt = (
@@ -37,8 +30,8 @@ def retriever_source(
             CsGuideDocument.id == CsGuideDocumentChunk.cs_guide_document_id,
         )
         .where(distance <= MAX_DISTANCE)
-        .order_by(distance) # 코사인 유사도 순으로 정렬
-        .limit(top_k) # 상위 k개만 가져온다
+        .order_by(distance)
+        .limit(top_k)
     )
     rows = session.exec(stmt).all()
     return [

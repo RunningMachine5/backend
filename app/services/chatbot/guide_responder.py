@@ -1,11 +1,4 @@
-"""분해된 가이드 검색 질의에 대한 RAG 대응 가이드 응답을 조립한다.
-
-- Retrieve는 검색 질의마다 독립이며 질의 개수와 무관하게 top_k=3이다.
-- Generate는 근거를 찾은 요구만 담아 LLM을 한 번 호출한다. 고객에게 그대로 나가는
-  유일한 생성이므로 여기만 CHAT_RESPONSE_LLM_MODEL 을 쓴다. 지금 이 값은
-  CHAT_LLM_MODEL 과 같고, 이 생성만 따로 갈아끼울 여지를 두려고 변수를 나눠 뒀다.
-- 근거를 찾지 못한 요구도 소제목과 고정 안내로 응답에 나타난다.
-"""
+"""검색 질의별 RAG 근거로 고객 대응 가이드를 생성한다."""
 
 from __future__ import annotations
 
@@ -21,12 +14,8 @@ from app.core.config import (
     CHAT_LLM_TIMEOUT_SECONDS,
     CHAT_RESPONSE_LLM_MODEL,
 )
-from app.dto.chatbot import (
-    ExtractedGuideSearchQuery,
-    GuideResponseGenerationResult,
-    RetrievedChatbotGuideChunkDTO,
-)
-from app.services.chatbot.llm import build_structured_llm
+from app.dto.chatbot import ExtractedGuideSearchQuery, RetrievedChatbotGuideChunkDTO
+from app.services.chatbot.llm import build_chat_llm
 from app.services.chatbot.messages import UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
 from app.services.chatbot.prompts import render_guide_response_prompt
 from app.services.rag.chatbot_retriever import retriever_source
@@ -38,6 +27,7 @@ logger = logging.getLogger(__name__)
 RETRIEVE_TOP_K = 3
 GUIDE_SEARCH_QUERY_HEADING_PREFIX = "■ "
 RetrieverCallable = Callable[..., list[RetrievedChatbotGuideChunkDTO]]
+SnapshotCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,15 +58,14 @@ class GuideResponder:
     def __init__(
         self,
         *,
-        structured_llm: Any | None = None,
+        llm: Any | None = None,
         retriever: RetrieverCallable = retriever_source,
         model: str = CHAT_RESPONSE_LLM_MODEL,
         timeout_seconds: float = CHAT_LLM_TIMEOUT_SECONDS,
         max_attempts: int = CHAT_LLM_MAX_ATTEMPTS,
         top_k: int = RETRIEVE_TOP_K,
     ) -> None:
-        self.structured_llm = structured_llm or build_structured_llm(
-            GuideResponseGenerationResult,
+        self.llm = llm or build_chat_llm(
             model=model,
             timeout_seconds=timeout_seconds,
         )
@@ -89,8 +78,9 @@ class GuideResponder:
         *,
         guide_search_queries: Iterable[ExtractedGuideSearchQuery],
         session: Session,
+        on_snapshot: SnapshotCallback | None = None,
     ) -> GuideResponse:
-        """한 턴에서 분해된 가이드 검색 질의에 대한 안내를 만든다."""
+        """한 턴의 최종 안내를 만들고 생성 중에는 누적 본문을 알린다."""
 
         unique_queries = _deduplicate_guide_search_queries(guide_search_queries)
         augmented = [
@@ -100,10 +90,16 @@ class GuideResponder:
         grounded = [item for item in augmented if item.is_grounded]
         ungrounded = [item for item in augmented if not item.is_grounded]
 
-        guidance_by_position = self._generate(grounded) if grounded else {}
+        if not augmented:
+            message_text = ""
+        elif not grounded:
+            # 근거가 하나도 없으면 모델이 새 안내를 만들 여지가 없으므로 호출하지 않는다.
+            message_text = _assemble_fallback(augmented)
+        else:
+            message_text = self._generate(augmented, on_snapshot=on_snapshot)
 
         return GuideResponse(
-            message_text=_assemble(augmented, guidance_by_position),
+            message_text=message_text,
             grounded_query_positions=_positions(grounded),
             ungrounded_query_positions=_positions(ungrounded),
         )
@@ -138,21 +134,38 @@ class GuideResponder:
 
     def _generate(
         self,
-        grounded: Sequence[AugmentedGuideSearchQuery],
-    ) -> dict[int, str]:
-        """근거를 찾은 가이드 검색 질의만 담아 LLM을 한 번 호출한다."""
+        augmented: Sequence[AugmentedGuideSearchQuery],
+        *,
+        on_snapshot: SnapshotCallback | None,
+    ) -> str:
+        """질의 전체를 일반 텍스트 한 번으로 생성하고 누적 본문을 전달한다."""
 
         prompt = render_guide_response_prompt(
             guide_search_query_context_block=_render_guide_search_query_context_block(
-                grounded
-            )
+                augmented
+            ),
+            ungrounded_message=UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE,
         )
-        grounded_positions = {item.position for item in grounded}
 
         for attempt in range(1, self.max_attempts + 1):
+            if attempt > 1 and on_snapshot is not None:
+                # 이전 시도의 일부 문장이 화면에 남지 않도록 누적 본문을 초기화한다.
+                on_snapshot("")
+
             try:
-                raw_result = self.structured_llm.invoke(prompt)
-                result = GuideResponseGenerationResult.model_validate(raw_result)
+                message_text = ""
+                for chunk in self.llm.stream(prompt):
+                    delta = _chunk_text(chunk)
+                    if not delta:
+                        continue
+                    message_text += delta
+                    if on_snapshot is not None:
+                        on_snapshot(message_text)
+
+                streamed_message_text = message_text
+                message_text = streamed_message_text.strip()
+                if not message_text:
+                    raise ValueError("대응 가이드 생성 결과가 비어 있습니다")
             except Exception as exc:
                 logger.warning(
                     "대응 가이드 생성 LLM 호출 실패: attempt=%s/%s error=%s: %s",
@@ -163,21 +176,18 @@ class GuideResponder:
                 )
                 if attempt < self.max_attempts:
                     continue
-                return {}
+                fallback = _assemble_fallback(augmented)
+                if on_snapshot is not None:
+                    on_snapshot(fallback)
+                return fallback
 
-            guidance_by_position: dict[int, str] = {}
-            for guide in result.guides:
-                guidance = guide.guidance.strip()
-                if not guidance:
-                    continue
-                if guide.position not in grounded_positions:
-                    logger.warning(
-                        "프롬프트에 없는 가이드 검색 질의 안내를 버립니다: position=%s",
-                        guide.position,
-                    )
-                    continue
-                guidance_by_position.setdefault(guide.position, guidance)
-            return guidance_by_position
+            if (
+                on_snapshot is not None
+                and message_text != streamed_message_text
+            ):
+                # 앞뒤 공백을 제거한 저장 본문과 화면의 마지막 스냅샷을 맞춘다.
+                on_snapshot(message_text)
+            return message_text
 
         raise AssertionError("대응 가이드 생성 재시도 루프가 종료되었습니다.")
 
@@ -199,12 +209,12 @@ def _deduplicate_guide_search_queries(
 
 
 def _render_guide_search_query_context_block(
-    grounded: Sequence[AugmentedGuideSearchQuery],
+    augmented: Sequence[AugmentedGuideSearchQuery],
 ) -> str:
     """대응 가이드 프롬프트의 가이드 검색 질의별 근거 블록을 조립한다."""
 
     blocks = []
-    for item in grounded:
+    for item in augmented:
         query = item.guide_search_query
         lines = [
             f"[{item.position}]",
@@ -213,7 +223,10 @@ def _render_guide_search_query_context_block(
             f"고객 발언: {query.evidence}",
             "근거:",
         ]
-        lines.extend(f"- {_render_chunk(chunk)}" for chunk in item.chunks)
+        if item.chunks:
+            lines.extend(f"- {_render_chunk(chunk)}" for chunk in item.chunks)
+        else:
+            lines.append("없음")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
@@ -225,11 +238,10 @@ def _render_chunk(chunk: RetrievedChatbotGuideChunkDTO) -> str:
     return f"(출처: {chunk.source_title}{page}) {chunk.content}"
 
 
-def _assemble(
+def _assemble_fallback(
     augmented: Sequence[AugmentedGuideSearchQuery],
-    guidance_by_position: dict[int, str],
 ) -> str:
-    """가이드 검색 질의 순서대로 소제목과 안내 본문을 조립한다."""
+    """생성을 못 하는 경우 모든 위치를 B.5 고정 문구로 조립한다."""
 
     fragments = []
     for item in augmented:
@@ -237,12 +249,22 @@ def _assemble(
             f"{GUIDE_SEARCH_QUERY_HEADING_PREFIX}"
             f"{item.guide_search_query.title}"
         )
-        body = (
-            guidance_by_position.get(item.position)
-            or UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE
-        )
-        fragments.append(f"{heading}\n{body}")
+        fragments.append(f"{heading}\n{UNGROUNDED_GUIDE_SEARCH_QUERY_MESSAGE}")
     return "\n\n".join(fragments)
+
+
+def _chunk_text(chunk: Any) -> str:
+    """LangChain 메시지 청크에서 고객에게 보여줄 일반 텍스트만 꺼낸다."""
+
+    if isinstance(chunk, str):
+        return chunk
+
+    text = getattr(chunk, "text", None)
+    if isinstance(text, str):
+        return text
+
+    content = getattr(chunk, "content", None)
+    return content if isinstance(content, str) else ""
 
 
 def _positions(

@@ -13,7 +13,7 @@ CS_GUIDE_EMBEDDING_DIM = 1536
 
 
 class CsGuideDocumentChunk(SQLModel, table=True):
-    """고객대응가이드 청크 + 임베딩 값 저장 테이블 (CsGuideDocument와 1 : N)"""
+    """고객 대응 가이드 문서의 청크와 임베딩."""
 
     __tablename__ = "cs_guide_document_chunks"
     __table_args__ = (
@@ -58,11 +58,8 @@ class CsGuideDocumentChunk(SQLModel, table=True):
     # chunk_index로 대체할 수 없다. 페이지 개념이 없는 원본은 NULL.
     page: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
 
-    # 잘린 청크 원문
-    # sa_column: SQLModel이 지원하지 않는/추론 못하는 타입일 때 SQLAlchemy 한테 짬때리기
     content: str = Field(sa_column=Column(Text, nullable=False))
 
-    # 임베딩된 잘린 청크
     embedding: list[float] = Field(
         sa_column=Column(Vector(CS_GUIDE_EMBEDDING_DIM), nullable=False)
     )

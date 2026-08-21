@@ -1,10 +1,4 @@
-"""거래별 사기 정황 점수 SSE 발행/구독을 관리한다.
-
-대시보드 브로커(``dashboard_event_broker``)는 전체 구독자에게 한 이벤트를 그대로
-뿌리는 단일 브로드캐스트다. 챗봇 점수는 동시에 여러 상담이 진행되는데 담당자
-화면은 자신이 연 거래의 점수만 받아야 하므로, 구독을 거래(``transaction_id``)
-단위로 나눈다.
-"""
+"""거래별 사기 정황 점수 SSE 발행과 구독을 관리한다."""
 
 from collections import defaultdict
 from dataclasses import dataclass
