@@ -244,12 +244,27 @@ class PlatformMonitoringSummaryResponse(StrictMLOpsDTO):
     cpu_utilization_percent: float | None
     memory_utilization_percent: float | None
     disk_utilization_percent: float | None
+    network_received_kilobytes_per_second: float | None
+    network_sent_kilobytes_per_second: float | None
+    analysis_completed_count: int | None
+    normal_analysis_count: int | None
+    fraud_analysis_count: int | None
 
 
 class PlatformMonitoringSeriesResponse(StrictMLOpsDTO):
     cpu_utilization_percent: list[MonitoringPointResponse]
     memory_utilization_percent: list[MonitoringPointResponse]
     disk_utilization_percent: list[MonitoringPointResponse]
+    network_received_kilobytes_per_second: list[MonitoringPointResponse]
+    network_sent_kilobytes_per_second: list[MonitoringPointResponse]
+    normal_analysis_count: list[MonitoringPointResponse]
+    fraud_analysis_count: list[MonitoringPointResponse]
+
+
+class PlatformDependencyStatusResponse(StrictMLOpsDTO):
+    mlflow_latency_ms: float | None
+    https_certificate_expires_at: datetime | None
+    https_certificate_days_remaining: int | None
 
 
 class PlatformMonitoringResponse(StrictMLOpsDTO):
@@ -266,6 +281,7 @@ class PlatformMonitoringResponse(StrictMLOpsDTO):
     ops_agent_available: bool
     summary: PlatformMonitoringSummaryResponse
     series: PlatformMonitoringSeriesResponse
+    dependencies: PlatformDependencyStatusResponse
 
 
 class PlatformStatusResponse(StrictMLOpsDTO):
@@ -343,6 +359,7 @@ __all__ = [
     "ModelReviewResponse",
     "ModelPromotionRequest",
     "MonitoringPointResponse",
+    "PlatformDependencyStatusResponse",
     "PlatformMonitoringResponse",
     "PlatformMonitoringSeriesResponse",
     "PlatformMonitoringSummaryResponse",

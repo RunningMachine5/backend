@@ -486,7 +486,7 @@ class CloudMonitoringClient:
         }
 
     def get_platform_metrics(self, window_minutes: int) -> dict[str, Any]:
-        """Backend가 실행 중인 VM의 CPU·메모리·디스크 지표를 반환한다."""
+        """Backend VM의 자원 사용률과 네트워크 처리량을 반환한다."""
 
         identity = self._instance_identity_provider()
         start, end, alignment_seconds = self._window(window_minutes)
@@ -524,11 +524,37 @@ class CloudMonitoringClient:
                     metric_label_filter='metric.labels.state = "used"',
                     **common,
                 ),
+                "network_received": lambda: self._query_points(
+                    metric_type=(
+                        "compute.googleapis.com/instance/network/"
+                        "received_bytes_count"
+                    ),
+                    aligner="ALIGN_RATE",
+                    reducer="REDUCE_SUM",
+                    **common,
+                ),
+                "network_sent": lambda: self._query_points(
+                    metric_type=(
+                        "compute.googleapis.com/instance/network/"
+                        "sent_bytes_count"
+                    ),
+                    aligner="ALIGN_RATE",
+                    reducer="REDUCE_SUM",
+                    **common,
+                ),
             }
         )
         cpu = self._percent_points(points["cpu"])
         memory = points["memory"]
         disk = points["disk"]
+        network_received = [
+            {"timestamp": point["timestamp"], "value": point["value"] / 1024}
+            for point in points["network_received"]
+        ]
+        network_sent = [
+            {"timestamp": point["timestamp"], "value": point["value"] / 1024}
+            for point in points["network_sent"]
+        ]
 
         return {
             "window_minutes": window_minutes,
@@ -538,17 +564,29 @@ class CloudMonitoringClient:
             "instance_name": identity.instance_name,
             "zone": identity.zone,
             "queried_at": end,
-            "latest_sample_at": self._latest_timestamp(cpu, memory, disk),
+            "latest_sample_at": self._latest_timestamp(
+                cpu,
+                memory,
+                disk,
+                network_received,
+                network_sent,
+            ),
             "ops_agent_available": bool(memory or disk),
             "summary": {
                 "cpu_utilization_percent": self._latest(cpu),
                 "memory_utilization_percent": self._latest(memory),
                 "disk_utilization_percent": self._latest(disk),
+                "network_received_kilobytes_per_second": self._latest(
+                    network_received
+                ),
+                "network_sent_kilobytes_per_second": self._latest(network_sent),
             },
             "series": {
                 "cpu_utilization_percent": cpu,
                 "memory_utilization_percent": memory,
                 "disk_utilization_percent": disk,
+                "network_received_kilobytes_per_second": network_received,
+                "network_sent_kilobytes_per_second": network_sent,
             },
         }
 

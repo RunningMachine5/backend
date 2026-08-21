@@ -14,7 +14,16 @@ from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -81,6 +90,10 @@ from app.services.mlops.model_review import (
 from app.services.mlops.monitoring import (
     CloudMonitoringClientDep,
     CloudMonitoringError,
+)
+from app.services.mlops.platform_health import (
+    HttpsCertificateError,
+    get_https_certificate_expiry,
 )
 
 
@@ -950,15 +963,70 @@ def get_platform_status(session: SessionDep) -> PlatformStatusResponse:
     response_model=PlatformMonitoringResponse,
 )
 def get_platform_monitoring(
+    request: Request,
+    session: SessionDep,
     client: CloudMonitoringClientDep,
     window_minutes: int = Query(default=60, ge=15, le=1440),
 ) -> dict[str, Any]:
-    """Backend가 실행 중인 VM의 CPU·메모리·디스크 시계열을 반환한다."""
+    """운영 VM 자원과 실제로 저장된 거래 분석 처리량을 반환한다."""
 
     try:
-        return client.get_platform_metrics(window_minutes)
+        result = client.get_platform_metrics(window_minutes)
     except CloudMonitoringError as exc:
         raise _upstream_error(exc) from exc
+
+    alignment_seconds = result["alignment_seconds"]
+    since = datetime.now() - timedelta(minutes=window_minutes)
+    try:
+        throughput = InferencePerformanceRepository(session).summarize_throughput(
+            since,
+            alignment_seconds,
+        )
+    except SQLAlchemyError:
+        throughput = None
+
+    mlflow_latency_ms = None
+    try:
+        mlflow = request.app.state.service_clients.mlflow()
+        started_at = perf_counter()
+        mlflow.check_registry()
+        mlflow_latency_ms = round((perf_counter() - started_at) * 1000, 1)
+    except (AttributeError, MLflowRegistryError):
+        pass
+
+    certificate_expires_at = None
+    certificate_days_remaining = None
+    try:
+        certificate_expires_at = get_https_certificate_expiry(
+            config.PLATFORM_HTTPS_HOST
+        )
+        certificate_days_remaining = int(
+            (certificate_expires_at - datetime.now(UTC)).total_seconds() // 86400
+        )
+    except HttpsCertificateError:
+        pass
+
+    result["summary"].update(
+        {
+            "analysis_completed_count": (
+                throughput.completed_count if throughput else None
+            ),
+            "normal_analysis_count": throughput.normal_count if throughput else None,
+            "fraud_analysis_count": throughput.fraud_count if throughput else None,
+        }
+    )
+    result["series"].update(
+        {
+            "normal_analysis_count": throughput.normal_series if throughput else [],
+            "fraud_analysis_count": throughput.fraud_series if throughput else [],
+        }
+    )
+    result["dependencies"] = {
+        "mlflow_latency_ms": mlflow_latency_ms,
+        "https_certificate_expires_at": certificate_expires_at,
+        "https_certificate_days_remaining": certificate_days_remaining,
+    }
+    return result
 
 
 @router.get("/serving/status")
