@@ -14,7 +14,13 @@ from app.services.demo_transaction_injection import (
 
 
 class DemoTransactionResourceTest(unittest.TestCase):
-    def test_csv_uses_first_100_transaction_api_rows(self) -> None:
+    def test_csv_supports_each_transaction_count_option(self) -> None:
+        for transaction_count in (100, 500, 1000):
+            with self.subTest(transaction_count=transaction_count):
+                rows = load_demo_transaction_rows(transaction_count)
+                self.assertEqual(len(rows), transaction_count)
+
+    def test_csv_preserves_first_transaction_api_row(self) -> None:
         rows = load_demo_transaction_rows()
 
         self.assertEqual(len(rows), DEMO_TRANSACTION_COUNT)
@@ -31,10 +37,14 @@ class DemoTransactionResourceTest(unittest.TestCase):
             )
         )
 
-    def test_manager_rejects_overlapping_run(self) -> None:
+    def test_manager_uses_selected_options_and_rejects_overlapping_run(self) -> None:
         manager = DemoTransactionInjectionManager()
 
-        self.assertTrue(manager.start())
+        self.assertTrue(manager.start(500, 20))
+        status = manager.snapshot()
+
+        self.assertEqual(status.total_count, 500)
+        self.assertEqual(status.transactions_per_second, 20)
         self.assertFalse(manager.start())
 
 
@@ -51,8 +61,14 @@ class DemoTransactionApiTest(unittest.TestCase):
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_starts_background_run_and_returns_completed_status(self) -> None:
         manager = DemoTransactionInjectionManager()
+        received_options: dict[str, int] = {}
+
+        def complete(**options: int) -> None:
+            received_options.update(options)
+            manager.complete()
+
         self.app.dependency_overrides[get_demo_transaction_runner] = (
-            lambda: manager.complete
+            lambda: complete
         )
 
         with patch(
@@ -62,6 +78,10 @@ class DemoTransactionApiTest(unittest.TestCase):
             started = self.client.post(
                 "/demo-transactions/injection",
                 headers={"X-MLOps-Admin-Token": "admin-secret"},
+                json={
+                    "transaction_count": 500,
+                    "transactions_per_second": 20,
+                },
             )
             completed = self.client.get(
                 "/demo-transactions/injection",
@@ -70,13 +90,21 @@ class DemoTransactionApiTest(unittest.TestCase):
 
         self.assertEqual(started.status_code, 202, started.text)
         self.assertEqual(started.json()["state"], "RUNNING")
+        self.assertEqual(started.json()["total_count"], 500)
+        self.assertEqual(started.json()["transactions_per_second"], 20)
+        self.assertEqual(
+            received_options,
+            {"transaction_count": 500, "transactions_per_second": 20},
+        )
         self.assertEqual(completed.status_code, 200, completed.text)
         self.assertEqual(completed.json()["state"], "COMPLETED")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_rejects_second_start_while_running(self) -> None:
         manager = DemoTransactionInjectionManager()
-        self.app.dependency_overrides[get_demo_transaction_runner] = lambda: lambda: None
+        self.app.dependency_overrides[get_demo_transaction_runner] = (
+            lambda: lambda **_: None
+        )
 
         with patch(
             "app.api.demo_transaction.demo_transaction_injection_manager",
@@ -93,6 +121,31 @@ class DemoTransactionApiTest(unittest.TestCase):
 
         self.assertEqual(first.status_code, 202, first.text)
         self.assertEqual(duplicate.status_code, 409, duplicate.text)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_uses_default_options_without_request_body(self) -> None:
+        manager = DemoTransactionInjectionManager()
+        received_options: dict[str, int] = {}
+        self.app.dependency_overrides[get_demo_transaction_runner] = (
+            lambda: lambda **options: received_options.update(options)
+        )
+
+        with patch(
+            "app.api.demo_transaction.demo_transaction_injection_manager",
+            manager,
+        ):
+            response = self.client.post(
+                "/demo-transactions/injection",
+                headers={"X-MLOps-Admin-Token": "admin-secret"},
+            )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(response.json()["total_count"], 100)
+        self.assertEqual(response.json()["transactions_per_second"], 1)
+        self.assertEqual(
+            received_options,
+            {"transaction_count": 100, "transactions_per_second": 1},
+        )
 
 
 if __name__ == "__main__":

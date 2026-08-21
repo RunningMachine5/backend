@@ -304,7 +304,7 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(activation.status_code, 422)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_rule_definition_changes_are_not_exposed(self) -> None:
+    def test_rule_metadata_update_is_not_exposed(self) -> None:
         draft = self.client.post(
             "/rule-sets/drafts",
             headers=ADMIN_HEADERS,
@@ -314,24 +314,58 @@ class FraudRuleApiTest(unittest.TestCase):
         rejected = self.client.put(
             f"/rule-sets/{draft['id']}/rules/{rule['id']}",
             headers=ADMIN_HEADERS,
-            json={
-                "display_name": "변경할 수 없는 이름",
-                "components": [
-                    {
-                        "component_key": component["component_key"],
-                        "weight": component["weight"],
-                    }
-                    for component in rule["components"]
-                ],
-            },
+            json={"display_name": "변경할 수 없는 이름"},
         )
+
         self.assertEqual(rejected.status_code, 422, rejected.text)
 
-        paths = self.client.get("/openapi.json").json()["paths"]
-        create_path = paths.get("/rule-sets/{rule_set_id}/rules", {})
-        update_path = paths["/rule-sets/{rule_set_id}/rules/{rule_id}"]
-        self.assertNotIn("post", create_path)
-        self.assertNotIn("delete", update_path)
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_draft_rule_type_can_be_created_and_deleted(self) -> None:
+        draft = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+        ).json()
+        created = self.client.post(
+            f"/rule-sets/{draft['id']}/rules",
+            headers=ADMIN_HEADERS,
+            json={
+                "type_code": "NEW_ACCOUNT_SCAM",
+                "display_name": "신규 계좌 사기",
+                "description": "운영 검토 중인 신규 유형",
+            },
+        )
+
+        self.assertEqual(created.status_code, 201, created.text)
+        rule = created.json()
+        self.assertEqual(rule["type_code"], "NEW_ACCOUNT_SCAM")
+        self.assertEqual(rule["display_name"], "신규 계좌 사기")
+        self.assertFalse(rule["enabled"])
+        self.assertEqual(rule["components"], [])
+
+        duplicate = self.client.post(
+            f"/rule-sets/{draft['id']}/rules",
+            headers=ADMIN_HEADERS,
+            json={
+                "type_code": "NEW_ACCOUNT_SCAM",
+                "display_name": "중복 유형",
+            },
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+
+        deleted = self.client.delete(
+            f"/rule-sets/{draft['id']}/rules/{rule['id']}",
+            headers=ADMIN_HEADERS,
+        )
+        self.assertEqual(deleted.status_code, 204, deleted.text)
+
+        detail = self.client.get(
+            f"/rule-sets/{draft['id']}",
+            headers=ADMIN_HEADERS,
+        ).json()
+        self.assertNotIn(
+            "NEW_ACCOUNT_SCAM",
+            {item["type_code"] for item in detail["rules"]},
+        )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_existing_draft_must_be_reused_or_discarded(self) -> None:

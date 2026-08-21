@@ -29,10 +29,8 @@ from app.data.model.derived_features import DerivedFeatures
 from app.data.model.mlops import DatasetVersion, TrainingRun
 from app.data.model.transaction import Transaction
 from app.dto.mlops import (
-    CloudRunOperationResponse,
     DatasetPeriodRequest,
     DatasetPeriodSummaryResponse,
-    DatasetVersionRequest,
     DatasetVersionResponse,
     DeploymentCompleteRequest,
     InferencePerformanceResponse,
@@ -52,7 +50,6 @@ from app.dto.mlops import (
     TrainingResultStatus,
     TrainingRunExecutionRequest,
     TrainingRunPrepareRequest,
-    TrainingRunRequest,
     TrainingRunResponse,
     TrainingRunStartResponse,
 )
@@ -372,28 +369,6 @@ def _resolve_run_model_version(
         raise _upstream_error(exc) from exc
 
 
-@router.post(
-    "/datasets",
-    status_code=status.HTTP_201_CREATED,
-    response_model=DatasetVersionResponse,
-)
-def create_dataset_version(
-    payload: DatasetVersionRequest,
-    session: SessionDep,
-) -> DatasetVersionResponse:
-    """GCS에 준비된 불변 학습 데이터셋을 버전으로 등록한다."""
-
-    dataset = DatasetVersion(**payload.model_dump())
-    session.add(dataset)
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(status_code=409, detail="이미 존재하는 데이터셋 버전입니다.") from exc
-    session.refresh(dataset)
-    return _dataset_payload(dataset)
-
-
 @router.get("/datasets", response_model=list[DatasetVersionResponse])
 def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
     datasets = session.exec(
@@ -587,29 +562,6 @@ def execute_training_run(
     )
 
 
-@router.post(
-    "/training/runs",
-    status_code=status.HTTP_202_ACCEPTED,
-    response_model=TrainingRunStartResponse,
-)
-def start_training_run(
-    payload: TrainingRunRequest,
-    client: CloudRunAdminClientDep,
-    session: SessionDep,
-) -> dict[str, Any]:
-    """기존 호출자를 위해 Run 생성과 실행 요청을 한 번에 처리한다."""
-
-    run, _ = _create_requested_training_run(payload.dataset_version_id, session)
-    assert run.id is not None
-    return _execute_training_run(
-        run.id,
-        payload.min_pr_auc,
-        payload.min_recall,
-        client,
-        session,
-    )
-
-
 # Training Job은 Backend 요청과 별도로 실행되므로 성공·실패 결과를 callback으로
 # 돌려준다. 아래 조회/결과 API는 그 비동기 실행 상태를 연결하는 경계다.
 
@@ -777,6 +729,13 @@ def record_training_result(
         if run.cloud_run_execution_name is None:
             run.cloud_run_execution_name = payload.cloud_run_execution_name
             execution_changed = True
+
+    if payload.status == TrainingResultStatus.RUNNING:
+        if execution_changed:
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+        return _training_run_payload(run)
 
     if payload.status == TrainingResultStatus.SUCCEEDED:
         assert payload.mlflow_run_id is not None
@@ -952,23 +911,6 @@ def reconcile_training_run(
     }
 
 
-@router.get("/training/status")
-def get_training_status(
-    client: CloudRunAdminClientDep,
-) -> dict[str, Any]:
-    try:
-        job = client.get_training_status()
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
-    return {
-        "name": job.get("name"),
-        "execution_count": job.get("executionCount", 0),
-        "latest_execution": job.get("latestCreatedExecution"),
-        "reconciling": job.get("reconciling", False),
-        "terminal_condition": job.get("terminalCondition"),
-    }
-
-
 @router.get(
     "/training/monitoring",
     response_model=TrainingMonitoringResponse,
@@ -1016,20 +958,6 @@ def get_platform_monitoring(
     try:
         return client.get_platform_metrics(window_minutes)
     except CloudMonitoringError as exc:
-        raise _upstream_error(exc) from exc
-
-
-@router.get(
-    "/operations/{operation_id}",
-    response_model=CloudRunOperationResponse,
-)
-def get_operation(
-    operation_id: str,
-    client: CloudRunAdminClientDep,
-) -> dict[str, Any]:
-    try:
-        return client.get_operation(operation_id)
-    except CloudRunAdminError as exc:
         raise _upstream_error(exc) from exc
 
 
