@@ -48,78 +48,106 @@ class DerivedFeatureService:
         another_person_account = 0 if recipient_account == source_account else 1
         recipient_account_suspend_status: bool = recipient_account.suspend_status
 
+        agg_features = repo.get_aggregation_features(
+            source_account_number=transaction.source_account_number,
+            recipient_account_number=transaction.recipient_account_number,
+            mac_address=transaction.mac_address,
+            tx_datetime=transaction.transaction_datetime,
+        )
+
         '''추가 DB 조회로 찾을 수 있는 것들 넣기'''
         # 3시간 거래
-        number_of_transaction_with_the_account = repo.get_3hours_transaction(
-            transaction.source_account_number,
-            transaction.recipient_account_number,
-            datetime.now(UTC)
-        )
+        number_of_transaction_with_the_account = agg_features.count_3h
 
         # 최근 일주일 거래
-        count_over_ten_million_transactions = repo.get_count_over_ten_million_transactions_for_week(
-            transaction.source_account_number,
-            datetime.now(UTC),
-        )
-        flag_deposit_more_than_ten_million = 1 if count_over_ten_million_transactions >= 1 else 0
+        flag_deposit_more_than_ten_million = 1 if agg_features.count_10m_in_week >= 1 else 0
 
         # 최근 1개월 거래
-        one_month_max_amount = repo.get_one_month_max_amount(transaction.source_account_number, datetime.now(UTC), False)
-        dawn_one_month_max_amount = repo.get_one_month_max_amount(transaction.source_account_number, datetime.now(UTC), True)
-        one_month_std_dev = repo.get_one_month_std_dev(transaction.source_account_number, datetime.now(UTC), False)
-        dawn_one_month_std_dev = repo.get_one_month_std_dev(transaction.source_account_number, datetime.now(UTC), True)
+        one_month_max_amount = agg_features.one_month_max
+        dawn_one_month_max_amount = agg_features.dawn_one_month_max
+        one_month_std_dev = agg_features.one_month_std_dev
+        dawn_one_month_std_dev = agg_features.dawn_one_month_std_dev
 
         # 기존 거래 전체
-        recipient_transaction_count = repo.get_transaction_history_count(
-            transaction.source_account_number, transaction.recipient_account_number
-        )
-        transaction_history_with_the_account = recipient_transaction_count
-        unused_account_status = 1 if recipient_transaction_count == 0 else 0
-
-        mac_address_history_count = repo.get_mac_address_history_count(
-            transaction.source_account_number, transaction.mac_address
-        )
-        unused_terminal_status = 1 if mac_address_history_count == 0 else 0
+        transaction_history_with_the_account = agg_features.transaction_count_with
+        unused_account_status = 1 if agg_features.transaction_count_with == 0 else 0
+        unused_terminal_status = 1 if agg_features.tx_mac_count == 0 else 0
 
         # 기존 거래 채널 이력
-        last_transaction_datetime = repo.get_last_transaction_datetime_by_channel(
-            transaction.source_account_number, "atm"
-        )
-        last_bank_branch_transaction_datetime = repo.get_last_transaction_datetime_by_channel(
-            transaction.source_account_number, "others"
-        )
+        last_transaction_datetime = agg_features.last_atm_datetime
+        last_bank_branch_transaction_datetime = agg_features.last_branch_datetime
 
-        # customer_event 7일
-        last_customer_events_7 = repo.get_last_customer_events(
-            transaction.source_account_number, datetime.now(UTC), 7
+        source_customer_id = customer.id if customer else None
+        recipient_customer_id = recipient_account.customer_id if recipient_account else None
+
+        events = repo.get_last_customer_both_events(
+            source_account_number=source_account.account_number,
+            recipient_account_number=recipient_account.account_number,
+            source_customer_id=source_customer_id,
+            recipient_customer_id=recipient_customer_id,
         )
-        inquery_atm_limit = 1 if last_customer_events_7.get(CustomerEventType.ATM_LIMIT_INQUIRY) else 0
+        event_map = {(e.customer_id, e.event_type): e for e in events}
+
+        inquery_atm_limit = (
+            1
+            if (event := event_map.get((source_customer_id, CustomerEventType.ATM_LIMIT_INQUIRY.value)))
+            and event.occurred_at > transaction.transaction_datetime - timedelta(days=7)
+            else 0
+        )
         increase_atm_limit = (
-            1 if last_customer_events_7.get(CustomerEventType.ATM_LIMIT_INCREASE) else 0
+            1
+            if (event := event_map.get((source_customer_id, CustomerEventType.ATM_LIMIT_INCREASE.value)))
+            and event.occurred_at > transaction.transaction_datetime - timedelta(days=7)
+            else 0
         )
-        account_indicator_release_limit_excess = 1 if last_customer_events_7.get(CustomerEventType.TRANSACTION_LIMIT_RELEASE) else 0
+        account_indicator_release_limit_excess = (
+            1
+            if (event := event_map.get((source_customer_id, CustomerEventType.TRANSACTION_LIMIT_RELEASE.value)))
+            and event.occurred_at > transaction.transaction_datetime - timedelta(days=7)
+            else 0
+        )
 
-        # customer_event 30일
-        last_customer_events_30 = repo.get_last_customer_events(
-            transaction.recipient_account_number, datetime.now(UTC), 30
+        recipient_suspend_event = event_map.get(
+            (recipient_customer_id, CustomerEventType.SUSPENSION_RELEASE.value)
         )
-        recipient_release_suspension = 1 if last_customer_events_30.get(CustomerEventType.SUSPENSION_RELEASE) else 0
+        recipient_release_suspension = (
+            1
+            if recipient_suspend_event
+            and recipient_suspend_event.occurred_at > transaction.transaction_datetime - timedelta(days=30)
+            else 0
+        )
+        recipient_transaction_resumed_date = (
+            recipient_suspend_event.occurred_at if recipient_suspend_event else None
+        )
 
-        # customer_event 90일
-        last_customer_events_90 = repo.get_last_customer_events(
-            transaction.source_account_number, datetime.now(UTC), 90
+        flag_change_of_authentication_1 = (
+            1
+            if (event := event_map.get((source_customer_id, CustomerEventType.AUTH_1.value)))
+            and event.occurred_at > transaction.transaction_datetime - timedelta(days=90)
+            else 0
         )
-        flag_change_of_authentication_1 = 1 if last_customer_events_90.get(CustomerEventType.AUTH_1) else 0
-        flag_change_of_authentication_2 = 1 if last_customer_events_90.get(CustomerEventType.AUTH_2) else 0
-        flag_change_of_authentication_3 = 1 if last_customer_events_90.get(CustomerEventType.AUTH_3) else 0
-        flag_change_of_authentication_4 = 1 if last_customer_events_90.get(CustomerEventType.AUTH_4) else 0
+        flag_change_of_authentication_2 = (
+            1
+            if (event := event_map.get((source_customer_id, CustomerEventType.AUTH_2.value)))
+            and event.occurred_at > transaction.transaction_datetime - timedelta(days=90)
+            else 0
+        )
+        flag_change_of_authentication_3 = (
+            1
+            if (event := event_map.get((source_customer_id, CustomerEventType.AUTH_3.value)))
+            and event.occurred_at > transaction.transaction_datetime - timedelta(days=90)
+            else 0
+        )
+        flag_change_of_authentication_4 = (
+            1
+            if (event := event_map.get((source_customer_id, CustomerEventType.AUTH_4.value)))
+            and event.occurred_at > transaction.transaction_datetime - timedelta(days=90)
+            else 0
+        )
 
-        # customer_event 전체
-        last_recipient_events_all = repo.get_last_customer_events(
-            transaction.recipient_account_number, datetime.now(UTC)
+        account_remaining_amount_daily_limit_exceeded = (
+            context.source_account.amount_daily_limit - agg_features.today_amount
         )
-        suspend_release_event = last_recipient_events_all.get(CustomerEventType.SUSPENSION_RELEASE)
-        recipient_transaction_resumed_date = suspend_release_event.occurred_at if suspend_release_event else None
 
         return {
             "customer_birth_date": customer_birth_date,
@@ -154,6 +182,7 @@ class DerivedFeatureService:
             "flag_change_of_authentication_3": flag_change_of_authentication_3,
             "flag_change_of_authentication_4": flag_change_of_authentication_4,
             "recipient_transaction_resumed_date": recipient_transaction_resumed_date,
+            "account_remaining_amount_daily_limit_exceeded": account_remaining_amount_daily_limit_exceeded,
         }
 
     def _calc_features(self, transaction: TransactionRequestDTO, context: FeatureContext) -> dict:
@@ -185,13 +214,7 @@ class DerivedFeatureService:
             context.source_account.current_balance - transaction.transaction_amount
         )
 
-        # 일 한도 잔액 계산
-        # 오늘 총 거래액 조회
-        today_amount = self.feature_context_repository.get_todays_transaction_amount(context.source_account.account_number, transaction.transaction_datetime.date())
-        # 일 한도 - 조회한 총 거래액 + 현재 거래액
-        account_remaining_amount_daily_limit_exceeded = context.source_account.amount_daily_limit - (transaction.transaction_amount + today_amount)
-
-        return {"distance": distance, "time_difference": time_difference, "account_balance": account_balance, "account_remaining_amount_daily_limit_exceeded": account_remaining_amount_daily_limit_exceeded}
+        return {"distance": distance, "time_difference": time_difference, "account_balance": account_balance}
 
     def create_derived_features(self, transaction: TransactionRequestDTO) -> tuple:
         # DB 조회
@@ -296,7 +319,7 @@ class DerivedFeatureService:
                 distance=calc_features["distance"],
                 time_difference=calc_features["time_difference"],
                 account_balance=calc_features["account_balance"],
-                account_remaining_amount_daily_limit_exceeded=calc_features[
+                account_remaining_amount_daily_limit_exceeded=filled_features[
                     "account_remaining_amount_daily_limit_exceeded"
                 ],
             ),
@@ -332,7 +355,7 @@ class DerivedFeatureService:
                 flag_terminal_malicious_behavior_6=transaction.customer_flag_terminal_malicious_behavior_6,
             ),
             DerivedFeaturesCreateDTO(
-                remaining_amount_daily_limit=calc_features[
+                remaining_amount_daily_limit=filled_features[
                     "account_remaining_amount_daily_limit_exceeded"
                 ],
                 distance=calc_features["distance"],
