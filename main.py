@@ -3,7 +3,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlmodel import Session
 
-from app.api import agent_case, case_query, chat, dashboard_graph, fraud_rule, health, mlops, transaction, dashboard_insight
+from app.api import (
+    agent_case,
+    case_query,
+    chat,
+    dashboard_graph,
+    dashboard_insight,
+    demo_transaction,
+    fraud_rule,
+    health,
+    mlops,
+    transaction,
+)
 from app.core.db import engine
 from app.core.exception_handlers import register_exception_handlers
 from app.services.client_registry import ServiceClientRegistry
@@ -26,6 +37,7 @@ register_exception_handlers(app)
 # 라우터 등록. 파일이 늘어나면 여기에 include_router 만 추가하면 된다.
 app.include_router(health.router)
 app.include_router(transaction.router)
+app.include_router(demo_transaction.router)
 app.include_router(chat.router)
 app.include_router(chat.transaction_chat_router)
 app.include_router(mlops.router)
