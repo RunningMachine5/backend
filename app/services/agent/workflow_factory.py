@@ -8,6 +8,7 @@ from app.repositories.agent_case import AgentCaseRepository
 from app.repositories.agent_email import AgentEmailRepository
 from app.repositories.agent_guide import AgentGuideRepository
 from app.repositories.agent_investigation import AgentInvestigationRepository
+from app.repositories.chat_session import ChatSessionRepository
 from app.services.agent.case_service import AgentCaseService
 from app.services.agent.dashboard_similar_cases import DashboardSimilarCaseService
 from app.services.agent.email_sender import FraudAlertEmailService
@@ -59,6 +60,7 @@ def create_agent_workflow(session: Session) -> AgentWorkflow:
         dashboard_similar_case_finder=DashboardSimilarCaseService(
             similar_case_tools
         ),
+        customer_response_provider=ChatSessionRepository(session),
     )
 
 

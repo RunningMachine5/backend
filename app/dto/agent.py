@@ -82,6 +82,18 @@ class ResponsePlanDTO:
 
 
 @dataclass(frozen=True, slots=True)
+class CustomerResponseContextDTO:
+    """가이드 생성 직전에 조회한 고객 챗봇 응답과 재채점 결과."""
+
+    customer_answers: list[str]
+    type_scores: dict[str, float]
+
+    @property
+    def has_customer_response(self) -> bool:
+        return bool(self.customer_answers or self.type_scores)
+
+
+@dataclass(frozen=True, slots=True)
 class SimilarCaseResultDTO:
     """대시보드에 표시하는 유사 완료 사건 한 건."""
 
@@ -160,6 +172,7 @@ __all__ = [
     "AgentResponseDTO",
     "ChecklistItemDTO",
     "ClassificationStatus",
+    "CustomerResponseContextDTO",
     "FraudAlertEmailCommand",
     "FraudTypeScoreResultDTO",
     "InformationStatus",

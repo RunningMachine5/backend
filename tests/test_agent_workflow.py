@@ -17,12 +17,15 @@ from app.domain.response_policy import (
 from app.dto.agent import (
     AgentInputDTO,
     AgentResponseDTO,
+    CustomerResponseContextDTO,
     FraudTypeScoreResultDTO,
     InvestigationResultDTO,
     SimilarCaseResultDTO,
 )
 from app.dto.agent_guide import RetrievedGuideChunkDTO
 from app.services.agent.case_service import AgentCaseStartResult
+from app.services.agent.response_plan_generator import PolicyResponsePlanGenerator
+from app.services.agent.response_policy import get_default_policy_repository
 from app.services.agent.type_confidence import calculate_type_confidence
 from app.services.agent.workflow import AgentWorkflow
 
@@ -262,7 +265,54 @@ class FakeDashboardSimilarCaseFinder:
         ]
 
 
+class FakeCustomerResponseProvider:
+    def __init__(self, context: CustomerResponseContextDTO) -> None:
+        self.context = context
+        self.transaction_ids: list[int] = []
+
+    def get_customer_response_context(
+        self, transaction_id: int
+    ) -> CustomerResponseContextDTO:
+        self.transaction_ids.append(transaction_id)
+        return self.context
+
+
 class AgentWorkflowTest(unittest.TestCase):
+    def test_customer_chatbot_result_overrides_rule_type_for_plan_and_checklist(self) -> None:
+        provider = FakeCustomerResponseProvider(
+            CustomerResponseContextDTO(
+                customer_answers=["모르는 사람이 원격제어 앱 설치를 유도했습니다."],
+                type_scores={
+                    "VOICE_PHISHING": 0.93,
+                    "ACCOUNT_TAKEOVER": 0.41,
+                },
+            )
+        )
+        policy_repository = FakePolicyRepository()
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(self._rule_result(0.80, 0.40)),  # type: ignore[arg-type]
+            policy_repository=policy_repository,
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            customer_response_provider=provider,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(provider.transaction_ids, [1])
+        self.assertEqual(policy_repository.requested_fraud_type, "VOICE_PHISHING")
+        self.assertEqual(response.response_result.applied_fraud_type, "VOICE_PHISHING")
+        self.assertTrue(
+            response.response_result.summary.startswith("챗봇 고객 응답을 우선 반영한")
+        )
+        self.assertEqual(
+            response.response_result.checklist[0].item_code,
+            "CHECK_CHATBOT_CUSTOMER_RESPONSE",
+        )
+        self.assertTrue(response.generation_metadata["customer_response_applied"])
+        self.assertEqual(
+            response.generation_metadata["customer_response_answer_count"], 1
+        )
+
     def test_confident_case_skips_investigation_and_completes(self) -> None:
         investigator = FakeInvestigator("MESSENGER_PHISHING")
         case_service = FakeCaseService(self._rule_result(0.80, 0.40))
@@ -347,6 +397,47 @@ class AgentWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(policy_repository.requested_fraud_type, "MESSENGER_PHISHING")
         self.assertEqual(guide_search.last_request.fraud_type, "MESSENGER_PHISHING")
+
+    def test_no_rule_evidence_uses_unclassified_plan_without_similar_search(self) -> None:
+        rule_result = FraudTypeScoreResultDTO(
+            fraud_type_score_result_id=7,
+            rule_filter_status=RuleFilterStatus.APPLIED,
+            primary_fraud_type=None,
+            type_scores={
+                "VOICE_PHISHING": 0.0,
+                "MESSENGER_PHISHING": 0.0,
+                "ACCOUNT_TAKEOVER": 0.0,
+                "FRAUD_USED_ACCOUNT": 0.0,
+            },
+            matched_components=[],
+        )
+        investigator = FakeInvestigator("ACCOUNT_TAKEOVER")
+        policy_repository = FakePolicyRepository()
+        guide_search = FakeGuideSearchService()
+        finder = FakeDashboardSimilarCaseFinder()
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(rule_result),  # type: ignore[arg-type]
+            policy_repository=policy_repository,
+            guide_search_service=guide_search,  # type: ignore[arg-type]
+            investigator=investigator,
+            dashboard_similar_case_finder=finder,
+        )
+
+        response = workflow.run(self._input())
+
+        self.assertEqual(
+            response.investigation_result.classification_status,
+            ClassificationStatus.UNCLASSIFIED,
+        )
+        self.assertEqual(
+            response.response_result.applied_fraud_type,
+            "UNCLASSIFIED",
+        )
+        self.assertEqual(response.similar_case_results, [])
+        self.assertEqual(investigator.call_count, 0)
+        self.assertEqual(finder.call_count, 0)
+        self.assertIsNone(policy_repository.requested_fraud_type)
+        self.assertIsNone(guide_search.last_request)
 
     def test_existing_case_returns_without_running_followup_nodes(self) -> None:
         case_service = FakeCaseService(
@@ -435,6 +526,52 @@ class AgentWorkflowTest(unittest.TestCase):
 
         self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
         self.assertEqual(response.similar_case_results, [])
+
+    def test_fraud_used_account_plan_is_generated_from_policy_without_ml(self) -> None:
+        """ML 게이트와 별개로 사기이용계좌 Agent 대응을 검증한다."""
+        rule_result = FraudTypeScoreResultDTO(
+            fraud_type_score_result_id=7,
+            rule_filter_status=RuleFilterStatus.APPLIED,
+            primary_fraud_type="FRAUD_USED_ACCOUNT",
+            type_scores={
+                "FRAUD_USED_ACCOUNT": 0.70,
+                "VOICE_PHISHING": 0.25,
+                "ACCOUNT_TAKEOVER": 0.10,
+                "MESSENGER_PHISHING": 0.05,
+            },
+            matched_components=[],
+        )
+        workflow = AgentWorkflow(
+            case_service=FakeCaseService(rule_result),  # type: ignore[arg-type]
+            policy_repository=get_default_policy_repository(),
+            guide_search_service=FakeGuideSearchService(),  # type: ignore[arg-type]
+            response_plan_generator=PolicyResponsePlanGenerator(),
+            dashboard_similar_case_finder=FakeDashboardSimilarCaseFinder(),
+        )
+
+        response = workflow.run(
+            AgentInputDTO(
+                transaction_id=1,
+                fraud_type_score_result_id=7,
+                risk_score=84,
+                risk_grade=RiskGrade.HIGH,
+            )
+        )
+
+        self.assertEqual(response.execution_status, AgentExecutionStatus.COMPLETED)
+        self.assertEqual(
+            response.response_result.applied_fraud_type,
+            "FRAUD_USED_ACCOUNT",
+        )
+        self.assertEqual(
+            [action.action_code for action in response.response_result.recommended_actions],
+            ["PRIORITY_ACCOUNT_FLOW_REVIEW", "REQUEST_ACCOUNT_RISK_REVIEW"],
+        )
+        self.assertEqual(
+            [item.item_code for item in response.response_result.checklist],
+            ["CHECK_ACCOUNT_FLOW_SIGNAL", "CHECK_LINKED_ACCOUNT_RISK"],
+        )
+        self.assertEqual(len(response.similar_case_results), 1)
 
     @staticmethod
     def _input() -> AgentInputDTO:

@@ -10,6 +10,7 @@ from app.domain.response_policy import (
     ResponsePolicy,
 )
 from app.dto.agent_guide import RetrievedGuideChunkDTO
+from app.dto.agent import CustomerResponseContextDTO
 from app.services.agent.response_plan_generator import (
     GeneratedActionDetail,
     GeneratedResponsePlan,
@@ -41,6 +42,21 @@ class FakeStructuredLLM:
 
 
 class RagResponsePlanGeneratorTest(unittest.TestCase):
+    def test_customer_response_is_included_as_priority_generation_context(self) -> None:
+        llm = FakeStructuredLLM(self._generated_plan())
+        RagResponsePlanGenerator(structured_llm=llm).generate(
+            fraud_type="ACCOUNT_TAKEOVER",
+            policy=self._policy(),
+            guides=[self._guide()],
+            customer_response=CustomerResponseContextDTO(
+                customer_answers=["원격제어 앱을 설치했습니다."],
+                type_scores={"VOICE_PHISHING": 0.9},
+            ),
+        )
+
+        self.assertIn("원격제어 앱을 설치했습니다.", llm.messages[1]["content"])
+        self.assertIn("고객 응답이 있으면", llm.messages[0]["content"])
+
     def test_rag_context_enriches_policy_actions(self) -> None:
         llm = FakeStructuredLLM(
             GeneratedResponsePlan(
