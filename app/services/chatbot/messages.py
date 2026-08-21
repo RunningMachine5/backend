@@ -8,12 +8,10 @@ from string import Template
 
 # 챗봇 최초 접속 알림
 INITIAL_NOTIFICATION_TEMPLATE = Template(
-    "고객님의\n"
+    "안녕하세요 고객님의\n"
     "$transaction_datetime $transaction_amount $transaction_direction\n"
     "거래에서 전자금융사고 예방을 위한 확인 필요 사항이 발생하여"
     " 현재 일시적으로 처리 보류 중입니다\n"
-    "금융사기가 의심되거나 관련된 자세한 상담을 받고 싶으시면\n"
-    "챗봇 상담 버튼을 눌러주세요"
 )
 
 # 버튼 선택 결과
