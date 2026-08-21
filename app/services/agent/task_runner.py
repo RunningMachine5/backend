@@ -14,21 +14,27 @@ from app.services.agent.workflow_factory import create_agent_workflow
 logger = logging.getLogger(__name__)
 
 
-def run_agent_task(agent_input: AgentInputDTO) -> None:
-    """별도 DB Session으로 Agent를 실행한다.
-
-    거래 API 응답 뒤 백그라운드로 도는 작업이라 실패해도 밖으로 올리지 않고 로그만 남긴다.
-    챗봇 세션 상태는 담당자 화면이 거래별 조회를 폴링해 확인한다(PRD 2.7).
-    """
-
+def _run_agent_task(agent_input: AgentInputDTO, *, send_email: bool) -> None:
     try:
         with Session(engine) as session:
-            create_agent_workflow(session).run(agent_input)
+            create_agent_workflow(session, send_email=send_email).run(agent_input)
     except Exception:
         logger.exception(
             "Agent 백그라운드 실행 실패: transaction_id=%s",
             agent_input.transaction_id,
         )
+
+
+def run_agent_task(agent_input: AgentInputDTO) -> None:
+    """거래 API 응답 뒤 Agent를 실행하고 필요한 고객 이메일을 발송한다."""
+
+    _run_agent_task(agent_input, send_email=True)
+
+
+def run_demo_agent_task(agent_input: AgentInputDTO) -> None:
+    """시연 거래의 Agent는 실행하되 고객 이메일은 발송하지 않는다."""
+
+    _run_agent_task(agent_input, send_email=False)
 
 
 def get_agent_task_runner() -> Callable[[AgentInputDTO], None]:
@@ -47,4 +53,5 @@ __all__ = [
     "AgentTaskRunnerDep",
     "get_agent_task_runner",
     "run_agent_task",
+    "run_demo_agent_task",
 ]

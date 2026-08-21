@@ -11,7 +11,10 @@ from app.repositories.agent_investigation import AgentInvestigationRepository
 from app.repositories.chat_session import ChatSessionRepository
 from app.services.agent.case_service import AgentCaseService
 from app.services.agent.dashboard_similar_cases import DashboardSimilarCaseService
-from app.services.agent.email_sender import FraudAlertEmailService
+from app.services.agent.email_sender import (
+    FraudAlertEmailService,
+    NoOpFraudAlertEmailService,
+)
 from app.services.agent.guide_embedder import OpenAIGuideEmbedder
 from app.services.agent.guide_search import GuideSearchService
 from app.services.agent.response_plan_generator import RagResponsePlanGenerator
@@ -32,14 +35,25 @@ def get_response_plan_generator() -> RagResponsePlanGenerator:
     return RagResponsePlanGenerator()
 
 
-def create_agent_workflow(session: Session) -> AgentWorkflow:
+def create_agent_workflow(
+    session: Session,
+    *,
+    send_email: bool = True,
+) -> AgentWorkflow:
     """하나의 DB Session에 연결된 Agent Workflow를 생성한다."""
 
     similar_case_tools = DatabaseSimilarCaseTools(
         AgentInvestigationRepository(session)
     )
-    alert_email_service = FraudAlertEmailService.from_env(
-        AgentEmailRepository(session)
+    email_notifier = (
+        ChatSessionAlertNotifier(
+            session=session,
+            email_notifier=FraudAlertEmailService.from_env(
+                AgentEmailRepository(session)
+            ),
+        )
+        if send_email
+        else NoOpFraudAlertEmailService()
     )
     return AgentWorkflow(
         case_service=AgentCaseService(AgentCaseRepository(session)),
@@ -53,10 +67,7 @@ def create_agent_workflow(session: Session) -> AgentWorkflow:
             OpenAIInvestigationActionSelector(),
         ),
         response_plan_generator=get_response_plan_generator(),
-        email_notifier=ChatSessionAlertNotifier( # FraudEmailService를 사용하는 객체
-            session=session,
-            email_notifier=alert_email_service,
-        ),
+        email_notifier=email_notifier,
         dashboard_similar_case_finder=DashboardSimilarCaseService(
             similar_case_tools
         ),

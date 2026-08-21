@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from app.domain.enums import RiskGrade
 from app.dto.agent import AgentInputDTO
-from app.services.agent.task_runner import run_agent_task
+from app.services.agent.task_runner import run_agent_task, run_demo_agent_task
 
 
 class AgentTaskRunnerTest(unittest.TestCase):
@@ -26,7 +26,21 @@ class AgentTaskRunnerTest(unittest.TestCase):
 
         run_agent_task(self.agent_input)
 
-        workflow_factory.assert_called_once_with(session)
+        workflow_factory.assert_called_once_with(session, send_email=True)
+        workflow_factory.return_value.run.assert_called_once_with(self.agent_input)
+
+    @patch("app.services.agent.task_runner.create_agent_workflow")
+    @patch("app.services.agent.task_runner.Session")
+    def test_demo_agent_runs_without_email(
+        self,
+        session_class,
+        workflow_factory,
+    ) -> None:
+        session = self._session_from(session_class)
+
+        run_demo_agent_task(self.agent_input)
+
+        workflow_factory.assert_called_once_with(session, send_email=False)
         workflow_factory.return_value.run.assert_called_once_with(self.agent_input)
 
     @patch("app.services.agent.task_runner.create_agent_workflow")
