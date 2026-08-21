@@ -1,5 +1,13 @@
 import os
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "0"))
+MLOPS_REVIEW_MODEL = os.getenv(
+    "MLOPS_REVIEW_MODEL",
+    os.getenv("OPENAI_MODEL", "gpt-5-mini"),
+).strip()
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+psycopg://root:1234@localhost:5432/fdshield-db",

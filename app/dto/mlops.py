@@ -348,6 +348,12 @@ class MLflowModelDetails(StrictMLOpsDTO):
     tags: dict[str, str]
 
 
+class ModelReviewResponse(StrictMLOpsDTO):
+    source: Literal["AI"] = "AI"
+    decision: Literal["RECOMMENDED", "NOT_RECOMMENDED"]
+    summary: str
+
+
 __all__ = [
     "CloudRunOperationResponse",
     "DatasetBuildSummaryResponse",
@@ -360,6 +366,7 @@ __all__ = [
     "LabeledDatasetBuildResponse",
     "MLflowDetailsPointer",
     "MLflowModelDetails",
+    "ModelReviewResponse",
     "ModelPromotionRequest",
     "MonitoringPointResponse",
     "PlatformMonitoringResponse",
