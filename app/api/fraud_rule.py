@@ -36,7 +36,7 @@ from app.dto.fraud_rule import (
     FraudRuleSetDraftCreate,
     FraudRuleSetResponse,
     FraudRuleSetSummaryResponse,
-    FraudRuleUpdate,
+    FraudRuleWeightUpdate,
     FraudRuleValidationIssue,
     FraudRuleValidationResponse,
     RuleExpressionOperator,
@@ -955,35 +955,6 @@ def delete_draft_rule_set(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post(
-    "/rule-sets/{rule_set_id}/rules",
-    response_model=FraudRuleResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_rule(
-    rule_set_id: int,
-    payload: FraudRuleCreate,
-    session: SessionDep,
-) -> FraudRuleResponse:
-    rule_set = _get_rule_set(session, rule_set_id)
-    _assert_draft(rule_set)
-    duplicate = session.exec(
-        select(FraudRule).where(
-            FraudRule.rule_set_id == rule_set_id,
-            FraudRule.type_code == payload.type_code,
-        )
-    ).first()
-    if duplicate is not None:
-        raise _conflict("같은 룰셋에 동일한 type_code를 추가할 수 없습니다.")
-
-    rule = _add_rule(session, rule_set, payload)
-    rule_set.updated_at = datetime.now()
-    session.add(rule_set)
-    _commit_or_conflict(session, "룰 또는 component_key가 중복되었습니다.")
-    session.refresh(rule)
-    return _rule_response(session, rule)
-
-
 @router.put(
     "/rule-sets/{rule_set_id}/rules/{rule_id}",
     response_model=FraudRuleResponse,
@@ -991,61 +962,41 @@ def create_rule(
 def update_rule(
     rule_set_id: int,
     rule_id: int,
-    payload: FraudRuleUpdate,
+    payload: FraudRuleWeightUpdate,
     session: SessionDep,
 ) -> FraudRuleResponse:
+    """DRAFT에 이미 정의된 구성요소의 가중치만 수정한다."""
+
     rule_set = _get_rule_set(session, rule_set_id)
     _assert_draft(rule_set)
     rule = _get_rule(session, rule_set_id, rule_id)
 
-    scalar_fields = {
-        "type_code",
-        "display_name",
-        "description",
-        "enabled",
-        "sort_order",
+    stored_components = _components_for_rule(session, rule.id)
+    components_by_key = {
+        component.component_key: component for component in stored_components
     }
-    for field_name in payload.model_fields_set & scalar_fields:
-        setattr(rule, field_name, getattr(payload, field_name))
+    requested_keys = {component.component_key for component in payload.components}
+    if requested_keys != set(components_by_key):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="기존 구성요소의 component_key와 가중치를 빠짐없이 보내야 합니다.",
+        )
 
     now = datetime.now()
+    for requested in payload.components:
+        component = components_by_key[requested.component_key]
+        component.weight = requested.weight
+        component.updated_at = now
+        session.add(component)
+
     rule.updated_at = now
     rule_set.updated_at = now
     session.add(rule)
     session.add(rule_set)
 
-    if payload.components is not None:
-        for component in _components_for_rule(session, rule.id):
-            session.delete(component)
-        session.flush()
-        for component in payload.components:
-            _add_component(session, rule, component)
-
-    _commit_or_conflict(session, "룰 또는 component_key가 중복되었습니다.")
+    session.commit()
     session.refresh(rule)
     return _rule_response(session, rule)
-
-
-@router.delete(
-    "/rule-sets/{rule_set_id}/rules/{rule_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-def delete_rule(
-    rule_set_id: int,
-    rule_id: int,
-    session: SessionDep,
-) -> Response:
-    rule_set = _get_rule_set(session, rule_set_id)
-    _assert_draft(rule_set)
-    rule = _get_rule(session, rule_set_id, rule_id)
-    for component in _components_for_rule(session, rule.id):
-        session.delete(component)
-    session.flush()
-    session.delete(rule)
-    rule_set.updated_at = datetime.now()
-    session.add(rule_set)
-    session.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

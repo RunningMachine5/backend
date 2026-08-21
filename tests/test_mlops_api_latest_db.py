@@ -9,7 +9,18 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
 from app.core.db import get_session
+from app.data.model.account import Account
+from app.data.model.customer import Customer
+from app.data.model.derived_features import DerivedFeatures
 from app.data.model.mlops import DatasetVersion, TrainingRun
+from app.data.model.transaction import Transaction
+from app.dto.ml_features import MLTransactionFeatures
+from app.services.features.ml_feature_assembler import (
+    build_account_fields,
+    build_customer_fields,
+    build_derived_features_fields,
+    build_transaction_fields,
+)
 from app.services.mlops.cloud_run import (
     CloudRunAdminError,
     get_cloud_run_admin_client,
@@ -33,6 +44,10 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
         DatasetVersion.__table__.create(self.engine)
         TrainingRun.__table__.create(self.engine)
+        Customer.__table__.create(self.engine)
+        Account.__table__.create(self.engine)
+        Transaction.__table__.create(self.engine)
+        DerivedFeatures.__table__.create(self.engine)
 
         def override_session():
             with Session(self.engine) as session:
@@ -49,6 +64,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         app.dependency_overrides[get_mlflow_registry_client] = lambda: self.mlflow
         self.client = TestClient(app)
         self.headers = {"X-MLOps-Admin-Token": "admin-secret"}
+        self.make_verification_transaction()
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
@@ -76,6 +92,97 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             assert run.id is not None
             return run.id
 
+    def make_verification_transaction(self) -> None:
+        """후보 모델 smoke에 사용할 최근 저장 거래를 만든다."""
+
+        features = MLTransactionFeatures.model_validate(valid_ml_raw_data())
+        customer = Customer(
+            id=900001,
+            name="검증 고객",
+            identification_number="verification-customer",
+            **build_customer_fields(features),
+        )
+        source = Account(
+            id=900001,
+            customer_id=customer.id,
+            account_number="verification-source",
+            **build_account_fields(features),
+        )
+        recipient = Account(
+            id=900002,
+            account_number="verification-recipient",
+        )
+        transaction = Transaction(
+            id=900001,
+            customer_id=customer.id,
+            source_account_number=source.account_number,
+            recipient_account_number=recipient.account_number,
+            **build_transaction_fields(features),
+        )
+        derived = DerivedFeatures(
+            id=transaction.id,
+            **build_derived_features_fields(features),
+        )
+        with Session(self.engine) as session:
+            session.add(customer)
+            session.add(source)
+            session.add(recipient)
+            session.add(transaction)
+            session.add(derived)
+            session.commit()
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_platform_status_checks_database_connection(self) -> None:
+        response = self.client.get("/mlops/platform/status", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["backend_status"], "UP")
+        self.assertEqual(response.json()["database_status"], "UP")
+        self.assertIsInstance(response.json()["database_latency_ms"], float)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_training_execution_returns_runtime_details(self) -> None:
+        run_id = self.make_run()
+        with Session(self.engine) as session:
+            run = session.get(TrainingRun, run_id)
+            assert run is not None
+            run.cloud_run_execution_name = "training-abc12"
+            session.add(run)
+            session.commit()
+        self.cloud_run.get_training_execution.return_value = {
+            "name": (
+                "projects/p/locations/asia-northeast3/jobs/fdshield-training/"
+                "executions/training-abc12"
+            ),
+            "createTime": "2026-08-19T03:00:00Z",
+            "startTime": "2026-08-19T03:00:05Z",
+            "completionTime": "2026-08-19T03:02:00Z",
+            "runningCount": 0,
+            "succeededCount": 1,
+            "failedCount": 0,
+            "cancelledCount": 0,
+            "retriedCount": 0,
+            "logUri": "https://console.cloud.google.com/logs/query",
+            "terminalCondition": {"state": "CONDITION_SUCCEEDED"},
+        }
+        self.cloud_run.training_execution_outcome.return_value = "SUCCEEDED"
+
+        response = self.client.get(
+            f"/mlops/training/runs/{run_id}/execution",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["outcome"], "SUCCEEDED")
+        self.assertEqual(response.json()["succeeded_count"], 1)
+        self.assertEqual(
+            response.json()["log_uri"],
+            "https://console.cloud.google.com/logs/query",
+        )
+        self.cloud_run.get_training_execution.assert_called_once_with(
+            "training-abc12"
+        )
+
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_dataset_build_generates_version_and_gcs_uri(self) -> None:
         self.dataset_builder.label_summary.return_value = DatasetLabelSummary(
@@ -101,7 +208,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         created = response.json()
         self.assertRegex(
             created["version"],
-            r"^train1-labeled-20260801-20260831-n9-f3-\d{8}T\d{6}Z$",
+            r"^train_v1-labeled-20260801-20260831-n9-f3-\d{8}T\d{6}Z$",
         )
         self.assertEqual(
             created["gcs_uri"],
@@ -118,6 +225,43 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(created["period_end"], "2026-08-31")
         self.assertEqual(created["period_normal_count"], 9)
         self.assertEqual(created["period_fraud_count"], 3)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_dataset_build_increments_version_number(self) -> None:
+        with Session(self.engine) as session:
+            session.add(
+                DatasetVersion(
+                    version="legacy-dataset",
+                    gcs_uri="gs://bucket/legacy.csv",
+                    row_count=100,
+                )
+            )
+            session.commit()
+
+        self.dataset_builder.label_summary.return_value = DatasetLabelSummary(
+            normal_count=1,
+            fraud_count=1,
+        )
+        self.dataset_builder.build.return_value = DatasetBuildResult(
+            source_row_count=100,
+            output_row_count=102,
+            confirmed_label_count=2,
+            appended_label_count=2,
+            normal_count=1,
+            fraud_count=1,
+        )
+
+        response = self.client.post(
+            "/mlops/datasets/build",
+            headers=self.headers,
+            json={"period_start": "2026-08-01", "period_end": "2026-08-20"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertRegex(
+            response.json()["version"],
+            r"^train_v2-labeled-20260801-20260820-n1-f1-\d{8}T\d{6}Z$",
+        )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_dataset_preview_returns_period_label_counts(self) -> None:
@@ -480,7 +624,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
     def test_approval_resolves_version_from_mlflow_run(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-run")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.verify_staged_model_revision.return_value = {
+        self.cloud_run.stage_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -500,7 +644,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.mlflow.resolve_model_version.assert_called_once_with(
             "fdshield-fraud-detector-v2", "candidate-run"
         )
-        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
+        self.cloud_run.stage_model_revision.assert_called_once_with("17")
         self.mlflow.set_model_version_tags.assert_called_once_with(
             "fdshield-fraud-detector-v2",
             "17",
@@ -514,7 +658,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
     def test_staged_candidate_can_be_revalidated_without_new_db_columns(self) -> None:
         run_id = self.make_run("STAGED", "candidate-restage")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.verify_staged_model_revision.return_value = {
+        self.cloud_run.stage_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -535,7 +679,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 202, response.text)
         self.assertEqual(response.json()["training_run"]["status"], "STAGED")
         self.assertIsNone(response.json()["operation_id"])
-        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
+        self.cloud_run.stage_model_revision.assert_called_once_with("17")
 
         duplicate_retry = self.client.post(
             f"/mlops/training/runs/{run_id}/decision",
@@ -543,13 +687,13 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             json={"decision": "APPROVE"},
         )
         self.assertEqual(duplicate_retry.status_code, 409)
-        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
+        self.cloud_run.stage_model_revision.assert_called_once_with("17")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_approval_reuses_cd_prepared_revision_without_operation(self) -> None:
+    def test_approval_reuses_prepared_revision_without_operation(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-prestaged")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.verify_staged_model_revision.return_value = {
+        self.cloud_run.stage_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -575,13 +719,13 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.assertEqual(response.json()["training_run"]["status"], "STAGED")
         self.assertIsNone(response.json()["operation_id"])
         self.assertTrue(response.json()["reused"])
-        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
+        self.cloud_run.stage_model_revision.assert_called_once_with("17")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_staging_validation_error_keeps_candidate_status(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-reconciling")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.verify_staged_model_revision.side_effect = CloudRunAdminError(
+        self.cloud_run.stage_model_revision.side_effect = CloudRunAdminError(
             "Serving Service가 아직 리비전을 준비 중입니다."
         )
 
@@ -602,7 +746,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
     def test_approval_tag_write_failure_keeps_candidate_status(self) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-tag-failure")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.verify_staged_model_revision.return_value = {
+        self.cloud_run.stage_model_revision.return_value = {
             "operation": None,
             "tag": "model-v17",
             "revision": "serving-00017-candidate",
@@ -622,7 +766,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 502, response.text)
-        self.cloud_run.verify_staged_model_revision.assert_called_once_with("17")
+        self.cloud_run.stage_model_revision.assert_called_once_with("17")
         self.mlflow.set_model_version_tags.assert_called_once_with(
             "fdshield-fraud-detector-v2",
             "17",
@@ -641,10 +785,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         missing_run = self.client.post(
             "/mlops/serving/promotions",
             headers=self.headers,
-            json={
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
-            },
+            json={},
         )
         bypass = self.client.post(
             "/mlops/serving/promotions",
@@ -652,8 +793,6 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             json={
                 "training_run_id": 1,
                 "model_version": "999",
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
             },
         )
         self.assertEqual(missing_run.status_code, 422)
@@ -679,18 +818,16 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         promoted = self.client.post(
             "/mlops/serving/promotions",
             headers=self.headers,
-            json={
-                "training_run_id": run_id,
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
-            },
+            json={"training_run_id": run_id},
         )
         self.assertEqual(promoted.status_code, 202)
         self.assertEqual(promoted.json()["training_run"]["status"], "PROMOTING")
-        self.cloud_run.promote_model_revision.assert_called_once()
+        promotion_request = self.cloud_run.promote_model_revision.call_args.kwargs
+        self.assertEqual(promotion_request["model_version"], "17")
+        self.assertEqual(promotion_request["transaction_id"], 900001)
         self.assertEqual(
-            self.cloud_run.promote_model_revision.call_args.kwargs["model_version"],
-            "17",
+            len(promotion_request["features"]),
+            len(valid_ml_raw_data()),
         )
 
         self.cloud_run.get_model_deployment_status.return_value = {
@@ -714,6 +851,29 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.mlflow.set_model_alias.assert_called_once_with(
             "fdshield-fraud-detector-v2", "champion", "17"
         )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_promotion_requires_a_stored_verification_transaction(self) -> None:
+        run_id = self.make_run("STAGED", "candidate-run")
+        self.mlflow.resolve_model_version.return_value = "17"
+        with Session(self.engine) as session:
+            derived = session.get(DerivedFeatures, 900001)
+            assert derived is not None
+            session.delete(derived)
+            session.commit()
+
+        response = self.client.post(
+            "/mlops/serving/promotions",
+            headers=self.headers,
+            json={"training_run_id": run_id},
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(
+            response.json()["error"]["message"],
+            "자동 검증에 사용할 저장 거래가 없습니다.",
+        )
+        self.cloud_run.promote_model_revision.assert_not_called()
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_live_completion_keeps_promoting_when_traffic_is_not_ready(self) -> None:
@@ -797,11 +957,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         retried = self.client.post(
             "/mlops/serving/promotions",
             headers=self.headers,
-            json={
-                "training_run_id": run_id,
-                "transaction_id": 900001,
-                "features": valid_ml_raw_data(),
-            },
+            json={"training_run_id": run_id},
         )
         self.assertEqual(retried.status_code, 202)
         self.assertEqual(retried.json()["training_run"]["status"], "PROMOTING")

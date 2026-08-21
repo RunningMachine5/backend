@@ -108,27 +108,17 @@ class FraudRuleApiTest(unittest.TestCase):
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_new_draft_cannot_activate_transition_only_legacy_field(self) -> None:
         draft = self.client.post("/rule-sets/drafts", headers=ADMIN_HEADERS).json()
-        added = self.client.post(
-            f"/rule-sets/{draft['id']}/rules",
-            headers=ADMIN_HEADERS,
-            json={
-                "type_code": "LEGACY_BYPASS",
-                "display_name": "레거시 우회",
-                "components": [
-                    {
-                        "component_key": "legacy_open_banking",
-                        "name": "레거시 오픈뱅킹",
-                        "condition_expression": {
-                            "field": "Account_indicator_Openbanking",
-                            "operator": "EQ",
-                            "value": 1,
-                        },
-                        "weight": 1.0,
-                    }
-                ],
-            },
-        )
-        self.assertEqual(added.status_code, 201, added.text)
+        component_id = draft["rules"][0]["components"][0]["id"]
+        with Session(self.engine) as session:
+            component = session.get(FraudRuleComponent, component_id)
+            self.assertIsNotNone(component)
+            component.condition_expression = {
+                "field": "Account_indicator_Openbanking",
+                "operator": "EQ",
+                "value": 1,
+            }
+            session.add(component)
+            session.commit()
 
         validation = self.client.post(
             f"/rule-sets/{draft['id']}/validate",
@@ -152,10 +142,19 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(activated.status_code, 200, activated.text)
         self.assertEqual(activated.json()["status"], "ACTIVE")
 
+        first_rule = first["rules"][0]
         immutable = self.client.put(
             f"/rule-sets/{first['id']}/rules/{first['rules'][0]['id']}",
             headers=ADMIN_HEADERS,
-            json={"display_name": "수정 불가"},
+            json={
+                "components": [
+                    {
+                        "component_key": component["component_key"],
+                        "weight": component["weight"],
+                    }
+                    for component in first_rule["components"]
+                ]
+            },
         )
         self.assertEqual(immutable.status_code, 409)
 
@@ -168,27 +167,24 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(second_body["version"], 2)
         self.assertEqual(len(second_body["rules"]), 4)
 
-        added = self.client.post(
-            f"/rule-sets/{second_body['id']}/rules",
-            headers=ADMIN_HEADERS,
-            json={
-                "type_code": "CUSTOM_FRAUD",
-                "display_name": "신규 사기유형",
-                "components": [
-                    {
-                        "component_key": "loan_related_only",
-                        "name": "대출 관련 여부",
-                        "condition_expression": {
-                            "field": "loan_related",
-                            "operator": "EQ",
-                            "value": True,
-                        },
-                        "weight": 1.0,
-                    }
-                ],
-            },
+        editable_rule = next(
+            rule for rule in second_body["rules"] if len(rule["components"]) >= 2
         )
-        self.assertEqual(added.status_code, 201, added.text)
+        weights = [
+            {
+                "component_key": component["component_key"],
+                "weight": component["weight"],
+            }
+            for component in editable_rule["components"]
+        ]
+        weights[0]["weight"] += 0.01
+        weights[1]["weight"] -= 0.01
+        updated = self.client.put(
+            f"/rule-sets/{second_body['id']}/rules/{editable_rule['id']}",
+            headers=ADMIN_HEADERS,
+            json={"components": weights},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
 
         activated_second = self.client.post(
             f"/rule-sets/{second_body['id']}/activate",
@@ -217,10 +213,7 @@ class FraudRuleApiTest(unittest.TestCase):
         replacement = [
             {
                 "component_key": component["component_key"],
-                "name": component["name"],
-                "condition_expression": component["condition_expression"],
                 "weight": component["weight"],
-                "sort_order": component["sort_order"],
             }
             for component in components
         ]
@@ -245,25 +238,34 @@ class FraudRuleApiTest(unittest.TestCase):
         self.assertEqual(activation.status_code, 422)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_delete_rule_is_limited_to_draft(self) -> None:
+    def test_rule_definition_changes_are_not_exposed(self) -> None:
         draft = self.client.post(
             "/rule-sets/drafts",
             headers=ADMIN_HEADERS,
         ).json()
-        rule_id = draft["rules"][0]["id"]
+        rule = draft["rules"][0]
 
-        deleted = self.client.delete(
-            f"/rule-sets/{draft['id']}/rules/{rule_id}",
+        rejected = self.client.put(
+            f"/rule-sets/{draft['id']}/rules/{rule['id']}",
             headers=ADMIN_HEADERS,
+            json={
+                "display_name": "변경할 수 없는 이름",
+                "components": [
+                    {
+                        "component_key": component["component_key"],
+                        "weight": component["weight"],
+                    }
+                    for component in rule["components"]
+                ],
+            },
         )
-        self.assertEqual(deleted.status_code, 204, deleted.text)
+        self.assertEqual(rejected.status_code, 422, rejected.text)
 
-        with Session(self.engine) as session:
-            self.assertIsNone(session.get(FraudRule, rule_id))
-            remaining = session.exec(
-                select(FraudRule).where(FraudRule.rule_set_id == draft["id"])
-            ).all()
-            self.assertEqual(len(remaining), 3)
+        paths = self.client.get("/openapi.json").json()["paths"]
+        create_path = paths.get("/rule-sets/{rule_set_id}/rules", {})
+        update_path = paths["/rule-sets/{rule_set_id}/rules/{rule_id}"]
+        self.assertNotIn("post", create_path)
+        self.assertNotIn("delete", update_path)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_existing_draft_must_be_reused_or_discarded(self) -> None:

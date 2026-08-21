@@ -120,11 +120,11 @@ def _default_smoke_client(
 
 
 class CloudRunAdminClient:
-    """학습 Job 실행과 검증된 Serving 리비전 승격을 담당한다.
+    """학습 Job 실행과 승인된 모델의 Serving 리비전 승격을 담당한다.
 
     이 client는 모델의 성능을 판단하지 않는다. API 계층이 승인한 정확한 모델
-    버전을 0% 리비전으로 확인하고, tagged URL의 실제 예측이 성공한 뒤에만
-    운영 트래픽 변경을 요청한다.
+    버전으로 0% 리비전을 만들고, tagged URL의 실제 예측이 성공한 뒤에만 운영
+    트래픽 변경을 요청한다. Serving 이미지는 현재 운영 중인 digest를 그대로 쓴다.
     """
 
     def __init__(
@@ -511,6 +511,28 @@ class CloudRunAdminClient:
             f"Serving 컨테이너 {self.serving_container!r}를 찾지 못했습니다."
         )
 
+    @staticmethod
+    def _set_plain_env(container: dict[str, Any], values: Mapping[str, str]) -> None:
+        """기존 Secret 환경변수는 보존하고 모델 선택값만 교체한다."""
+
+        current = container.get("env", [])
+        if not isinstance(current, list):
+            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+        preserved = [item for item in current if item.get("name") not in values]
+        preserved.extend(
+            {"name": name, "value": value} for name, value in values.items()
+        )
+        container["env"] = preserved
+
+    @staticmethod
+    def _remove_env(container: dict[str, Any], names: set[str]) -> None:
+        current = container.get("env", [])
+        if not isinstance(current, list):
+            raise CloudRunAdminError("Serving 컨테이너 env 형식이 올바르지 않습니다.")
+        container["env"] = [
+            item for item in current if item.get("name") not in names
+        ]
+
     def _inspect_revision_model_contract(
         self,
         resource: Mapping[str, Any],
@@ -639,7 +661,7 @@ class CloudRunAdminClient:
         model_version: str,
         tag: str,
     ) -> dict[str, Any]:
-        """CD가 미리 만든 0% 리비전이 관리자 승격 계약을 만족하는지 검증한다."""
+        """Backend가 만든 0% 리비전이 관리자 승격 계약을 만족하는지 검증한다."""
 
         if service.get("reconciling"):
             raise CloudRunAdminError("Serving Service가 아직 리비전을 준비 중입니다.")
@@ -651,34 +673,32 @@ class CloudRunAdminClient:
             revision = latest_created
         if not revision or revision != latest_created:
             raise CloudRunAdminError(
-                "CD가 준비한 Serving 리비전이 가장 최근에 생성된 리비전이 아닙니다."
+                "후보 Serving 리비전이 가장 최근에 생성된 리비전이 아닙니다."
             )
         if revision != latest_ready:
             raise CloudRunAdminError(
-                "CD가 준비한 최신 Serving 리비전이 아직 Ready 상태가 아닙니다."
+                "최신 후보 Serving 리비전이 아직 Ready 상태가 아닙니다."
             )
 
         # Cloud Run v2 JSON은 기본값인 0을 응답에서 생략할 수 있다.
         percent = target.get("percent", 0)
         if not isinstance(percent, int) or isinstance(percent, bool) or percent != 0:
-            raise CloudRunAdminError(
-                "CD가 준비한 Serving 리비전의 트래픽이 0%가 아닙니다."
-            )
+            raise CloudRunAdminError("후보 Serving 리비전의 트래픽이 0%가 아닙니다.")
         tagged_url = target.get("uri")
         if not isinstance(tagged_url, str) or not tagged_url.strip():
-            raise CloudRunAdminError("CD가 준비한 Serving 리비전의 태그 URL이 없습니다.")
+            raise CloudRunAdminError("후보 Serving 리비전의 태그 URL이 없습니다.")
 
         template = self._copy_template(service)
         contract = self._validate_revision_model_contract(
             template,
             model_version=model_version,
-            context="CD가 준비한 Serving",
+            context="후보 Serving",
         )
 
         current_traffic = self._pinned_current_traffic(service)
         if any(item["revision"] == revision for item in current_traffic):
             raise CloudRunAdminError(
-                "CD가 준비한 Serving 리비전에 운영 트래픽이 연결되어 있습니다."
+                "후보 Serving 리비전에 운영 트래픽이 연결되어 있습니다."
             )
 
         return {
@@ -691,17 +711,74 @@ class CloudRunAdminClient:
             "reused": True,
         }
 
-    def verify_staged_model_revision(self, model_version: str) -> dict[str, Any]:
-        """ML Serving CD가 준비한 0% 리비전의 계약을 검증한다."""
+    def _create_model_revision_from_service(
+        self,
+        model_version: str,
+        service: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """현재 Serving 이미지를 재사용해 새 모델 버전의 0% 리비전을 만든다."""
+
+        tag = self._deployment_tag(model_version)
+        template = self._copy_template(service)
+        container = self._target_container(template)
+        # 모델은 MLflow에서 읽으므로 새 이미지를 만들지 않는다. 현재 운영 이미지와
+        # Secret 설정을 유지하고, 컨테이너가 시작할 때 읽을 모델 버전만 바꾼다.
+        self._remove_env(container, {"ML_FRAUD_THRESHOLD"})
+        self._set_plain_env(
+            container,
+            {
+                "ML_PREDICTOR_MODE": "mlflow",
+                "ML_MODEL_NAME": self.model_name,
+                "ML_MODEL_VERSION": model_version,
+            },
+        )
+        contract = self._validate_revision_model_contract(
+            template,
+            model_version=model_version,
+            context="새 후보 Serving",
+        )
+        traffic = self._pinned_current_traffic(service)
+        traffic.append(
+            {
+                "type": TRAFFIC_LATEST,
+                "percent": 0,
+                "tag": tag,
+            }
+        )
+
+        payload: dict[str, Any] = {
+            "name": self._service_name,
+            "template": template,
+            "traffic": traffic,
+        }
+        if service.get("etag"):
+            payload["etag"] = service["etag"]
+
+        operation = self._request(
+            "PATCH",
+            self._service_name,
+            params={
+                "updateMask": "template,traffic",
+                "forceNewRevision": "true",
+            },
+            payload=payload,
+        )
+        return {
+            "operation": operation,
+            "tag": tag,
+            "image": contract["image"],
+            "previousTraffic": traffic[:-1],
+            "reused": False,
+        }
+
+    def stage_model_revision(self, model_version: str) -> dict[str, Any]:
+        """같은 이미지로 0% 후보를 만들거나 이미 준비된 후보를 재사용한다."""
 
         tag = self._deployment_tag(model_version)
         service = self.get_serving_status()
         target = self._find_tagged_target(service, tag)
         if target is None:
-            raise CloudRunAdminError(
-                f"{tag} 태그의 0% Serving 리비전이 없습니다. "
-                "ML Serving CD를 먼저 실행해 후보 리비전을 준비하세요."
-            )
+            return self._create_model_revision_from_service(model_version, service)
         return self._validate_prepared_model_revision(
             service=service,
             target=target,
