@@ -48,7 +48,7 @@ class CaseSimilarityConfig:
     """후보 선택 기준과 점수 정규화 범위를 관리하는 설정이다."""
 
     weights: CaseSimilarityWeights = field(default_factory=CaseSimilarityWeights)
-    minimum_similarity: float = 0.60
+    minimum_similarity: float = 0.55
     maximum_risk_score: float = 100.0
 
     def __post_init__(self) -> None:
@@ -116,7 +116,6 @@ def calculate_evidence_similarity(
     """두 사건의 Rule 근거 집합을 Jaccard 방식으로 비교한다."""
 
     union = current_evidence | candidate_evidence
-    # 양쪽 모두 근거가 없으면 유사하다는 증거도 없으므로 0점으로 처리한다.
     if not union:
         return 0.0
     return _round_similarity(len(current_evidence & candidate_evidence) / len(union))
@@ -138,7 +137,6 @@ def calculate_score_vector_similarity(
     candidate_norm = math.sqrt(
         math.fsum(candidate[code] ** 2 for code in type_codes)
     )
-    # 영벡터는 방향을 비교할 수 없으므로 유사도 근거로 사용하지 않는다.
     if current_norm == 0.0 or candidate_norm == 0.0:
         return 0.0
 
@@ -211,8 +209,16 @@ def calculate_case_similarity(
 
     current_evidence = normalize_evidence_codes(current.matched_components)
     candidate_evidence = normalize_evidence_codes(candidate.matched_components)
+    candidate_evidence_types = {
+        code.split(":", 1)[0] for code in candidate_evidence
+    }
+    comparable_current_evidence = frozenset(
+        code
+        for code in current_evidence
+        if code.split(":", 1)[0] in candidate_evidence_types
+    )
     evidence_similarity = calculate_evidence_similarity(
-        current_evidence,
+        comparable_current_evidence,
         candidate_evidence,
     )
     score_vector_similarity = calculate_score_vector_similarity(
@@ -244,7 +250,9 @@ def calculate_case_similarity(
         score_vector_similarity=score_vector_similarity,
         risk_grade_similarity=risk_grade_similarity,
         risk_score_similarity=risk_score_similarity,
-        common_evidence_codes=tuple(sorted(current_evidence & candidate_evidence)),
+        common_evidence_codes=tuple(
+            sorted(comparable_current_evidence & candidate_evidence)
+        ),
     )
 
 
@@ -292,7 +300,6 @@ def rank_similar_cases(
         if result.similarity_score >= applied_config.minimum_similarity
     ]
 
-    # 동점에서도 실행마다 동일한 결과를 반환하도록 case_id를 보조 기준으로 사용한다.
     filtered.sort(key=lambda result: (-result.similarity_score, result.case_id))
     return filtered[:top_k]
 
@@ -392,7 +399,6 @@ def _validate_finite_number(value: Real, *, field_name: str) -> float:
 
 
 def _round_similarity(value: float) -> float:
-    # 부동소수점 오차가 정렬 및 임계값 판정에 영향을 주지 않도록 정규화한다.
     return round(min(1.0, max(0.0, value)), 10)
 
 

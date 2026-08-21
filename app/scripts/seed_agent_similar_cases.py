@@ -40,14 +40,154 @@ FRAUD_TYPES = (
     ACCOUNT_TAKEOVER,
     FRAUD_USED_ACCOUNT,
 )
-CASES_PER_TYPE = 6
-RISK_SCORES = (58, 62, 66, 69, 76, 91)
-RISK_GRADES = ("MEDIUM", "MEDIUM", "MEDIUM", "MEDIUM", "HIGH", "VERY_HIGH")
-REPRESENTATIVE_EVIDENCE = {
-    VOICE_PHISHING: "severe_amount_context",
-    MESSENGER_PHISHING: "remote_control",
-    ACCOUNT_TAKEOVER: "remote_control",
-    FRAUD_USED_ACCOUNT: "rapid_repeat",
+CASES_PER_TYPE = 9
+RISK_SCORES = (58, 62, 66, 69, 76, 91, 74, 84, 95)
+RISK_GRADES = (
+    "MEDIUM",
+    "MEDIUM",
+    "MEDIUM",
+    "MEDIUM",
+    "HIGH",
+    "VERY_HIGH",
+    "HIGH",
+    "HIGH",
+    "VERY_HIGH",
+)
+EVIDENCE_SCENARIOS = {
+    VOICE_PHISHING: (
+        ("severe_amount_context",),
+        ("loan_escalation_context", "severe_amount_context"),
+        (
+            "phone_number_manipulation",
+            "loan_escalation_context",
+            "severe_amount_context",
+        ),
+        ("all_limit_actions", "loan_escalation_context", "severe_amount_context"),
+        (
+            "phone_number_manipulation",
+            "severe_amount_context",
+            "recipient_transfer_with_severe_amount",
+        ),
+        (
+            "phone_number_manipulation",
+            "loan_escalation_context",
+            "severe_amount_context",
+            "recipient_transfer_with_severe_amount",
+        ),
+        ("remote_control", "severe_amount_context"),
+        (
+            "phone_number_manipulation",
+            "all_limit_actions",
+            "loan_escalation_context",
+            "severe_amount_context",
+        ),
+        (
+            "phone_number_manipulation",
+            "all_limit_actions",
+            "loan_escalation_context",
+            "severe_amount_context",
+            "recipient_transfer_with_severe_amount",
+            "remote_control",
+        ),
+    ),
+    MESSENGER_PHISHING: (
+        ("remote_control",),
+        ("remote_control", "rapid_repeat", "open_banking_with_rapid_repeat"),
+        ("remote_control", "strong_auth_change_with_remote_control"),
+        (
+            "remote_control",
+            "vulnerable_mobile_recipient_transfer",
+            "rapid_repeat",
+        ),
+        ("remote_control", "recipient_transfer_with_remote_control"),
+        (
+            "remote_control",
+            "strong_auth_change_with_remote_control",
+            "recipient_transfer_with_remote_control",
+            "open_banking_with_rapid_repeat",
+            "rapid_repeat",
+        ),
+        ("vulnerable_mobile_recipient_transfer",),
+        ("rapid_repeat", "open_banking_with_rapid_repeat"),
+        (
+            "remote_control",
+            "strong_auth_change_with_remote_control",
+            "recipient_transfer_with_remote_control",
+            "vulnerable_mobile_recipient_transfer",
+        ),
+    ),
+    ACCOUNT_TAKEOVER: (
+        ("remote_control",),
+        ("remote_control", "device_compromise_2plus"),
+        (
+            "remote_control",
+            "unused_terminal_with_device_compromise",
+            "device_compromise_2plus",
+        ),
+        ("remote_control", "impossible_travel", "connection_failures"),
+        (
+            "remote_control",
+            "impossible_travel",
+            "vpn_or_roaming_with_impossible_travel",
+            "connection_failures",
+        ),
+        (
+            "unused_terminal_with_device_compromise",
+            "device_compromise_2plus",
+            "remote_control",
+            "strong_auth_change_with_compromise",
+            "impossible_travel",
+        ),
+        (
+            "unused_terminal_with_device_compromise",
+            "device_compromise_2plus",
+        ),
+        (
+            "impossible_travel",
+            "vpn_or_roaming_with_impossible_travel",
+            "connection_failures",
+        ),
+        (
+            "unused_terminal_with_device_compromise",
+            "device_compromise_2plus",
+            "remote_control",
+            "strong_auth_change_with_compromise",
+            "impossible_travel",
+            "vpn_or_roaming_with_impossible_travel",
+            "connection_failures",
+        ),
+    ),
+    FRAUD_USED_ACCOUNT: (
+        ("rapid_repeat",),
+        ("large_deposit_with_rapid_repeat", "rapid_repeat"),
+        ("rapid_repeat", "recently_resumed_with_large_deposit"),
+        (
+            "rapid_repeat",
+            "suspension_release_only_with_context",
+            "recently_resumed_with_large_deposit",
+        ),
+        (
+            "recipient_suspended_only_with_context",
+            "large_deposit_with_rapid_repeat",
+            "rapid_repeat",
+        ),
+        (
+            "both_accounts_restricted",
+            "recently_resumed_with_large_deposit",
+            "large_deposit_with_rapid_repeat",
+            "rapid_repeat",
+        ),
+        ("both_accounts_restricted",),
+        (
+            "suspension_release_only_with_context",
+            "recently_resumed_with_large_deposit",
+        ),
+        (
+            "recipient_suspended_only_with_context",
+            "large_deposit_with_rapid_repeat",
+            "rapid_repeat",
+        ),
+    ),
 }
 
 
@@ -61,7 +201,7 @@ class SimilarCaseSeedResult:
 
 
 def seed_agent_similar_cases(session: Session) -> SimilarCaseSeedResult:
-    """4개 사기 유형별 검토 사건 6건을 만들고 중복 사건은 건너뛴다."""
+    """4개 사기 유형별 검토 사건 9건을 만들고 중복 사건은 건너뛴다."""
 
     rule_set = session.exec(
         select(FraudRuleSet)
@@ -167,7 +307,7 @@ def _add_resolved_case(
         name=f"시연고객-{suffix}",
         identification_number=f"DEMO-ID-{suffix}",
         registration_datetime=occurred_at - timedelta(days=365),
-        credit_rating=3 + case_index,
+        credit_rating=min(9, 3 + case_index),
         loan_type="a",
     )
     session.add(customer)
@@ -194,8 +334,28 @@ def _add_resolved_case(
     )
     session.flush()
 
-    amounts = (15_000_000, 12_000_000, 9_000_000, 6_000_000, 3_000_000, 800_000)
-    channels = ("mobile", "internet", "atm", "mobile", "internet", "atm")
+    amounts = (
+        15_000_000,
+        12_000_000,
+        9_000_000,
+        6_000_000,
+        3_000_000,
+        800_000,
+        11_000_000,
+        5_000_000,
+        18_000_000,
+    )
+    channels = (
+        "mobile",
+        "internet",
+        "atm",
+        "mobile",
+        "internet",
+        "atm",
+        "mobile",
+        "internet",
+        "mobile",
+    )
     transaction_amount = amounts[case_index]
     transaction = Transaction(
         customer_id=customer_id,
@@ -229,7 +389,17 @@ def _add_resolved_case(
         MLPredictionResult(
             transaction_id=transaction_id,
             predict_result=True,
-            predict_proba=(0.96, 0.91, 0.86, 0.80, 0.74, 0.67)[case_index],
+            predict_proba=(
+                0.96,
+                0.91,
+                0.86,
+                0.80,
+                0.74,
+                0.67,
+                0.82,
+                0.90,
+                0.98,
+            )[case_index],
             model_name="demo-fraud-model",
             model_version="seed-1.0",
             latency_ms=25 + case_index,
@@ -341,7 +511,7 @@ def _synchronize_existing_case(
 
 
 def _type_scores(primary_type: str, case_index: int) -> dict[str, float]:
-    primary_scores = (0.90, 0.84, 0.78, 0.72, 0.63, 0.57)
+    primary_scores = (0.90, 0.84, 0.78, 0.72, 0.63, 0.57, 0.70, 0.80, 0.90)
     scores = {fraud_type: 0.10 for fraud_type in FRAUD_TYPES}
     scores[primary_type] = primary_scores[case_index]
     secondary_index = (FRAUD_TYPES.index(primary_type) + 1) % len(FRAUD_TYPES)
@@ -352,6 +522,9 @@ def _type_scores(primary_type: str, case_index: int) -> dict[str, float]:
         0.30,
         0.55,
         0.53,
+        0.20,
+        0.25,
+        0.30,
     )[case_index]
     return scores
 
@@ -361,13 +534,14 @@ def _select_component_keys(
     fraud_type: str,
     case_index: int,
 ) -> list[str]:
-    representative = REPRESENTATIVE_EVIDENCE[fraud_type]
-    if case_index < 3 and representative in keys:
-        return [representative]
-    maximum = min(len(keys), 3)
-    count = max(1, maximum - (case_index % maximum))
-    start = case_index % len(keys)
-    return [keys[(start + offset) % len(keys)] for offset in range(count)]
+    scenario = EVIDENCE_SCENARIOS[fraud_type][case_index]
+    missing_keys = set(scenario) - set(keys)
+    if missing_keys:
+        raise RuntimeError(
+            f"{fraud_type} Seed 근거가 활성 Rule에 없다: "
+            + ", ".join(sorted(missing_keys))
+        )
+    return list(scenario)
 
 
 def _performed_actions(fraud_type: str) -> list[dict[str, object]]:
@@ -380,7 +554,7 @@ def _performed_actions(fraud_type: str) -> list[dict[str, object]]:
     return [
         {
             "action_code": action_code,
-            "completed": True,
+            "performed": True,
             "fraud_type": fraud_type,
         }
     ]

@@ -2,7 +2,8 @@
 
 유사 사건 조회와 대시보드 Top 3 시연에 사용할 완료 사건을 적재한다.
 
-- 사기 유형 4개별 6건, 총 24건 생성
+- 사기 유형 4개별 9건, 총 36건 생성
+- 유형별 대표 근거뿐 아니라 단독 근거·복합 근거·HIGH·VERY_HIGH 조합 포함
 - `AGENT_CASES.execution_status=COMPLETED` 저장
 - `AGENT_REVIEWS.decision=CONFIRMED_FRAUD` 저장
 - 현재 활성 Rule Set의 실제 구성요소 키 사용
@@ -20,7 +21,7 @@ uv run python -m app.scripts.seed_agent_similar_cases
 ```json
 {
   "rule_set_id": 1,
-  "created_count": 24,
+  "created_count": 36,
   "skipped_count": 0
 }
 ```
@@ -31,7 +32,7 @@ uv run python -m app.scripts.seed_agent_similar_cases
 {
   "rule_set_id": 1,
   "created_count": 0,
-  "skipped_count": 24
+  "skipped_count": 36
 }
 ```
 

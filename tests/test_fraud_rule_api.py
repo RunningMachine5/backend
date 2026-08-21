@@ -200,6 +200,72 @@ class FraudRuleApiTest(unittest.TestCase):
             self.assertEqual(stored_second.status, FraudRuleSetStatus.ACTIVE)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_draft_rule_patterns_can_be_added_and_removed(self) -> None:
+        draft = self.client.post(
+            "/rule-sets/drafts",
+            headers=ADMIN_HEADERS,
+        ).json()
+        rule = draft["rules"][0]
+        original_key = rule["components"][0]["component_key"]
+        replacement = [
+            {
+                "component_key": original_key,
+                "name": "기존 패턴 유지",
+                "condition_expression": {
+                    "field": "remote_control",
+                    "operator": "EQ",
+                    "value": True,
+                },
+                "weight": 0.6,
+                "sort_order": 0,
+            },
+            {
+                "component_key": "review_queue_pattern",
+                "name": "검토 대기 거래 패턴",
+                "condition_expression": {
+                    "field": "transaction_num_connection_failure",
+                    "operator": "GTE",
+                    "value": 3,
+                },
+                "weight": 0.4,
+                "sort_order": 1,
+            },
+        ]
+
+        updated = self.client.put(
+            f"/rule-sets/{draft['id']}/rules/{rule['id']}/components",
+            headers=ADMIN_HEADERS,
+            json={"components": replacement},
+        )
+
+        self.assertEqual(updated.status_code, 200, updated.text)
+        body = updated.json()
+        self.assertEqual(body["type_code"], rule["type_code"])
+        self.assertEqual(
+            [component["component_key"] for component in body["components"]],
+            [original_key, "review_queue_pattern"],
+        )
+
+        validation = self.client.post(
+            f"/rule-sets/{draft['id']}/validate",
+            headers=ADMIN_HEADERS,
+        )
+        self.assertTrue(validation.json()["valid"], validation.text)
+
+        activated = self.client.post(
+            f"/rule-sets/{draft['id']}/activate",
+            headers=ADMIN_HEADERS,
+        )
+        self.assertEqual(activated.status_code, 200, activated.text)
+
+        immutable = self.client.put(
+            f"/rule-sets/{draft['id']}/rules/{rule['id']}/components",
+            headers=ADMIN_HEADERS,
+            json={"components": replacement},
+        )
+        self.assertEqual(immutable.status_code, 409, immutable.text)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_invalid_weight_sum_cannot_be_activated(self) -> None:
         draft = self.client.post(
             "/rule-sets/drafts",

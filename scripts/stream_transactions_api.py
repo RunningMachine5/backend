@@ -117,7 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--file",
         type=str,
-        default="./dummy_data/transactions_august.csv",
+        default="./dummy_data/transaction_august_2.csv",
         help="전송할 CSV 파일 경로 (기본: ./dummy_data/transactions_august.csv)",
     )
     parser.add_argument(

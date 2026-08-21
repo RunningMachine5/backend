@@ -21,6 +21,7 @@ from app.data.model.chatbot import (
 )
 from app.domain.fraud_circumstance_codes import FINAL_FRAUD_CIRCUMSTANCE_CODES
 from app.dto.chatbot import AnswerQualityVerdict
+from app.dto.agent import CustomerResponseContextDTO
 
 
 VerdictSkipReason = Literal["MAX_RETRY_EXCEEDED", "EVALUATOR_FAILED"]
@@ -333,6 +334,33 @@ class ChatSessionRepository:
         """
 
         return self.session.get(FraudTypeScoreAfterChat, transaction_id)
+
+    def get_customer_response_context(
+        self,
+        transaction_id: int,
+    ) -> CustomerResponseContextDTO:
+        """가이드 생성 시점에 사용할 고객 채택 답변과 챗봇 유형 점수를 조회한다."""
+
+        answers = list(
+            self.session.exec(
+                select(ChatMessage.message_text)
+                .join(ChatAnswer, ChatAnswer.message_id == ChatMessage.message_id)
+                .join(
+                    ChatSession,
+                    ChatSession.chat_session_id == ChatAnswer.chat_session_id,
+                )
+                .where(
+                    ChatSession.transaction_id == transaction_id,
+                    ChatAnswer.is_adopted.is_(True),
+                )
+                .order_by(ChatAnswer.question_step, ChatAnswer.attempt_no)
+            ).all()
+        )
+        scores = self.get_fraud_type_scores(transaction_id)
+        return CustomerResponseContextDTO(
+            customer_answers=answers,
+            type_scores=dict(scores.type_scores) if scores is not None else {},
+        )
 
     def get_status_by_transaction(
         self,

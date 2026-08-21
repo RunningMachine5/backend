@@ -24,6 +24,7 @@ class ClassificationStatus(str, Enum):
 
     CONFIDENT = "CONFIDENT"
     AMBIGUOUS = "AMBIGUOUS"
+    UNCLASSIFIED = "UNCLASSIFIED"
 
 
 class InvestigationStatus(str, Enum):

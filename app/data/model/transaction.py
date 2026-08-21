@@ -30,6 +30,11 @@ class Transaction(SQLModel, table=True):
     __tablename__ = "transactions"
     __table_args__ = (
         Index(
+          "ix_acc_num_tx_dt",
+            "source_account_number",
+            "transaction_datetime",
+        ),
+        Index(
             "ix_transactions_customer_id_transaction_datetime",
             "customer_id",
             "transaction_datetime",

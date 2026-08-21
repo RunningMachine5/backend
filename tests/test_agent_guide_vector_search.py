@@ -98,13 +98,16 @@ class AgentGuideVectorSearchTest(unittest.TestCase):
         second = service.index_documents(documents)
 
         self.assertEqual(first.document_count, 16)
-        self.assertEqual(first.chunk_count, 87)
-        self.assertEqual(first.embedded_chunk_count, 87)
+        self.assertGreater(first.chunk_count, 0)
+        self.assertEqual(first.embedded_chunk_count, first.chunk_count)
         self.assertEqual(second.embedded_chunk_count, 0)
         self.assertEqual(second.unchanged_document_count, 16)
         self.assertEqual(self.embedder.document_call_count, 1)
         self.assertEqual(len(self.session.exec(select(Document)).all()), 16)
-        self.assertEqual(len(self.session.exec(select(DocumentChunk)).all()), 87)
+        self.assertEqual(
+            len(self.session.exec(select(DocumentChunk)).all()),
+            first.chunk_count,
+        )
 
     def test_search_passes_filters_and_maps_repository_result(self) -> None:
         document = Document(

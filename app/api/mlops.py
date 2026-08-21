@@ -49,6 +49,8 @@ from app.dto.mlops import (
     TrainingMonitoringResponse,
     TrainingResultRequest,
     TrainingResultStatus,
+    TrainingRunExecutionRequest,
+    TrainingRunPrepareRequest,
     TrainingRunRequest,
     TrainingRunResponse,
     TrainingRunStartResponse,
@@ -281,6 +283,75 @@ def _get_training_run_for_update_or_404(
     return run
 
 
+def _create_requested_training_run(
+    dataset_version_id: int,
+    session: SessionDep,
+) -> tuple[TrainingRun, DatasetVersion]:
+    dataset = session.get(DatasetVersion, dataset_version_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="학습 데이터셋 버전을 찾을 수 없습니다.")
+
+    run = TrainingRun(
+        model_key=config.MLOPS_MODEL_NAME,
+        dataset_version_id=dataset_version_id,
+        status="REQUESTED",
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return run, dataset
+
+
+def _execute_training_run(
+    run_id: int,
+    min_pr_auc: float,
+    min_recall: float,
+    client: CloudRunAdminClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    run = _get_training_run_for_update_or_404(run_id, session)
+    if run.status != "REQUESTED":
+        raise HTTPException(status_code=409, detail="이미 실행 요청된 학습 Run입니다.")
+
+    dataset = session.get(DatasetVersion, run.dataset_version_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="학습 데이터셋 버전을 찾을 수 없습니다.")
+
+    # 상세 화면이 다시 열려도 같은 Run을 두 번 실행하지 않도록 먼저 상태를 확정한다.
+    run.status = "RUNNING"
+    session.add(run)
+    session.commit()
+
+    try:
+        operation = client.run_training(
+            min_pr_auc=min_pr_auc,
+            min_recall=min_recall,
+            dataset_uri=dataset.gcs_uri,
+            training_run_id=run.id,
+        )
+    except CloudRunAdminError as exc:
+        locked_run = _get_training_run_for_update_or_404(run_id, session)
+        if locked_run.status == "RUNNING" and not exc.request_may_have_been_accepted:
+            locked_run.status = "FAILED"
+            session.add(locked_run)
+            session.commit()
+        raise _upstream_error(exc) from exc
+
+    # 매우 빠른 Job callback이 먼저 도착했다면 완료 상태를 다시 RUNNING으로 내리지 않는다.
+    locked_run = _get_training_run_for_update_or_404(run_id, session)
+    execution_name = client.training_execution_name(operation)
+    if locked_run.cloud_run_execution_name is None and execution_name is not None:
+        locked_run.cloud_run_execution_name = execution_name
+    session.add(locked_run)
+    session.commit()
+    session.refresh(locked_run)
+    return {
+        "training_run": _training_run_payload(locked_run),
+        "operation_id": _operation_id(operation),
+        "operation": operation,
+    }
+
+
 def _resolve_run_model_version(
     run: TrainingRun,
     mlflow: MLflowRegistryClientDep,
@@ -475,6 +546,43 @@ def build_labeled_dataset_version(
 
 
 @router.post(
+    "/training/runs/prepare",
+    status_code=status.HTTP_201_CREATED,
+    response_model=TrainingRunResponse,
+)
+def prepare_training_run(
+    payload: TrainingRunPrepareRequest,
+    session: SessionDep,
+) -> TrainingRunResponse:
+    """상세 화면에서 추적할 REQUESTED Run을 먼저 만든다."""
+
+    run, _ = _create_requested_training_run(payload.dataset_version_id, session)
+    return _training_run_payload(run)
+
+
+@router.post(
+    "/training/runs/{run_id}/execute",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=TrainingRunStartResponse,
+)
+def execute_training_run(
+    run_id: int,
+    payload: TrainingRunExecutionRequest,
+    client: CloudRunAdminClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """준비된 Run 하나에 Cloud Run 학습 실행을 연결한다."""
+
+    return _execute_training_run(
+        run_id,
+        payload.min_pr_auc,
+        payload.min_recall,
+        client,
+        session,
+    )
+
+
+@router.post(
     "/training/runs",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=TrainingRunStartResponse,
@@ -484,60 +592,17 @@ def start_training_run(
     client: CloudRunAdminClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
-    """버전이 고정된 데이터셋으로 학습을 요청하고 실행 이력을 남긴다."""
+    """기존 호출자를 위해 Run 생성과 실행 요청을 한 번에 처리한다."""
 
-    dataset = session.get(DatasetVersion, payload.dataset_version_id)
-    if dataset is None:
-        raise HTTPException(status_code=404, detail="학습 데이터셋 버전을 찾을 수 없습니다.")
-    run = TrainingRun(
-        model_key=config.MLOPS_MODEL_NAME,
-        dataset_version_id=payload.dataset_version_id,
-        status="REQUESTED",
+    run, _ = _create_requested_training_run(payload.dataset_version_id, session)
+    assert run.id is not None
+    return _execute_training_run(
+        run.id,
+        payload.min_pr_auc,
+        payload.min_recall,
+        client,
+        session,
     )
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-
-    try:
-        # 데이터셋 분리 정책과 champion 버전은 Training Job/MLflow가 원본이다.
-        # Backend는 고정된 데이터 URI와 실행 ID만 override한다.
-        operation = client.run_training(
-            min_pr_auc=payload.min_pr_auc,
-            min_recall=payload.min_recall,
-            dataset_uri=dataset.gcs_uri,
-            training_run_id=run.id,
-        )
-    except CloudRunAdminError as exc:
-        # jobs.run 응답이 늦거나 끊긴 사이 Job callback이 먼저 종결했을 수
-        # 있다. timeout/5xx/응답 파싱 실패는 요청 수락 여부가 불명하므로
-        # REQUESTED를 유지해 뒤늦은 callback과 reconcile을 허용한다. 명시적인
-        # 4xx 같은 확정 거절만 FAILED로 종결한다.
-        locked_run = _get_training_run_for_update_or_404(run.id, session)
-        if (
-            locked_run.status == "REQUESTED"
-            and not exc.request_may_have_been_accepted
-        ):
-            locked_run.status = "FAILED"
-            session.add(locked_run)
-            session.commit()
-        raise _upstream_error(exc) from exc
-
-    # 매우 빠른 Job은 jobs.run HTTP 응답보다 callback이 먼저 도착할 수 있다.
-    # row lock으로 callback과 직렬화하고 REQUESTED 상태만 RUNNING으로 옮긴다.
-    locked_run = _get_training_run_for_update_or_404(run.id, session)
-    execution_name = client.training_execution_name(operation)
-    if locked_run.cloud_run_execution_name is None and execution_name is not None:
-        locked_run.cloud_run_execution_name = execution_name
-    if locked_run.status == "REQUESTED":
-        locked_run.status = "RUNNING"
-    session.add(locked_run)
-    session.commit()
-    session.refresh(locked_run)
-    return {
-        "training_run": _training_run_payload(locked_run),
-        "operation_id": _operation_id(operation),
-        "operation": operation,
-    }
 
 
 # Training Job은 Backend 요청과 별도로 실행되므로 성공·실패 결과를 callback으로

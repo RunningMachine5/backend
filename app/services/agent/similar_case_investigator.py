@@ -33,7 +33,6 @@ from app.services.agent.case_similarity import (
 from app.services.agent.type_confidence import TypeConfidenceResult
 
 
-# 모델 비교 시 조사 Agent의 추론 강도를 동일하게 맞춘다.
 INVESTIGATION_REASONING_EFFORT = "low"
 
 
@@ -89,16 +88,20 @@ class OpenAIInvestigationActionSelector:
         model: str | None = None,
         reasoning_effort: str = INVESTIGATION_REASONING_EFFORT,
     ) -> None:
+        model_name = model or os.getenv(
+            "AGENT_INVESTIGATION_MODEL",
+            os.getenv("OPENAI_MODEL", "gpt-5"),
+        )
+        model_options: dict[str, Any] = {
+            "model": model_name,
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "timeout": float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
+            "max_retries": int(os.getenv("OPENAI_MAX_RETRIES", "0")),
+        }
+        if not model_name.startswith("gpt-4"):
+            model_options["reasoning_effort"] = reasoning_effort
         self.structured_llm = structured_llm or ChatOpenAI(
-            model=model
-            or os.getenv(
-                "AGENT_INVESTIGATION_MODEL",
-                os.getenv("OPENAI_MODEL", "gpt-5"),
-            ),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
-            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
-            reasoning_effort=reasoning_effort,
+            **model_options
         ).with_structured_output(
             InvestigationActionOutput,
             method="json_schema",
@@ -314,7 +317,6 @@ class LimitedSimilarCaseInvestigator:
                         (time.perf_counter() - started_at) * 1000
                     ),
                     "react_llm_call_count": llm_call_count,
-                    # 현재 SDK 재시도 설정이 0회이므로 논리 호출과 실제 요청 수가 같다.
                     "api_attempt_count": llm_call_count,
                     "retry_count": 0,
                     "tool_call_count": 1
@@ -368,7 +370,6 @@ class LimitedSimilarCaseInvestigator:
         return graph.compile()
 
     def _search_cases(self, state: InvestigationGraphState) -> dict[str, object]:
-        # Reason: 점수 차이가 작으므로 먼저 후보 유형의 완료 사건을 검색한다.
         similar_cases = self.tools.search_similar_resolved_cases(
             current_case_id=state["case_id"],
             candidate_fraud_types=state["candidates"],
@@ -415,7 +416,6 @@ class LimitedSimilarCaseInvestigator:
                 remaining_detail_calls=self.maximum_detail_calls - len(inspected),
             )
         except Exception:
-            # LLM 장애가 고객 안내와 후속 대응 계획 전체를 막지 않도록 안전 종료한다.
             action = InvestigationActionDTO(
                 action=InvestigationAction.STOP_INSUFFICIENT,
                 case_id=None,
@@ -451,7 +451,6 @@ class LimitedSimilarCaseInvestigator:
                     state["confidence"], "LLM이 허용되지 않은 사건을 선택했다."
                 )
             }
-        # Observation: 선택한 사건의 담당자 확정 유형을 State에 반영한다.
         inspected.append(
             (selected, self.tools.get_resolved_case_detail(selected.case_id))
         )
@@ -504,7 +503,6 @@ class LimitedSimilarCaseInvestigator:
         requested_type: str | None,
         reason: str,
     ) -> InvestigationResultDTO:
-        # 상세조회가 없으면 검색 요약의 담당자 확정 유형을 사용한다.
         evidence_cases = (
             [
                 (candidate, detail.confirmed_fraud_type)
@@ -539,7 +537,6 @@ class LimitedSimilarCaseInvestigator:
                 best.similarity_score >= self.strong_similarity
             )
         else:
-            # 검색 요약만 사용할 때는 다른 후보 유형보다 근거가 명확하게 우세해야 한다.
             enough = (
                 support_count[recommended_type] >= 2
                 and support_count[recommended_type] > support_count[other_type]
