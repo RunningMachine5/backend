@@ -5,19 +5,12 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
-from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictMLOpsDTO(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-
-class TrainingRunRequest(StrictMLOpsDTO):
-    dataset_version_id: int = Field(gt=0)
-    min_pr_auc: float = Field(default=0.0, ge=0.0, le=1.0)
-    min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class TrainingRunPrepareRequest(StrictMLOpsDTO):
@@ -27,17 +20,6 @@ class TrainingRunPrepareRequest(StrictMLOpsDTO):
 class TrainingRunExecutionRequest(StrictMLOpsDTO):
     min_pr_auc: float = Field(default=0.0, ge=0.0, le=1.0)
     min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-class DatasetVersionRequest(StrictMLOpsDTO):
-    version: str = Field(min_length=1, max_length=64)
-    gcs_uri: str = Field(min_length=1, max_length=2048)
-    row_count: int = Field(ge=0)
-
-    @field_validator("gcs_uri")
-    @classmethod
-    def validate_gcs_uri(cls, value: str) -> str:
-        return _validated_gcs_uri(value)
 
 
 class DatasetPeriodRequest(StrictMLOpsDTO):
@@ -51,19 +33,6 @@ class DatasetPeriodRequest(StrictMLOpsDTO):
         if self.period_start > self.period_end:
             raise ValueError("기간 시작일은 종료일보다 늦을 수 없습니다.")
         return self
-
-
-def _validated_gcs_uri(value: str) -> str:
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme != "gs"
-        or not parsed.netloc
-        or parsed.path in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("학습 데이터 URI는 gs://bucket/object 형식이어야 합니다.")
-    return value
 
 
 class TrainingResultStatus(StrEnum):
@@ -365,7 +334,6 @@ __all__ = [
     "DatasetBuildSummaryResponse",
     "DatasetPeriodRequest",
     "DatasetPeriodSummaryResponse",
-    "DatasetVersionRequest",
     "DatasetVersionResponse",
     "DeploymentCompleteRequest",
     "InferencePerformanceResponse",
@@ -392,7 +360,6 @@ __all__ = [
     "TrainingMonitoringSummaryResponse",
     "TrainingRunExecutionRequest",
     "TrainingRunPrepareRequest",
-    "TrainingRunRequest",
     "TrainingRunResponse",
     "TrainingRunStartResponse",
 ]

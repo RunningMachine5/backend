@@ -32,7 +32,6 @@ from app.dto.mlops import (
     CloudRunOperationResponse,
     DatasetPeriodRequest,
     DatasetPeriodSummaryResponse,
-    DatasetVersionRequest,
     DatasetVersionResponse,
     DeploymentCompleteRequest,
     InferencePerformanceResponse,
@@ -52,7 +51,6 @@ from app.dto.mlops import (
     TrainingResultStatus,
     TrainingRunExecutionRequest,
     TrainingRunPrepareRequest,
-    TrainingRunRequest,
     TrainingRunResponse,
     TrainingRunStartResponse,
 )
@@ -372,28 +370,6 @@ def _resolve_run_model_version(
         raise _upstream_error(exc) from exc
 
 
-@router.post(
-    "/datasets",
-    status_code=status.HTTP_201_CREATED,
-    response_model=DatasetVersionResponse,
-)
-def create_dataset_version(
-    payload: DatasetVersionRequest,
-    session: SessionDep,
-) -> DatasetVersionResponse:
-    """GCS에 준비된 불변 학습 데이터셋을 버전으로 등록한다."""
-
-    dataset = DatasetVersion(**payload.model_dump())
-    session.add(dataset)
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(status_code=409, detail="이미 존재하는 데이터셋 버전입니다.") from exc
-    session.refresh(dataset)
-    return _dataset_payload(dataset)
-
-
 @router.get("/datasets", response_model=list[DatasetVersionResponse])
 def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
     datasets = session.exec(
@@ -580,29 +556,6 @@ def execute_training_run(
 
     return _execute_training_run(
         run_id,
-        payload.min_pr_auc,
-        payload.min_recall,
-        client,
-        session,
-    )
-
-
-@router.post(
-    "/training/runs",
-    status_code=status.HTTP_202_ACCEPTED,
-    response_model=TrainingRunStartResponse,
-)
-def start_training_run(
-    payload: TrainingRunRequest,
-    client: CloudRunAdminClientDep,
-    session: SessionDep,
-) -> dict[str, Any]:
-    """기존 호출자를 위해 Run 생성과 실행 요청을 한 번에 처리한다."""
-
-    run, _ = _create_requested_training_run(payload.dataset_version_id, session)
-    assert run.id is not None
-    return _execute_training_run(
-        run.id,
         payload.min_pr_auc,
         payload.min_recall,
         client,
