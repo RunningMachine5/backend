@@ -76,6 +76,67 @@ class RuleFeatureResponse(BaseModel):
     source_fields: list[str] = Field(default_factory=list)
 
 
+class RulePatternStatisticsItemRequest(BaseModel):
+    """통계를 계산할 화면상의 패턴 한 개."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    component_key: str = Field(min_length=1, max_length=64)
+    condition_expression: RuleExpression
+
+
+class RulePatternStatisticsRequest(BaseModel):
+    """같은 최근 거래 표본으로 함께 계산할 패턴 목록."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_size: int = Field(default=1000, strict=True, ge=1, le=1000)
+    patterns: list[RulePatternStatisticsItemRequest] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    @model_validator(mode="after")
+    def reject_duplicate_component_keys(self) -> Self:
+        keys = [pattern.component_key for pattern in self.patterns]
+        if len(keys) != len(set(keys)):
+            raise ValueError("component_key는 통계 요청에서 중복될 수 없습니다.")
+        return self
+
+
+class RulePatternValueCountResponse(BaseModel):
+    value: str | int | bool
+    count: int = Field(ge=0, le=1000)
+    rate: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class RulePatternFeatureStatisticsResponse(BaseModel):
+    field: str
+    value_type: Literal["integer", "number", "boolean", "enum"]
+    value_count: int = Field(ge=0, le=1000)
+    average: float | None = None
+    median: float | None = None
+    p90: float | None = None
+    value_counts: list[RulePatternValueCountResponse] = Field(default_factory=list)
+
+
+class RulePatternStatisticsItemResponse(BaseModel):
+    component_key: str
+    matched_count: int = Field(ge=0, le=1000)
+    matched_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    feature_statistics: RulePatternFeatureStatisticsResponse | None = None
+
+
+class RulePatternStatisticsResponse(BaseModel):
+    """최근 ML 양성 거래에서 계산한 읽기 전용 패턴 통계."""
+
+    selection_basis: Literal["LATEST_ML_POSITIVE"] = "LATEST_ML_POSITIVE"
+    requested_count: int = Field(ge=1, le=1000)
+    sample_count: int = Field(ge=0, le=1000)
+    has_more: bool
+    patterns: list[RulePatternStatisticsItemResponse]
+
+
 class FraudRuleComponentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -346,5 +407,11 @@ __all__ = [
     "RuleExpression",
     "RuleExpressionOperator",
     "RuleFeatureResponse",
+    "RulePatternFeatureStatisticsResponse",
+    "RulePatternStatisticsItemRequest",
+    "RulePatternStatisticsItemResponse",
+    "RulePatternStatisticsRequest",
+    "RulePatternStatisticsResponse",
+    "RulePatternValueCountResponse",
     "expression_to_json",
 ]
