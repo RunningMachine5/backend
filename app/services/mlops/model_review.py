@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends
 from openai import OpenAI, OpenAIError
-
-from app.core import config
-
 
 ReviewDecision = Literal["RECOMMENDED", "NOT_RECOMMENDED"]
 
@@ -40,11 +38,11 @@ class ModelReviewLLM:
 
     def __init__(self, client: Any | None = None, model: str | None = None) -> None:
         self.client = client or OpenAI(
-            api_key=config.OPENAI_API_KEY,
-            timeout=config.OPENAI_TIMEOUT_SECONDS,
-            max_retries=config.OPENAI_MAX_RETRIES,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "15")),
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "0")),
         )
-        self.model = model or config.MLOPS_REVIEW_MODEL
+        self.model = model or os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
     def review(
         self,

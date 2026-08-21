@@ -10,7 +10,6 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-fdshield-db}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
-      MLOPS_REVIEW_MODEL: ${MLOPS_REVIEW_MODEL:-gpt-5-mini}
       # 조사와 대응 계획 생성 모델을 분리해 로컬에서 품질·지연시간을 비교한다.
       AGENT_INVESTIGATION_MODEL: ${AGENT_INVESTIGATION_MODEL:-gpt-5-mini}
       AGENT_RESPONSE_PLAN_MODEL: ${AGENT_RESPONSE_PLAN_MODEL:-gpt-5-mini}
