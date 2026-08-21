@@ -7,7 +7,10 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from app.api.mlops import require_mlops_admin
-from app.dto.demo_transaction import DemoTransactionInjectionStatus
+from app.dto.demo_transaction import (
+    DemoTransactionInjectionRequest,
+    DemoTransactionInjectionStatus,
+)
 from app.services.demo_transaction_injection import (
     demo_transaction_injection_manager,
     run_demo_transaction_injection,
@@ -23,12 +26,12 @@ router = APIRouter(
 
 def get_demo_transaction_runner(
     ml_serving_client: MLServingClientDep,
-) -> Callable[[], None]:
+) -> Callable[..., None]:
     return partial(run_demo_transaction_injection, ml_serving_client)
 
 
 DemoTransactionRunnerDep = Annotated[
-    Callable[[], None],
+    Callable[..., None],
     Depends(get_demo_transaction_runner),
 ]
 
@@ -46,13 +49,22 @@ def get_demo_transaction_injection_status() -> DemoTransactionInjectionStatus:
 def start_demo_transaction_injection(
     background_tasks: BackgroundTasks,
     runner: DemoTransactionRunnerDep,
+    request: DemoTransactionInjectionRequest | None = None,
 ) -> DemoTransactionInjectionStatus:
-    if not demo_transaction_injection_manager.start():
+    options = request or DemoTransactionInjectionRequest()
+    if not demo_transaction_injection_manager.start(
+        options.transaction_count,
+        options.transactions_per_second,
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="시연 거래 100건을 이미 주입하고 있습니다.",
+            detail="시연 거래를 이미 주입하고 있습니다.",
         )
-    background_tasks.add_task(runner)
+    background_tasks.add_task(
+        runner,
+        transaction_count=options.transaction_count,
+        transactions_per_second=options.transactions_per_second,
+    )
     return demo_transaction_injection_manager.snapshot()
 
 
