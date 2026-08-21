@@ -340,15 +340,16 @@ class LabeledDatasetBuilderTest(unittest.TestCase):
         )
         self.assertEqual([row["transaction_id"] for row in rows], ["1"])
 
-    def test_rejects_period_already_included_in_base_dataset(self) -> None:
+    def test_accepts_period_overlapping_base_dataset(self) -> None:
         builder = LabeledDatasetBuilder(FakeObjectStorage({}))
 
-        with self.assertRaisesRegex(DatasetBuildError, "2026-08-01"):
-            builder.label_summary(
-                self.session,
-                period_start=date(2026, 7, 1),
-                period_end=date(2026, 7, 31),
-            )
+        summary = builder.label_summary(
+            self.session,
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 31),
+        )
+
+        self.assertEqual(summary.labeled_count, 0)
 
     def test_deletes_generated_dataset_but_keeps_base_dataset(self) -> None:
         source_uri = "gs://bucket/base/train1.csv"
