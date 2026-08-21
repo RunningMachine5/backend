@@ -32,6 +32,8 @@ class TransactionResponseContractTest(unittest.TestCase):
             )
 
     def test_operational_response_adds_ml_rule_and_label_fields(self) -> None:
+        transaction_datetime = datetime(2026, 8, 21, 10, 30, tzinfo=UTC)
+        received_at = datetime(2026, 8, 21, 10, 30, 1, tzinfo=UTC)
         response = FraudDetectionResponseDTO(
             transaction_id=2,
             prediction_status="DECLINED",
@@ -40,12 +42,18 @@ class TransactionResponseContractTest(unittest.TestCase):
             predict_result=True,
             rule_set_id=1,
             rule_scores={"VOICE_PHISHING": 0.3},
+            transaction_amount=100_000,
+            transaction_datetime=transaction_datetime,
             created_at=datetime.now(UTC),
+            received_at=received_at,
         )
 
         self.assertTrue(response.predict_result)
         self.assertEqual(response.rule_set_id, 1)
         self.assertEqual(response.rule_scores, {"VOICE_PHISHING": 0.3})
+        self.assertEqual(response.transaction_amount, 100_000)
+        self.assertEqual(response.transaction_datetime, transaction_datetime)
+        self.assertEqual(response.received_at, received_at)
 
     def test_transaction_id_rejects_the_old_string_contract(self) -> None:
         with self.assertRaises(ValidationError):
