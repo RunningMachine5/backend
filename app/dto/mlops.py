@@ -20,6 +20,15 @@ class TrainingRunRequest(StrictMLOpsDTO):
     min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class TrainingRunPrepareRequest(StrictMLOpsDTO):
+    dataset_version_id: int = Field(gt=0)
+
+
+class TrainingRunExecutionRequest(StrictMLOpsDTO):
+    min_pr_auc: float = Field(default=0.0, ge=0.0, le=1.0)
+    min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class DatasetVersionRequest(StrictMLOpsDTO):
     version: str = Field(min_length=1, max_length=64)
     gcs_uri: str = Field(min_length=1, max_length=2048)
@@ -368,6 +377,8 @@ __all__ = [
     "TrainingMonitoringResponse",
     "TrainingMonitoringSeriesResponse",
     "TrainingMonitoringSummaryResponse",
+    "TrainingRunExecutionRequest",
+    "TrainingRunPrepareRequest",
     "TrainingRunRequest",
     "TrainingRunResponse",
     "TrainingRunStartResponse",
