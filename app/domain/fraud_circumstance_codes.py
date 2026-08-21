@@ -113,8 +113,8 @@ FRAUD_CIRCUMSTANCE_DESCRIPTIONS: Mapping[str, str] = {
     ),
     UNAUTHORIZED_PLATFORM_ASSET_USE: (
         "사용자가 직접 실행하거나 승인하지 않았는데 사용자의 플랫폼 계정에서 "
-        "인앱결제, 저장된 결제수단 사용, 가상자산 매도·전송 등의 자산 사용이 실제로 "
-        "발생했다고 명확히 말함\n"
+        "인앱결제, 저장된 결제수단 사용, 가상자산·게임 아이템·포인트 매도나 전송 "
+        "등의 자산 사용이 실제로 발생했다고 명확히 말함\n"
         "금융계좌의 일반적인 무단 이체만 언급된 경우에는 이 enum을 추출하지 않음"
     ),
     ACCOUNT_OPENED_FOR_OTHER_PARTY_USE: (
