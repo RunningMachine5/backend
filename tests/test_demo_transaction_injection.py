@@ -1,4 +1,5 @@
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -13,13 +14,21 @@ from app.services.demo_transaction_injection import (
 
 
 class DemoTransactionResourceTest(unittest.TestCase):
-    def test_csv_contains_90_normal_and_10_fraud_rows(self) -> None:
+    def test_csv_uses_first_100_transaction_api_rows(self) -> None:
         rows = load_demo_transaction_rows()
 
         self.assertEqual(len(rows), DEMO_TRANSACTION_COUNT)
+        self.assertEqual(rows[0].customer_id, 30)
+        self.assertEqual(rows[0].source_account_number, "110-664-000030")
         self.assertEqual(
-            sum(row.confirmed_is_fraud for row in rows),
-            10,
+            rows[0].transaction_datetime,
+            datetime(2026, 8, 1, 0, 18, 51, tzinfo=UTC),
+        )
+        self.assertTrue(
+            all(
+                row.channel in {"mobile", "internet", "atm", "others"}
+                for row in rows
+            )
         )
 
     def test_manager_rejects_overlapping_run(self) -> None:
