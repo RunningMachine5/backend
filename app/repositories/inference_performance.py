@@ -16,6 +16,15 @@ class InferencePerformanceSummary:
     latest_inference_at: datetime | None
 
 
+@dataclass(frozen=True)
+class InferenceThroughputSummary:
+    completed_count: int
+    normal_count: int
+    fraud_count: int
+    normal_series: list[dict[str, object]]
+    fraud_series: list[dict[str, object]]
+
+
 class InferencePerformanceRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -41,5 +50,55 @@ class InferencePerformanceRepository:
             latest_inference_at=max(item.created_at for item in predictions),
         )
 
+    def summarize_throughput(
+        self,
+        since: datetime,
+        alignment_seconds: int,
+    ) -> InferenceThroughputSummary:
+        """DB에 저장된 온라인 분석 결과를 차트 구간별로 묶는다."""
 
-__all__ = ["InferencePerformanceRepository", "InferencePerformanceSummary"]
+        predictions = list(
+            self.session.exec(
+                select(
+                    MLPredictionResult.created_at,
+                    MLPredictionResult.predict_result,
+                ).where(
+                    MLPredictionResult.created_at >= since
+                )
+            ).all()
+        )
+        alignment_minutes = alignment_seconds // 60
+        buckets: dict[datetime, dict[str, int]] = {}
+        for created_at, predict_result in predictions:
+            bucket_at = created_at.replace(
+                minute=(created_at.minute // alignment_minutes) * alignment_minutes,
+                second=0,
+                microsecond=0,
+            )
+            bucket = buckets.setdefault(
+                bucket_at,
+                {"normal": 0, "fraud": 0},
+            )
+            bucket["fraud" if predict_result else "normal"] += 1
+
+        def series(name: str) -> list[dict[str, object]]:
+            return [
+                {"timestamp": timestamp, "value": counts[name]}
+                for timestamp, counts in sorted(buckets.items())
+            ]
+
+        fraud_count = sum(1 for _, predict_result in predictions if predict_result)
+        return InferenceThroughputSummary(
+            completed_count=len(predictions),
+            normal_count=len(predictions) - fraud_count,
+            fraud_count=fraud_count,
+            normal_series=series("normal"),
+            fraud_series=series("fraud"),
+        )
+
+
+__all__ = [
+    "InferencePerformanceRepository",
+    "InferencePerformanceSummary",
+    "InferenceThroughputSummary",
+]

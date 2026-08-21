@@ -20,6 +20,19 @@ class MLflowRegistryClientTest(unittest.TestCase):
         )
 
     @patch("app.services.mlops.mlflow.httpx.request")
+    def test_check_registry_reads_authenticated_registry_endpoint(
+        self, request: Mock
+    ) -> None:
+        request.return_value = response({"registered_models": []})
+
+        self.make_client().check_registry()
+
+        call = request.call_args
+        self.assertTrue(call.args[1].endswith("/registered-models/search"))
+        self.assertEqual(call.kwargs["params"], {"max_results": 1})
+        self.assertEqual(call.kwargs["auth"], ("user", "secret"))
+
+    @patch("app.services.mlops.mlflow.httpx.request")
     def test_resolve_model_version_matches_registered_model_and_run(
         self, request: Mock
     ) -> None:

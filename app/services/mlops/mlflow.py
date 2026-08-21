@@ -86,6 +86,15 @@ class MLflowRegistryClient:
         if self._http_client is not None:
             self._http_client.close()
 
+    def check_registry(self) -> None:
+        """인증과 Registry 저장소까지 실제로 조회 가능한지 확인한다."""
+
+        self._request(
+            "GET",
+            "/api/2.0/mlflow/registered-models/search",
+            params={"max_results": 1},
+        )
+
     def _model_versions(self, model_name: str) -> list[dict[str, Any]]:
         """페이지가 여러 개인 Registry 검색 결과를 빠짐없이 모은다."""
 
