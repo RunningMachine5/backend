@@ -311,15 +311,15 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs/prepare`를 호출해
    `training_runs` 이력을 먼저 만듭니다. 반환된 Run ID로
    `POST /mlops/training/runs/{id}/execute`를 호출하면 Cloud Run Training Job을
-   시작합니다. 품질 기준은 요청 본문이 아니라 Backend의 `MLOPS_MIN_PR_AUC`,
-   `MLOPS_MIN_RECALL` 설정을 전달합니다.
+   시작합니다. 선택적 품질 기준을 사용하는 경우 Backend의 `MLOPS_MIN_PR_AUC`,
+   `MLOPS_MIN_RECALL` 설정을 전달하고, 사용하지 않으면 `0`을 전달합니다.
 3. Training Job은 후보와 현재 champion을 평가하고 성공 시 `status`, `mlflow_run_id`,
    실제 Cloud Run execution 이름만 `POST /mlops/training/runs/{id}/result`로 보냅니다.
 4. Backend의 `training_runs`에는 실행 연결 정보와 상태만 저장합니다. 관리자는
    `GET /mlops/training/runs/{id}/model-details`에서 MLflow 원본의 모델 버전·지표·파라미터·
    태그와 현재 Backend 품질 게이트를 확인한 뒤 `POST /mlops/training/runs/{id}/decision`으로
-   승인 또는 거절합니다. MLflow 검증 실패, 지표 누락, 현재 기준 미달 모델은 승인할 수
-   없습니다.
+   승인 또는 거절합니다. 품질 게이트를 설정한 경우에만 MLflow 검증 실패, 지표 누락,
+   현재 기준 미달 모델의 승인을 제한합니다.
 5. 승인하면 Backend가 `mlflow_run_id`에 대응하는 등록 모델 버전을 MLflow에서 확인합니다.
    Backend는 현재 운영 중인 digest 고정 Serving 이미지를 그대로 사용하고
    `ML_MODEL_VERSION`만 승인 버전으로 바꿔 `model-v<version>` 태그의 새 리비전을
@@ -407,9 +407,9 @@ TRAINING_RESULT_CALLBACK_TOKEN=<MLOPS_ADMIN_TOKEN과 동일한 보호 값>
 
 Backend가 모델 상세 조회·승인·최종 alias 변경을 하려면 `MLFLOW_TRACKING_URI`,
 `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD`와 `MLOPS_MODEL_ALIAS`를 설정합니다.
-`MLOPS_MIN_PR_AUC`, `MLOPS_MIN_RECALL`은 운영 담당자가 결정해야 하며, 미설정 또는 0이면
-애플리케이션은 기동하지만 학습 실행과 모델 승인은 `503`으로 차단됩니다. 모델 거절은
-품질 기준이 없어도 가능합니다. `.env.example`의 `0.75`, `0.80`은 초기 설정 예시입니다.
+`MLOPS_MIN_PR_AUC`, `MLOPS_MIN_RECALL`은 선택 설정입니다. 기본값 `0` 또는 둘 중 하나만
+양수인 경우 품질 게이트를 사용하지 않으며 학습 실행과 모델 승인을 막지 않습니다. 두 값을
+모두 `0`보다 크게 설정한 경우에만 MLflow 검증 상태와 실제 지표를 승인 기준으로 사용합니다.
 실제 계정과 비밀번호는 `.env.example`이나 Git에 넣지 않습니다. 실패 callback은
 `{"status":"FAILED","error_message":"..."}` 형태이며, 같은 결과 callback은 멱등하게
 처리됩니다.
@@ -417,7 +417,8 @@ Backend가 모델 상세 조회·승인·최종 alias 변경을 하려면 `MLFLO
 `model_comparison_artifact_path=metadata/model-comparison.json`을 제공합니다. 모델 지표·
 파라미터·태그와 비교 결과는 MLflow를 원본으로 사용하며 Backend DB에 복제하지 않습니다.
 `quality_gate`에는 현재 최소 기준, 실제 검증 지표, MLflow 검증 상태와 승인 가능 여부가
-같이 포함됩니다.
+같이 포함됩니다. 게이트 미사용 시 `configured=false`, `passed=true`로 응답해 품질 기준이
+승인을 막지 않는다는 뜻을 명확히 표시합니다.
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회와 Service 조회·트래픽 수정
 권한이 필요합니다. 승인 모델의 0% Serving 리비전을 만들기 위해 Cloud Run Service
 수정 권한과 해당 Serving 런타임 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한도
