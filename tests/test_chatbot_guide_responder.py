@@ -64,7 +64,7 @@ class GuideResponderTestCase(unittest.TestCase):
 
 
 class TestRetrieveStep(GuideResponderTestCase):
-    def test_uses_each_standalone_query_with_top_k_three(self) -> None:
+    def test_uses_each_standalone_query_with_top_k_five(self) -> None:
         retriever = FakeRetriever({})
         responder = GuideResponder(
             llm=FakeStreamingLLM([]),
@@ -80,7 +80,7 @@ class TestRetrieveStep(GuideResponderTestCase):
             retriever.queries,
             [self.call_query.search_query, self.phone_query.search_query],
         )
-        self.assertEqual(retriever.top_ks, [3, 3])
+        self.assertEqual(retriever.top_ks, [5, 5])
 
     def test_duplicate_normalized_query_is_retrieved_once(self) -> None:
         duplicate = ExtractedGuideSearchQuery(

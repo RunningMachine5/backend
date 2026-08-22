@@ -15,7 +15,6 @@ dependencies = [
     "pgvector>=0.5.0",
     "psycopg[binary]>=3.3.4",
     "pydantic>=2.13.4",
-    "pypdf>=6.14.2",
     "pyyaml>=6.0.3",
     "python-dotenv>=1.2.2",
     "requests>=2.32,<3",
@@ -25,6 +24,14 @@ dependencies = [
 ]
 
 [dependency-groups]
+# PDF 인덱싱 전용. 운영 API 이미지에는 포함하지 않는다.
+#   uv sync --group indexing
+indexing = [
+    "pypdf>=6.14.2",
+    # 0.27.1 fast가 현재 한국어 PDF 일부에서 빈 요소를 반환해 검증된 0.18 계열로 고정한다.
+    "unstructured[pdf]>=0.18.15,<0.19",
+]
+
 # RAG 평가 전용. ragas 가 datasets 등 무거운 의존성을 끌어오므로 런타임
 # dependencies 와 분리한다. CI/Docker 이미지는 이 그룹을 설치하지 않는다.
 #   uv sync --group eval

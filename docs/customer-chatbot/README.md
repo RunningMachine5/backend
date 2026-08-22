@@ -4,6 +4,9 @@
 가이드를 제공한다. 판별 단계에서는 LLM을 호출하지 않고, 가이드 이후 자유 대화에서만
 `AnswerAnalyzer → GuideResponder`를 사용한다.
 
+PDF 가이드의 청킹·인덱싱·평가·롤백 절차는
+[RAG 인덱싱](./rag-indexing.md)을 참고한다.
+
 ## 상태
 
 세션 생명주기 `status`와 고객 대화 단계 `conversation_phase`를 분리한다.
