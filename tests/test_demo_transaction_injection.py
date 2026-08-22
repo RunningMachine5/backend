@@ -101,6 +101,60 @@ class DemoTransactionResourceTest(unittest.TestCase):
         )
         manager.complete.assert_called_once_with()
 
+    def test_pacing_waits_only_for_time_remaining_after_each_transaction(
+        self,
+    ) -> None:
+        rows = [MagicMock(), MagicMock(), MagicMock()]
+        result = MagicMock()
+        result.response.prediction_status = "COMPLETED"
+        pipeline = MagicMock()
+        pipeline.run.return_value = result
+        manager = MagicMock()
+
+        with (
+            patch(
+                "app.services.demo_transaction_injection.load_demo_transaction_rows",
+                return_value=rows,
+            ),
+            patch(
+                "app.services.demo_transaction_injection._pipeline",
+                return_value=pipeline,
+            ),
+            patch("app.services.demo_transaction_injection.Session"),
+            patch(
+                "app.services.demo_transaction_injection.build_agent_input",
+                return_value=None,
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "build_transaction_dashboard_event",
+                return_value={"source": "demo_transaction"},
+            ),
+            patch(
+                "app.services.demo_transaction_injection.dashboard_event_broker.publish"
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "demo_transaction_injection_manager",
+                manager,
+            ),
+            patch(
+                "app.services.demo_transaction_injection.monotonic",
+                side_effect=[10.0, 10.2, 10.5, 11.2, 11.2],
+            ),
+            patch("app.services.demo_transaction_injection.sleep") as sleep_mock,
+        ):
+            run_demo_transaction_injection(
+                MagicMock(),
+                transaction_count=3,
+                transactions_per_second=2,
+            )
+
+        sleep_mock.assert_called_once()
+        self.assertAlmostEqual(sleep_mock.call_args.args[0], 0.3)
+        self.assertEqual(manager.record.call_count, 3)
+        manager.complete.assert_called_once_with()
+
 
 class DemoTransactionApiTest(unittest.TestCase):
     def setUp(self) -> None:

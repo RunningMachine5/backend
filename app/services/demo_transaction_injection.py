@@ -7,7 +7,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
-from time import sleep
+from time import monotonic, sleep
 
 from sqlmodel import Session
 
@@ -193,6 +193,7 @@ def run_demo_transaction_injection(
         rows = load_demo_transaction_rows(transaction_count)
         interval_seconds = 1 / transactions_per_second
         for index, row in enumerate(rows):
+            transaction_started_at = monotonic()
             with Session(engine) as session:
                 payload = row.model_copy(
                     update={"transaction_datetime": datetime.now(UTC)}
@@ -216,7 +217,11 @@ def run_demo_transaction_injection(
                 result.response.prediction_status
             )
             if index < len(rows) - 1:
-                sleep(interval_seconds)
+                remaining_seconds = interval_seconds - (
+                    monotonic() - transaction_started_at
+                )
+                if remaining_seconds > 0:
+                    sleep(remaining_seconds)
         demo_transaction_injection_manager.complete()
     except Exception as exc:
         logger.exception("시연 거래 주입 실패")
