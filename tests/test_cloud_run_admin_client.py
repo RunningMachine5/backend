@@ -152,7 +152,7 @@ class CloudRunAdminClientTest(unittest.TestCase):
         ]
         client = self.make_client(http_client=http_client)
 
-        client.get_training_status()
+        client.get_training_execution("training-exec")
         client.get_serving_status()
         client.close()
 

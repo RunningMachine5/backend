@@ -22,7 +22,12 @@ def _prediction(probability: float) -> MLPredictionResponse:
 class DetectionResultServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.session = Mock()
-        self.transaction = Mock(id=7, created_at=datetime.now(UTC))
+        self.transaction = Mock(
+            id=7,
+            transaction_amount=100_000,
+            transaction_datetime=datetime(2026, 8, 21, 10, 30, tzinfo=UTC),
+            created_at=datetime.now(UTC),
+        )
         self.session.exec.return_value.one.return_value = self.transaction
         self.features = Mock()
         self.service = DetectionResultService(self.session)

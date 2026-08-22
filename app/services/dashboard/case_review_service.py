@@ -4,6 +4,7 @@ from app.dto.case_review import (
     ReviewDecision
 )
 from app.repositories.case_review import CaseReviewRepository
+from app.repositories.transaction import TransactionLabelRepository
 
 SYSTEM_REVIEWER_ID = "FDS_OPERATOR"
 
@@ -14,8 +15,10 @@ class CaseReviewService:
     def __init__(
         self,
         repository: CaseReviewRepository,
+        label_repository: TransactionLabelRepository,
     ) -> None:
         self.repository = repository
+        self.label_repository = label_repository
 
     def save_review(
         self,
@@ -43,6 +46,18 @@ class CaseReviewService:
             ],
             resolution_summary=request.resolution_summary
         )
+
+        if request.decision == ReviewDecision.CONFIRMED_FRAUD:
+            self.label_repository.upsert(
+                transaction_id=agent_case.transaction_id,
+                confirmed_is_fraud=True,
+            )
+        elif request.decision == ReviewDecision.FALSE_POSITIVE:
+            self.label_repository.upsert(
+                transaction_id=agent_case.transaction_id,
+                confirmed_is_fraud=False,
+            )
+        # 보류는 확정 판정이 아니므로 기존 학습 라벨을 만들거나 지우지 않는다.
 
         return CaseReviewResponse(
             case_id=review.case_id,

@@ -1,14 +1,19 @@
 import os
 import unittest
+from datetime import UTC, datetime
 from threading import Barrier, Lock
 from unittest.mock import Mock, patch
 
 import httpx
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 os.environ.setdefault("OPENAI_API_KEY", "test-only-key")
 
 from fastapi.testclient import TestClient
 
+from app.core.db import get_session
+from app.data.model.ml_prediction_result import MLPredictionResult
 from app.services.mlops.monitoring import (
     CloudMonitoringClient,
     CloudMonitoringError,
@@ -235,6 +240,16 @@ class CloudMonitoringClientTest(unittest.TestCase):
                     "ALIGN_MEAN",
                     'state = "used"',
                 ): monitoring_response((timestamp, 61)),
+                (
+                    "compute.googleapis.com/instance/network/received_bytes_count",
+                    "ALIGN_RATE",
+                    None,
+                ): monitoring_response((timestamp, 2048)),
+                (
+                    "compute.googleapis.com/instance/network/sent_bytes_count",
+                    "ALIGN_RATE",
+                    None,
+                ): monitoring_response((timestamp, 1024)),
             }
         )
         client = self.make_client(http_client)
@@ -244,6 +259,14 @@ class CloudMonitoringClientTest(unittest.TestCase):
         self.assertEqual(result["instance_name"], "fdshield-backend")
         self.assertEqual(result["summary"]["cpu_utilization_percent"], 25)
         self.assertEqual(result["summary"]["memory_utilization_percent"], 42)
+        self.assertEqual(
+            result["summary"]["network_received_kilobytes_per_second"],
+            2,
+        )
+        self.assertEqual(
+            result["summary"]["network_sent_kilobytes_per_second"],
+            1,
+        )
         self.assertTrue(result["ops_agent_available"])
         request_params = http_client.get.call_args_list[0].kwargs["params"]
         self.assertIn('resource.labels.instance_id = "123"', request_params["filter"])
@@ -290,13 +313,26 @@ class CloudMonitoringClientTest(unittest.TestCase):
 
 class CloudMonitoringApiTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        MLPredictionResult.__table__.create(self.engine)
+
+        def override_session():
+            with Session(self.engine) as session:
+                yield session
+
         self.monitoring = Mock()
+        app.dependency_overrides[get_session] = override_session
         app.dependency_overrides[get_cloud_monitoring_client] = lambda: self.monitoring
         self.client = TestClient(app)
         self.headers = {"X-MLOps-Admin-Token": "admin-secret"}
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
+        self.engine.dispose()
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_monitoring_endpoint_returns_cloud_metrics(self) -> None:
@@ -376,7 +412,38 @@ class CloudMonitoringApiTest(unittest.TestCase):
         self.monitoring.get_training_metrics.assert_called_once_with(360)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_platform_monitoring_endpoint_returns_vm_metrics(self) -> None:
+    @patch(
+        "app.api.mlops.get_https_certificate_expiry",
+        return_value=datetime(2026, 10, 20, tzinfo=UTC),
+    )
+    def test_platform_monitoring_endpoint_returns_vm_metrics(
+        self,
+        _certificate_expiry: Mock,
+    ) -> None:
+        with Session(self.engine) as session:
+            session.add(
+                MLPredictionResult(
+                    transaction_id=1,
+                    predict_result=False,
+                    predict_proba=0.1,
+                    model_name="fdshield-fraud-detector-v2",
+                    model_version="5",
+                    latency_ms=20,
+                    created_at=datetime.now(),
+                )
+            )
+            session.add(
+                MLPredictionResult(
+                    transaction_id=2,
+                    predict_result=True,
+                    predict_proba=0.9,
+                    model_name="fdshield-fraud-detector-v2",
+                    model_version="5",
+                    latency_ms=30,
+                    created_at=datetime.now(),
+                )
+            )
+            session.commit()
         self.monitoring.get_platform_metrics.return_value = {
             "window_minutes": 1440,
             "alignment_seconds": 900,
@@ -391,11 +458,15 @@ class CloudMonitoringApiTest(unittest.TestCase):
                 "cpu_utilization_percent": 25,
                 "memory_utilization_percent": 42,
                 "disk_utilization_percent": 61,
+                "network_received_kilobytes_per_second": 2,
+                "network_sent_kilobytes_per_second": 1,
             },
             "series": {
                 "cpu_utilization_percent": [],
                 "memory_utilization_percent": [],
                 "disk_utilization_percent": [],
+                "network_received_kilobytes_per_second": [],
+                "network_sent_kilobytes_per_second": [],
             },
         }
 
@@ -406,6 +477,11 @@ class CloudMonitoringApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["instance_name"], "fdshield-backend")
+        self.assertEqual(response.json()["summary"]["analysis_completed_count"], 2)
+        self.assertEqual(response.json()["summary"]["fraud_analysis_count"], 1)
+        self.assertIsNotNone(
+            response.json()["dependencies"]["https_certificate_expires_at"]
+        )
         self.monitoring.get_platform_metrics.assert_called_once_with(1440)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")

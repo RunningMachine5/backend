@@ -37,11 +37,16 @@ from app.dto.fraud_rule import (
     FraudRuleSetDraftCreate,
     FraudRuleSetResponse,
     FraudRuleSetSummaryResponse,
+    FraudRuleTypeCreate,
     FraudRuleWeightUpdate,
     FraudRuleValidationIssue,
     FraudRuleValidationResponse,
     RuleExpressionOperator,
+    RuleFeatureStatisticsRequest,
+    RuleFeatureStatisticsResponse,
     RuleFeatureResponse,
+    RulePatternStatisticsRequest,
+    RulePatternStatisticsResponse,
     expression_to_json,
 )
 from app.services.rules import repository as rule_repository
@@ -51,12 +56,20 @@ from app.services.rules.engine import (
     RuleSetDefinition,
     RuleSetValidationError,
 )
-from app.services.rules.expression_evaluator import RuleExpressionError
+from app.services.rules.expression_evaluator import (
+    RuleExpressionError,
+    RuleExpressionEvaluator,
+)
 from app.services.rules.feature_builder import (
     TRANSITION_LEGACY_DERIVED_FEATURES,
     TRANSITION_LEGACY_RAW_ALIASES,
 )
 from app.services.rules.replay import replay_rule_sets
+from app.services.rules.pattern_statistics import (
+    PatternStatisticsDefinition,
+    calculate_feature_statistics,
+    calculate_pattern_statistics,
+)
 from app.services.rules.repository import rule_set_definition_from_database
 
 router = APIRouter(
@@ -757,6 +770,18 @@ def _expression_type_issues(
             )
 
 
+def _expression_fields(expression: Mapping[str, Any]) -> set[str]:
+    if expression.get("operator") in {"AND", "OR"}:
+        return {
+            field
+            for condition in expression.get("conditions", [])
+            if isinstance(condition, Mapping)
+            for field in _expression_fields(condition)
+        }
+    field = expression.get("field")
+    return {field} if isinstance(field, str) else set()
+
+
 def _definition_validation_issues(
     definition: RuleSetDefinition,
 ) -> list[FraudRuleValidationIssue]:
@@ -852,6 +877,108 @@ def list_rule_features() -> list[RuleFeatureResponse]:
     """Return only the allow-listed raw and derived fields usable by rules."""
 
     return list(RULE_FEATURES)
+
+
+@router.post(
+    "/rule-feature-statistics",
+    response_model=RuleFeatureStatisticsResponse,
+)
+def get_rule_feature_statistics(
+    payload: RuleFeatureStatisticsRequest,
+    session: SessionDep,
+) -> RuleFeatureStatisticsResponse:
+    """패턴 추가 화면에서 비교값 결정을 위한 Feature 분포를 계산한다."""
+
+    feature = _FEATURE_BY_FIELD.get(payload.field)
+    if feature is None or feature.value_type not in {
+        "integer",
+        "number",
+        "boolean",
+        "enum",
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="표본 통계를 제공하지 않는 Feature입니다.",
+        )
+
+    value_type = feature.value_type
+    if value_type == "integer" and feature.allowed_values:
+        value_type = "enum"
+    result = calculate_feature_statistics(
+        session=session,
+        field=feature.field,
+        value_type=value_type,
+        sample_size=payload.sample_size,
+    )
+    return RuleFeatureStatisticsResponse(
+        requested_count=result.requested_count,
+        sample_count=result.sample_count,
+        has_more=result.has_more,
+        feature_statistics=asdict(result.feature_statistics),
+    )
+
+
+@router.post(
+    "/rule-pattern-statistics",
+    response_model=RulePatternStatisticsResponse,
+)
+def get_rule_pattern_statistics(
+    payload: RulePatternStatisticsRequest,
+    session: SessionDep,
+) -> RulePatternStatisticsResponse:
+    """최근 ML 양성 거래에서 화면상의 패턴 통계를 계산한다."""
+
+    evaluator = RuleExpressionEvaluator()
+    definitions: list[PatternStatisticsDefinition] = []
+    issues: list[FraudRuleValidationIssue] = []
+    for index, pattern in enumerate(payload.patterns):
+        expression = expression_to_json(pattern.condition_expression)
+        path = f"patterns[{index}].condition_expression"
+        try:
+            evaluator.validate(expression)
+        except RuleExpressionError as exc:
+            issues.append(FraudRuleValidationIssue(path=path, message=str(exc)))
+        issues.extend(_expression_type_issues(expression, path))
+
+        fields = _expression_fields(expression)
+        feature = _FEATURE_BY_FIELD.get(next(iter(fields))) if len(fields) == 1 else None
+        feature_value_type = None
+        if feature and feature.value_type in {"integer", "number", "boolean", "enum"}:
+            # 0/1 플래그처럼 선택지가 정해진 정수는 평균보다 값별 비율이 유용하다.
+            feature_value_type = (
+                "enum"
+                if feature.value_type == "integer" and feature.allowed_values
+                else feature.value_type
+            )
+        definitions.append(
+            PatternStatisticsDefinition(
+                component_key=pattern.component_key,
+                condition_expression=expression,
+                feature_field=feature.field if feature_value_type else None,
+                feature_value_type=feature_value_type,
+            )
+        )
+
+    if issues:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "통계를 계산할 수 없는 패턴이 있습니다.",
+                "issues": [issue.model_dump() for issue in issues],
+            },
+        )
+
+    result = calculate_pattern_statistics(
+        session=session,
+        definitions=definitions,
+        sample_size=payload.sample_size,
+    )
+    return RulePatternStatisticsResponse(
+        requested_count=result.requested_count,
+        sample_count=result.sample_count,
+        has_more=result.has_more,
+        patterns=[asdict(item) for item in result.patterns],
+    )
 
 
 @router.get(
@@ -952,6 +1079,69 @@ def delete_draft_rule_set(
         session.delete(rule)
     session.flush()
     session.delete(rule_set)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/rule-sets/{rule_set_id}/rules",
+    response_model=FraudRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_rule(
+    rule_set_id: int,
+    payload: FraudRuleTypeCreate,
+    session: SessionDep,
+) -> FraudRuleResponse:
+    """DRAFT에 새 사기유형을 비활성 상태로 추가한다."""
+
+    rule_set = _get_rule_set(session, rule_set_id)
+    _assert_draft(rule_set)
+    rules = _rules_for_set(session, rule_set_id)
+    if any(rule.type_code == payload.type_code for rule in rules):
+        raise _conflict("같은 유형 코드가 이미 이 룰셋에 있습니다.")
+
+    # Agent 대응 정책이 준비되지 않은 새 유형이 운영 흐름을 막지 않게 한다.
+    rule = _add_rule(
+        session,
+        rule_set,
+        FraudRuleCreate(
+            type_code=payload.type_code,
+            display_name=payload.display_name,
+            description=payload.description,
+            enabled=False,
+            sort_order=max((item.sort_order for item in rules), default=-1) + 1,
+        ),
+    )
+    rule_set.updated_at = datetime.now()
+    session.add(rule_set)
+
+    _commit_or_conflict(session, "같은 유형 코드가 이미 이 룰셋에 있습니다.")
+    session.refresh(rule)
+    return _rule_response(session, rule)
+
+
+@router.delete(
+    "/rule-sets/{rule_set_id}/rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_rule(
+    rule_set_id: int,
+    rule_id: int,
+    session: SessionDep,
+) -> Response:
+    """DRAFT에서 사기유형과 그 유형의 패턴을 함께 삭제한다."""
+
+    rule_set = _get_rule_set(session, rule_set_id)
+    _assert_draft(rule_set)
+    rule = _get_rule(session, rule_set_id, rule_id)
+
+    for component in _components_for_rule(session, rule.id):
+        session.delete(component)
+    session.flush()
+    session.delete(rule)
+    rule_set.updated_at = datetime.now()
+    session.add(rule_set)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

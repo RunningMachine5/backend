@@ -406,6 +406,205 @@ class FraudRuleReplayApiTest(unittest.TestCase):
             self.assertEqual(self._stored_score_snapshot(session), before)
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_pattern_statistics_returns_distribution_and_actual_sample_count(
+        self,
+    ) -> None:
+        base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
+        with Session(self.engine) as session:
+            transactions = []
+            for index, (transaction_id, amount, channel) in enumerate(
+                (
+                    ("TX-STATS-1", 100, "mobile"),
+                    ("TX-STATS-2", 200, "atm"),
+                    ("TX-STATS-3", 300, "mobile"),
+                )
+            ):
+                transaction = _save_transaction(
+                    session,
+                    transaction_id,
+                    transaction_datetime=base + timedelta(minutes=index),
+                )
+                transaction.transaction_amount = amount
+                transaction.channel = channel
+                session.add(transaction)
+                transactions.append(transaction)
+            session.commit()
+            session.add_all(
+                [
+                    _prediction(
+                        transaction.id,
+                        is_fraud=True,
+                        created_at=base + timedelta(hours=1, seconds=index),
+                    )
+                    for index, transaction in enumerate(transactions)
+                ]
+            )
+            session.commit()
+
+        response = self.client.post(
+            "/rule-pattern-statistics",
+            headers=ADMIN_HEADERS,
+            json={
+                "sample_size": 1000,
+                "patterns": [
+                    {
+                        "component_key": "high_amount",
+                        "condition_expression": {
+                            "field": "transaction_amount",
+                            "operator": "GTE",
+                            "value": 200,
+                        },
+                    },
+                    {
+                        "component_key": "mobile_channel",
+                        "condition_expression": {
+                            "field": "channel",
+                            "operator": "EQ",
+                            "value": "mobile",
+                        },
+                    },
+                    {
+                        "component_key": "mobile_high_amount",
+                        "condition_expression": {
+                            "operator": "AND",
+                            "conditions": [
+                                {
+                                    "field": "transaction_amount",
+                                    "operator": "GTE",
+                                    "value": 200,
+                                },
+                                {
+                                    "field": "channel",
+                                    "operator": "EQ",
+                                    "value": "mobile",
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["selection_basis"], "LATEST_ML_POSITIVE")
+        self.assertEqual(body["requested_count"], 1000)
+        self.assertEqual(body["sample_count"], 3)
+        self.assertFalse(body["has_more"])
+        patterns = {item["component_key"]: item for item in body["patterns"]}
+
+        amount = patterns["high_amount"]
+        self.assertEqual(amount["matched_count"], 2)
+        self.assertEqual(amount["matched_rate"], round(2 / 3, 10))
+        self.assertEqual(amount["feature_statistics"]["value_count"], 3)
+        self.assertEqual(amount["feature_statistics"]["average"], 200.0)
+        self.assertEqual(amount["feature_statistics"]["median"], 200.0)
+        self.assertEqual(amount["feature_statistics"]["p90"], 300.0)
+
+        channel = patterns["mobile_channel"]
+        self.assertEqual(channel["matched_count"], 2)
+        self.assertEqual(
+            channel["feature_statistics"]["value_counts"],
+            [
+                {"value": "mobile", "count": 2, "rate": round(2 / 3, 10)},
+                {"value": "atm", "count": 1, "rate": round(1 / 3, 10)},
+            ],
+        )
+        self.assertIsNone(patterns["mobile_high_amount"]["feature_statistics"])
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_feature_statistics_returns_distribution_without_condition(self) -> None:
+        base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
+        with Session(self.engine) as session:
+            transactions = []
+            for index, amount in enumerate((100, 200, 300)):
+                transaction = _save_transaction(
+                    session,
+                    f"TX-FEATURE-STATS-{index}",
+                    transaction_datetime=base + timedelta(minutes=index),
+                )
+                transaction.transaction_amount = amount
+                session.add(transaction)
+                transactions.append(transaction)
+            session.commit()
+            session.add_all(
+                [
+                    _prediction(
+                        transaction.id,
+                        is_fraud=True,
+                        created_at=base + timedelta(hours=1, seconds=index),
+                    )
+                    for index, transaction in enumerate(transactions)
+                ]
+            )
+            session.commit()
+
+        response = self.client.post(
+            "/rule-feature-statistics",
+            headers=ADMIN_HEADERS,
+            json={"field": "transaction_amount", "sample_size": 1000},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["selection_basis"], "LATEST_ML_POSITIVE")
+        self.assertEqual(body["sample_count"], 3)
+        self.assertFalse(body["has_more"])
+        self.assertEqual(body["feature_statistics"]["average"], 200.0)
+        self.assertEqual(body["feature_statistics"]["median"], 200.0)
+        self.assertEqual(body["feature_statistics"]["p90"], 300.0)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_pattern_statistics_limits_sample_and_rejects_invalid_requests(self) -> None:
+        base = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
+        with Session(self.engine) as session:
+            for index in range(3):
+                transaction = _save_transaction(
+                    session,
+                    f"TX-STATS-LIMIT-{index}",
+                    transaction_datetime=base + timedelta(minutes=index),
+                )
+                session.add(
+                    _prediction(
+                        transaction.id,
+                        is_fraud=True,
+                        created_at=base + timedelta(hours=1, seconds=index),
+                    )
+                )
+            session.commit()
+
+        pattern = {
+            "component_key": "positive_amount",
+            "condition_expression": {
+                "field": "transaction_amount",
+                "operator": "GT",
+                "value": 0,
+            },
+        }
+        limited = self.client.post(
+            "/rule-pattern-statistics",
+            headers=ADMIN_HEADERS,
+            json={"sample_size": 2, "patterns": [pattern]},
+        )
+        self.assertEqual(limited.status_code, 200, limited.text)
+        self.assertEqual(limited.json()["sample_count"], 2)
+        self.assertTrue(limited.json()["has_more"])
+
+        for invalid_sample_size in (0, 1001, True):
+            response = self.client.post(
+                "/rule-pattern-statistics",
+                headers=ADMIN_HEADERS,
+                json={"sample_size": invalid_sample_size, "patterns": [pattern]},
+            )
+            self.assertEqual(response.status_code, 422, response.text)
+        duplicate = self.client.post(
+            "/rule-pattern-statistics",
+            headers=ADMIN_HEADERS,
+            json={"patterns": [pattern, pattern]},
+        )
+        self.assertEqual(duplicate.status_code, 422, duplicate.text)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_component_impact_reports_churn_when_net_count_is_zero(self) -> None:
         first_draft = self.client.post(
             "/rule-sets/drafts",

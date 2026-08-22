@@ -79,6 +79,10 @@ MLFLOW_TRACKING_PASSWORD = os.getenv("MLFLOW_TRACKING_PASSWORD", "")
 MLFLOW_TRACKING_TIMEOUT_SECONDS = float(
     os.getenv("MLFLOW_TRACKING_TIMEOUT_SECONDS", "10")
 )
+PLATFORM_HTTPS_HOST = os.getenv(
+    "PLATFORM_HTTPS_HOST",
+    "api.fdshield.cloud",
+).strip()
 
 # 비어 있으면 /mlops 관리 API를 503으로 비활성화합니다. 운영 값은 Secret Manager
 # 또는 VM의 보호된 .env 파일에서 주입하고 저장소에 커밋하지 않습니다.

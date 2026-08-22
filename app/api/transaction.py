@@ -7,8 +7,6 @@ from app.data.model.fraud_rule import FraudTypeScoreResult
 from app.data.model.ml_prediction_result import MLPredictionResult
 from app.data.model.transaction import Transaction, TransactionStatus
 from app.data.model.transaction_label import TransactionLabel
-from app.domain.agent_status import RuleFilterStatus
-from app.dto.agent import AgentInputDTO
 from app.dto.fraud_detection import FraudDetectionResponseDTO
 from app.dto.transaction import (
     TransactionLabelQueueItemDTO,
@@ -20,49 +18,16 @@ from app.dto.transaction import (
     TransactionPredictionFilter,
     TransactionRequestDTO,
 )
-from app.pipelines.d_fraud_detection_pipline import (
-    FraudDetectionResult,
-)
 from app.repositories.transaction import (
     PredictionResultRepository,
     TransactionLabelRepository,
 )
 from app.services.agent.task_runner import AgentTaskRunnerDep
-from app.services.analysis.risk_grader import RiskGrader
+from app.services.agent.input_builder import build_agent_input
 from app.services.dashboard.dashboard_event_broker import dashboard_event_broker
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
-
-
-def _build_agent_input(
-    result: FraudDetectionResult,
-) -> AgentInputDTO | None:
-    """이상거래의 Rule 결과와 위험등급을 Agent 실행 입력으로 묶는다."""
-
-    prediction = result.prediction_result
-    score_result = result.score_result
-    transaction_id = result.transaction.id
-    if (
-        prediction is None
-        or not prediction.predict_result
-        or score_result is None
-        or score_result.rule_filter_status != RuleFilterStatus.APPLIED.value
-        or transaction_id is None
-        or score_result.id is None
-    ):
-        return None
-
-    risk = RiskGrader().assess(
-        result.transaction.transaction_amount,
-        prediction.predict_proba,
-    )
-    return AgentInputDTO(
-        transaction_id=transaction_id,
-        fraud_type_score_result_id=score_result.id,
-        risk_score=risk.risk_score,
-        risk_grade=risk.risk_grade,
-    )
 
 
 def _transaction_response(
@@ -88,6 +53,13 @@ def _transaction_response(
             # 세션 상태와 관계없이 같은 응답을 만든다.
             "transaction_id": transaction.id,
             "created_at": transaction.created_at,
+            "received_at": transaction.created_at,
+            "transaction_amount": transaction.transaction_amount,
+            "transaction_datetime": transaction.transaction_datetime,
+            "risk_score": (
+                prediction_result.predict_proba * 100
+                if prediction_result else None
+            ),
             "prediction_status": prediction_status,
             "predict_result": (
                 prediction_result.predict_result if prediction_result else None
@@ -122,7 +94,7 @@ def create_transaction(
         event="dashboard_updated",
         data={"source": "transaction"},
     )
-    agent_input = _build_agent_input(result)
+    agent_input = build_agent_input(result)
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)
 

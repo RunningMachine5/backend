@@ -97,6 +97,7 @@ class DashboardInsightPeriodTest(unittest.TestCase):
         overview_repository = Mock()
         overview_repository.count_transactions.return_value = 0
         overview_repository.count_rule_analysis_completed.return_value = 0
+        overview_repository.count_completed_cases.return_value = 0
         overview_repository.list_suspicious_rows.return_value = []
         insight_repository = Mock()
         insight_repository.get_latest_for_period.return_value = None

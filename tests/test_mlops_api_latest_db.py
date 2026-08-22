@@ -31,6 +31,10 @@ from app.services.mlops.dataset_builder import (
     get_labeled_dataset_builder,
 )
 from app.services.mlops.mlflow import MLflowRegistryError, get_mlflow_registry_client
+from app.services.mlops.model_review import (
+    ModelReviewResult,
+    get_model_review_llm,
+)
 from main import app
 from tests.ml_feature_fixture import valid_ml_raw_data
 
@@ -56,12 +60,14 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.cloud_run = Mock()
         self.dataset_builder = Mock()
         self.mlflow = Mock()
+        self.model_reviewer = Mock()
         app.dependency_overrides[get_session] = override_session
         app.dependency_overrides[get_cloud_run_admin_client] = lambda: self.cloud_run
         app.dependency_overrides[get_labeled_dataset_builder] = (
             lambda: self.dataset_builder
         )
         app.dependency_overrides[get_mlflow_registry_client] = lambda: self.mlflow
+        app.dependency_overrides[get_model_review_llm] = lambda: self.model_reviewer
         self.client = TestClient(app)
         self.headers = {"X-MLOps-Admin-Token": "admin-secret"}
         self.make_verification_transaction()
@@ -363,7 +369,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_training_start_stores_execution_not_lro_operation_name(self) -> None:
+    def test_training_execute_stores_execution_not_lro_operation_name(self) -> None:
         with Session(self.engine) as session:
             dataset = DatasetVersion(
                 version="training-source",
@@ -385,10 +391,18 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             },
         }
 
-        response = self.client.post(
-            "/mlops/training/runs",
+        prepared = self.client.post(
+            "/mlops/training/runs/prepare",
             headers=self.headers,
             json={"dataset_version_id": dataset_id},
+        )
+        self.assertEqual(prepared.status_code, 201, prepared.text)
+        run_id = prepared.json()["id"]
+
+        response = self.client.post(
+            f"/mlops/training/runs/{run_id}/execute",
+            headers=self.headers,
+            json={},
         )
 
         self.assertEqual(response.status_code, 202)
@@ -479,7 +493,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_training_start_does_not_regress_an_early_callback(self) -> None:
+    def test_training_execute_does_not_regress_an_early_callback(self) -> None:
         with Session(self.engine) as session:
             dataset = DatasetVersion(
                 version="early-callback-source",
@@ -491,9 +505,17 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             session.refresh(dataset)
             dataset_id = dataset.id
 
+        prepared = self.client.post(
+            "/mlops/training/runs/prepare",
+            headers=self.headers,
+            json={"dataset_version_id": dataset_id},
+        )
+        self.assertEqual(prepared.status_code, 201, prepared.text)
+        run_id = prepared.json()["id"]
+
         def finish_before_jobs_run_returns(**_kwargs: object) -> dict[str, object]:
             with Session(self.engine) as callback_session:
-                run = callback_session.get(TrainingRun, 1)
+                run = callback_session.get(TrainingRun, run_id)
                 assert run is not None
                 run.status = "CANDIDATE"
                 run.mlflow_run_id = "early-run"
@@ -514,9 +536,9 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.cloud_run.training_execution_name.return_value = "training-early"
 
         response = self.client.post(
-            "/mlops/training/runs",
+            f"/mlops/training/runs/{run_id}/execute",
             headers=self.headers,
-            json={"dataset_version_id": dataset_id},
+            json={},
         )
 
         self.assertEqual(response.status_code, 202, response.text)
@@ -537,23 +559,30 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             session.commit()
             session.refresh(dataset)
             dataset_id = dataset.id
+
+        prepared = self.client.post(
+            "/mlops/training/runs/prepare",
+            headers=self.headers,
+            json={"dataset_version_id": dataset_id},
+        )
+        self.assertEqual(prepared.status_code, 201, prepared.text)
+        run_id = prepared.json()["id"]
         self.cloud_run.run_training.side_effect = CloudRunAdminError(
             "Cloud Run 응답 timeout",
             request_may_have_been_accepted=True,
         )
 
         response = self.client.post(
-            "/mlops/training/runs",
+            f"/mlops/training/runs/{run_id}/execute",
             headers=self.headers,
-            json={"dataset_version_id": dataset_id},
+            json={},
         )
 
         self.assertEqual(response.status_code, 502, response.text)
         with Session(self.engine) as session:
-            run = session.exec(select(TrainingRun)).one()
+            run = session.get(TrainingRun, run_id)
+            assert run is not None
             self.assertEqual(run.status, "RUNNING")
-            run_id = run.id
-        self.assertIsNotNone(run_id)
 
         callback = self.client.post(
             f"/mlops/training/runs/{run_id}/result",
@@ -580,21 +609,60 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             session.commit()
             session.refresh(dataset)
             dataset_id = dataset.id
+
+        prepared = self.client.post(
+            "/mlops/training/runs/prepare",
+            headers=self.headers,
+            json={"dataset_version_id": dataset_id},
+        )
+        self.assertEqual(prepared.status_code, 201, prepared.text)
+        run_id = prepared.json()["id"]
         self.cloud_run.run_training.side_effect = CloudRunAdminError(
             "Cloud Run 요청 거절",
             status_code=400,
         )
 
         response = self.client.post(
-            "/mlops/training/runs",
+            f"/mlops/training/runs/{run_id}/execute",
             headers=self.headers,
-            json={"dataset_version_id": dataset_id},
+            json={},
         )
 
         self.assertEqual(response.status_code, 502, response.text)
         with Session(self.engine) as session:
-            run = session.exec(select(TrainingRun)).one()
+            run = session.get(TrainingRun, run_id)
+            assert run is not None
             self.assertEqual(run.status, "FAILED")
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_running_callback_connects_cloud_run_execution_without_finishing_run(
+        self,
+    ) -> None:
+        run_id = self.make_run()
+        payload = {
+            "status": "RUNNING",
+            "cloud_run_execution_name": "fdshield-training-started1",
+        }
+
+        first = self.client.post(
+            f"/mlops/training/runs/{run_id}/result",
+            headers=self.headers,
+            json=payload,
+        )
+        second = self.client.post(
+            f"/mlops/training/runs/{run_id}/result",
+            headers=self.headers,
+            json=payload,
+        )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["status"], "RUNNING")
+        self.assertEqual(
+            second.json()["cloud_run_execution_name"],
+            "fdshield-training-started1",
+        )
+        self.assertIsNone(second.json()["mlflow_run_id"])
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_success_callback_rejects_legacy_fields_and_is_idempotent(self) -> None:
@@ -1069,6 +1137,45 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
         self.mlflow.get_model_details.assert_called_once_with(
             "fdshield-fraud-detector-v2", "candidate-run"
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_ai_review_uses_candidate_and_production_metrics(self) -> None:
+        production_id = self.make_run("PRODUCTION", "production-run")
+        candidate_id = self.make_run("CANDIDATE", "candidate-run")
+        details = {
+            "candidate-run": {
+                "model_version": "18",
+                "metrics": {"validation_pr_auc": 0.82},
+                "tags": {"promotion_recommendation": "RECOMMENDED"},
+            },
+            "production-run": {
+                "model_version": "17",
+                "metrics": {"validation_pr_auc": 0.92},
+                "tags": {},
+            },
+        }
+        self.mlflow.get_model_details.side_effect = (
+            lambda _model_name, run_id: details[run_id]
+        )
+        self.model_reviewer.review.return_value = ModelReviewResult(
+            decision="NOT_RECOMMENDED",
+            summary="PR-AUC가 운영 모델보다 낮아 승격을 비추천합니다.",
+        )
+
+        response = self.client.post(
+            f"/mlops/training/runs/{candidate_id}/ai-review",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["source"], "AI")
+        self.assertEqual(response.json()["decision"], "NOT_RECOMMENDED")
+        self.model_reviewer.review.assert_called_once_with(
+            candidate_run_id=candidate_id,
+            candidate_details=details["candidate-run"],
+            production_run_id=production_id,
+            production_details=details["production-run"],
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")

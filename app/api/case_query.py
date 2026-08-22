@@ -7,6 +7,7 @@ from app.core.db import SessionDep
 from app.dto.dashboard import CaseDetailResponse, CaseListResponse
 from app.dto.case_review import CaseReviewResponse, CaseReviewUpsertRequest
 from app.repositories.case_review import CaseReviewRepository
+from app.repositories.transaction import TransactionLabelRepository
 from app.services.dashboard.case_review_service import CaseNotFoundError, CaseReviewService
 from app.repositories.case_query import CaseQueryRepository
 from app.services.dashboard.case_query_service import CaseQueryService
@@ -26,7 +27,8 @@ def get_case_review_service(
     session: SessionDep
 ) -> CaseReviewService:
     repository = CaseReviewRepository(session)
-    return CaseReviewService(repository)
+    label_repository = TransactionLabelRepository(session)
+    return CaseReviewService(repository, label_repository)
 
 @router.put(
     "/cases/{case_id}/review",
@@ -45,6 +47,7 @@ def save_case_review(
             case_id=case_id,
             request=request
         )
+        session.commit()
     except CaseNotFoundError as error:
         raise HTTPException(
             status_code=404,
@@ -69,6 +72,7 @@ def get_cases(
     min_amount: int | None = Query(default=None, ge=0),
     max_amount: int | None = Query(default=None, ge=0),
     risk_grades: list[str] | None = Query(default=None),
+    review_statuses: list[str] | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
 ) -> ApiResponse[CaseListResponse]:
@@ -85,6 +89,7 @@ def get_cases(
             min_amount=min_amount,
             max_amount=max_amount,
             risk_grades=risk_grades,
+            review_statuses=review_statuses,
             page=page,
             page_size=page_size,
         )

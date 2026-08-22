@@ -14,7 +14,16 @@ from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -29,16 +38,15 @@ from app.data.model.derived_features import DerivedFeatures
 from app.data.model.mlops import DatasetVersion, TrainingRun
 from app.data.model.transaction import Transaction
 from app.dto.mlops import (
-    CloudRunOperationResponse,
     DatasetPeriodRequest,
     DatasetPeriodSummaryResponse,
-    DatasetVersionRequest,
     DatasetVersionResponse,
     DeploymentCompleteRequest,
     InferencePerformanceResponse,
     LabeledDatasetBuildResponse,
     MLflowDetailsPointer,
     MLflowModelDetails,
+    ModelReviewResponse,
     ModelPromotionRequest,
     PlatformMonitoringResponse,
     PlatformStatusResponse,
@@ -51,7 +59,6 @@ from app.dto.mlops import (
     TrainingResultStatus,
     TrainingRunExecutionRequest,
     TrainingRunPrepareRequest,
-    TrainingRunRequest,
     TrainingRunResponse,
     TrainingRunStartResponse,
 )
@@ -76,9 +83,17 @@ from app.services.mlops.mlflow import (
     MLflowRegistryClientDep,
     MLflowRegistryError,
 )
+from app.services.mlops.model_review import (
+    ModelReviewError,
+    ModelReviewLLMDep,
+)
 from app.services.mlops.monitoring import (
     CloudMonitoringClientDep,
     CloudMonitoringError,
+)
+from app.services.mlops.platform_health import (
+    HttpsCertificateError,
+    get_https_certificate_expiry,
 )
 
 
@@ -367,28 +382,6 @@ def _resolve_run_model_version(
         raise _upstream_error(exc) from exc
 
 
-@router.post(
-    "/datasets",
-    status_code=status.HTTP_201_CREATED,
-    response_model=DatasetVersionResponse,
-)
-def create_dataset_version(
-    payload: DatasetVersionRequest,
-    session: SessionDep,
-) -> DatasetVersionResponse:
-    """GCS에 준비된 불변 학습 데이터셋을 버전으로 등록한다."""
-
-    dataset = DatasetVersion(**payload.model_dump())
-    session.add(dataset)
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(status_code=409, detail="이미 존재하는 데이터셋 버전입니다.") from exc
-    session.refresh(dataset)
-    return _dataset_payload(dataset)
-
-
 @router.get("/datasets", response_model=list[DatasetVersionResponse])
 def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
     datasets = session.exec(
@@ -582,29 +575,6 @@ def execute_training_run(
     )
 
 
-@router.post(
-    "/training/runs",
-    status_code=status.HTTP_202_ACCEPTED,
-    response_model=TrainingRunStartResponse,
-)
-def start_training_run(
-    payload: TrainingRunRequest,
-    client: CloudRunAdminClientDep,
-    session: SessionDep,
-) -> dict[str, Any]:
-    """기존 호출자를 위해 Run 생성과 실행 요청을 한 번에 처리한다."""
-
-    run, _ = _create_requested_training_run(payload.dataset_version_id, session)
-    assert run.id is not None
-    return _execute_training_run(
-        run.id,
-        payload.min_pr_auc,
-        payload.min_recall,
-        client,
-        session,
-    )
-
-
 # Training Job은 Backend 요청과 별도로 실행되므로 성공·실패 결과를 callback으로
 # 돌려준다. 아래 조회/결과 API는 그 비동기 실행 상태를 연결하는 경계다.
 
@@ -690,6 +660,64 @@ def get_training_run_model_details(
 
 
 @router.post(
+    "/training/runs/{run_id}/ai-review",
+    response_model=ModelReviewResponse,
+)
+def review_training_run_with_ai(
+    run_id: int,
+    mlflow: MLflowRegistryClientDep,
+    reviewer: ModelReviewLLMDep,
+    session: SessionDep,
+) -> ModelReviewResponse:
+    """후보와 현재 운영 모델의 성능 수치만 AI에 전달해 검토한다."""
+
+    candidate = _get_training_run_or_404(run_id, session)
+    if candidate.status != "CANDIDATE":
+        raise HTTPException(
+            status_code=409,
+            detail="AI 판단은 검토 대기 후보 모델에서만 요청할 수 있습니다.",
+        )
+    if candidate.mlflow_run_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="후보 모델의 MLflow run ID가 기록되지 않았습니다.",
+        )
+
+    production = session.exec(
+        select(TrainingRun)
+        .where(TrainingRun.status == "PRODUCTION")
+        .order_by(TrainingRun.created_at.desc())
+    ).first()
+
+    try:
+        candidate_details = mlflow.get_model_details(
+            candidate.model_key,
+            candidate.mlflow_run_id,
+        )
+        production_details = (
+            mlflow.get_model_details(
+                production.model_key,
+                production.mlflow_run_id,
+            )
+            if production is not None and production.mlflow_run_id is not None
+            else None
+        )
+        result = reviewer.review(
+            candidate_run_id=run_id,
+            candidate_details=candidate_details,
+            production_run_id=production.id if production else None,
+            production_details=production_details,
+        )
+    except (MLflowRegistryError, ModelReviewError) as exc:
+        raise _upstream_error(exc) from exc
+
+    return ModelReviewResponse(
+        decision=result.decision,
+        summary=result.summary,
+    )
+
+
+@router.post(
     "/training/runs/{run_id}/result",
     response_model=TrainingRunResponse,
 )
@@ -714,6 +742,13 @@ def record_training_result(
         if run.cloud_run_execution_name is None:
             run.cloud_run_execution_name = payload.cloud_run_execution_name
             execution_changed = True
+
+    if payload.status == TrainingResultStatus.RUNNING:
+        if execution_changed:
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+        return _training_run_payload(run)
 
     if payload.status == TrainingResultStatus.SUCCEEDED:
         assert payload.mlflow_run_id is not None
@@ -889,23 +924,6 @@ def reconcile_training_run(
     }
 
 
-@router.get("/training/status")
-def get_training_status(
-    client: CloudRunAdminClientDep,
-) -> dict[str, Any]:
-    try:
-        job = client.get_training_status()
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
-    return {
-        "name": job.get("name"),
-        "execution_count": job.get("executionCount", 0),
-        "latest_execution": job.get("latestCreatedExecution"),
-        "reconciling": job.get("reconciling", False),
-        "terminal_condition": job.get("terminalCondition"),
-    }
-
-
 @router.get(
     "/training/monitoring",
     response_model=TrainingMonitoringResponse,
@@ -945,29 +963,70 @@ def get_platform_status(session: SessionDep) -> PlatformStatusResponse:
     response_model=PlatformMonitoringResponse,
 )
 def get_platform_monitoring(
+    request: Request,
+    session: SessionDep,
     client: CloudMonitoringClientDep,
     window_minutes: int = Query(default=60, ge=15, le=1440),
 ) -> dict[str, Any]:
-    """Backend가 실행 중인 VM의 CPU·메모리·디스크 시계열을 반환한다."""
+    """운영 VM 자원과 실제로 저장된 거래 분석 처리량을 반환한다."""
 
     try:
-        return client.get_platform_metrics(window_minutes)
+        result = client.get_platform_metrics(window_minutes)
     except CloudMonitoringError as exc:
         raise _upstream_error(exc) from exc
 
-
-@router.get(
-    "/operations/{operation_id}",
-    response_model=CloudRunOperationResponse,
-)
-def get_operation(
-    operation_id: str,
-    client: CloudRunAdminClientDep,
-) -> dict[str, Any]:
+    alignment_seconds = result["alignment_seconds"]
+    since = datetime.now() - timedelta(minutes=window_minutes)
     try:
-        return client.get_operation(operation_id)
-    except CloudRunAdminError as exc:
-        raise _upstream_error(exc) from exc
+        throughput = InferencePerformanceRepository(session).summarize_throughput(
+            since,
+            alignment_seconds,
+        )
+    except SQLAlchemyError:
+        throughput = None
+
+    mlflow_latency_ms = None
+    try:
+        mlflow = request.app.state.service_clients.mlflow()
+        started_at = perf_counter()
+        mlflow.check_registry()
+        mlflow_latency_ms = round((perf_counter() - started_at) * 1000, 1)
+    except (AttributeError, MLflowRegistryError):
+        pass
+
+    certificate_expires_at = None
+    certificate_days_remaining = None
+    try:
+        certificate_expires_at = get_https_certificate_expiry(
+            config.PLATFORM_HTTPS_HOST
+        )
+        certificate_days_remaining = int(
+            (certificate_expires_at - datetime.now(UTC)).total_seconds() // 86400
+        )
+    except HttpsCertificateError:
+        pass
+
+    result["summary"].update(
+        {
+            "analysis_completed_count": (
+                throughput.completed_count if throughput else None
+            ),
+            "normal_analysis_count": throughput.normal_count if throughput else None,
+            "fraud_analysis_count": throughput.fraud_count if throughput else None,
+        }
+    )
+    result["series"].update(
+        {
+            "normal_analysis_count": throughput.normal_series if throughput else [],
+            "fraud_analysis_count": throughput.fraud_series if throughput else [],
+        }
+    )
+    result["dependencies"] = {
+        "mlflow_latency_ms": mlflow_latency_ms,
+        "https_certificate_expires_at": certificate_expires_at,
+        "https_certificate_days_remaining": certificate_days_remaining,
+    }
+    return result
 
 
 @router.get("/serving/status")

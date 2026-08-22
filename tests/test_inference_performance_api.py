@@ -13,6 +13,7 @@ from sqlmodel import Session, create_engine
 from app.api.mlops import router
 from app.core.db import get_session
 from app.data.model.ml_prediction_result import MLPredictionResult
+from app.repositories.inference_performance import InferencePerformanceRepository
 
 
 app = FastAPI()
@@ -88,6 +89,38 @@ class InferencePerformanceApiTest(unittest.TestCase):
         self.assertEqual(body["inference_count"], 20)
         self.assertEqual(body["p95_latency_ms"], 190)
         self.assertIsNotNone(body["latest_inference_at"])
+
+    def test_throughput_groups_normal_and_fraud_results(self) -> None:
+        now = datetime.now()
+        with Session(self.engine) as session:
+            for transaction_id, is_fraud, seconds_ago in [
+                (1, False, 10),
+                (2, True, 20),
+                (3, False, 70),
+            ]:
+                session.add(
+                    MLPredictionResult(
+                        transaction_id=transaction_id,
+                        predict_result=is_fraud,
+                        predict_proba=0.9 if is_fraud else 0.1,
+                        model_name="fdshield-fraud-detector-v2",
+                        model_version="5",
+                        latency_ms=20,
+                        created_at=now - timedelta(seconds=seconds_ago),
+                    )
+                )
+            session.commit()
+
+            summary = InferencePerformanceRepository(session).summarize_throughput(
+                now - timedelta(minutes=5),
+                60,
+            )
+
+        self.assertEqual(summary.completed_count, 3)
+        self.assertEqual(summary.normal_count, 2)
+        self.assertEqual(summary.fraud_count, 1)
+        self.assertEqual(sum(point["value"] for point in summary.normal_series), 2)
+        self.assertEqual(sum(point["value"] for point in summary.fraud_series), 1)
 
 
 if __name__ == "__main__":
