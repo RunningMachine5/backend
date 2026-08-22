@@ -1031,6 +1031,51 @@ def decide_training_run(
     }
 
 
+@router.post(
+    "/training/runs/{run_id}/reactivate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def reactivate_training_run(
+    run_id: int,
+    client: CloudRunAdminClientDep,
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """이전에 운영한 모델을 0% 후보로 다시 준비한다."""
+
+    run = _get_training_run_for_update_or_404(run_id, session)
+    current_production_id = session.exec(
+        select(TrainingRun.id)
+        .where(TrainingRun.status == "PRODUCTION")
+        .order_by(TrainingRun.created_at.desc(), TrainingRun.id.desc())
+    ).first()
+    is_previous_production = run.status in {"RETIRED", "PRODUCTION"}
+    if not is_previous_production or run.id == current_production_id:
+        raise HTTPException(
+            status_code=409,
+            detail="이전에 운영한 모델만 다시 준비할 수 있습니다.",
+        )
+
+    model_version = _resolve_run_model_version(run, mlflow)
+    try:
+        result = client.stage_model_revision(model_version)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+
+    run.status = "STAGED"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    operation = result.get("operation")
+    operation_id = _operation_id(operation) if isinstance(operation, dict) else None
+    return {
+        "training_run": _training_run_payload(run),
+        "model_version": model_version,
+        "operation_id": operation_id,
+        **result,
+    }
+
+
 @router.post("/training/runs/{run_id}/reconcile")
 def reconcile_training_run(
     run_id: int,
@@ -1329,10 +1374,19 @@ def complete_model_deployment(
             mlflow.set_model_alias(run.model_key, config.MLOPS_MODEL_ALIAS, model_version)
         except MLflowRegistryError as exc:
             raise _upstream_error(exc) from exc
-        run.status = "PRODUCTION"
-        session.add(run)
-        session.commit()
-        session.refresh(run)
+    previous_production_runs = session.exec(
+        select(TrainingRun).where(
+            TrainingRun.status == "PRODUCTION",
+            TrainingRun.id != run.id,
+        )
+    ).all()
+    for previous_run in previous_production_runs:
+        previous_run.status = "RETIRED"
+        session.add(previous_run)
+    run.status = "PRODUCTION"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
     return {
         "training_run": _training_run_payload(run),
         "model_version": model_version,
