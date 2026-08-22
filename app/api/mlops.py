@@ -12,7 +12,7 @@ import re
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -46,8 +46,12 @@ from app.dto.mlops import (
     LabeledDatasetBuildResponse,
     MLflowDetailsPointer,
     MLflowModelDetails,
+    ModelTransactionPageResponse,
+    ModelTransactionResponse,
     ModelReviewResponse,
     ModelPromotionRequest,
+    ModelUsageSummaryResponse,
+    ModelVersionSummaryResponse,
     PlatformMonitoringResponse,
     PlatformStatusResponse,
     ServingMonitoringResponse,
@@ -63,6 +67,7 @@ from app.dto.mlops import (
     TrainingRunStartResponse,
 )
 from app.repositories.inference_performance import InferencePerformanceRepository
+from app.repositories.model_catalog import ModelCatalogRepository, ModelUsageSummary
 from app.services.features.ml_feature_assembler import assemble_ml_features
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
@@ -382,6 +387,41 @@ def _resolve_run_model_version(
         raise _upstream_error(exc) from exc
 
 
+def _model_usage_payload(
+    usage: ModelUsageSummary | None,
+) -> ModelUsageSummaryResponse:
+    if usage is None:
+        return ModelUsageSummaryResponse(
+            processed_transaction_count=0,
+            fraud_prediction_count=0,
+            labeled_transaction_count=0,
+            matching_label_count=0,
+            false_positive_count=0,
+            false_negative_count=0,
+            label_agreement_percent=None,
+            average_latency_ms=None,
+            first_inference_at=None,
+            latest_inference_at=None,
+        )
+    agreement = (
+        round(usage.matching_label_count / usage.labeled_transaction_count * 100, 1)
+        if usage.labeled_transaction_count > 0
+        else None
+    )
+    return ModelUsageSummaryResponse(
+        processed_transaction_count=usage.processed_transaction_count,
+        fraud_prediction_count=usage.fraud_prediction_count,
+        labeled_transaction_count=usage.labeled_transaction_count,
+        matching_label_count=usage.matching_label_count,
+        false_positive_count=usage.false_positive_count,
+        false_negative_count=usage.false_negative_count,
+        label_agreement_percent=agreement,
+        average_latency_ms=usage.average_latency_ms,
+        first_inference_at=usage.first_inference_at,
+        latest_inference_at=usage.latest_inference_at,
+    )
+
+
 @router.get("/datasets", response_model=list[DatasetVersionResponse])
 def list_dataset_versions(session: SessionDep) -> list[DatasetVersionResponse]:
     datasets = session.exec(
@@ -585,6 +625,124 @@ def list_training_runs(session: SessionDep) -> list[TrainingRunResponse]:
         select(TrainingRun).order_by(TrainingRun.created_at.desc())
     ).all()
     return [_training_run_payload(run) for run in runs]
+
+
+@router.get("/models", response_model=list[ModelVersionSummaryResponse])
+def list_model_versions(
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+) -> list[ModelVersionSummaryResponse]:
+    """학습이 끝나 MLflow에 등록된 모델과 실제 처리 이력을 함께 반환한다."""
+
+    runs = list(
+        session.exec(
+            select(TrainingRun)
+            .where(TrainingRun.mlflow_run_id.is_not(None))
+            .order_by(TrainingRun.created_at.desc(), TrainingRun.id.desc())
+        ).all()
+    )
+    if not runs:
+        return []
+
+    versions_by_model: dict[str, dict[str, str]] = {}
+    try:
+        for model_name in {run.model_key for run in runs}:
+            versions_by_model[model_name] = mlflow.model_versions_by_run(model_name)
+    except MLflowRegistryError as exc:
+        raise _upstream_error(exc) from exc
+
+    dataset_ids = {run.dataset_version_id for run in runs}
+    datasets = {
+        dataset.id: dataset
+        for dataset in session.exec(
+            select(DatasetVersion).where(DatasetVersion.id.in_(dataset_ids))
+        ).all()
+    }
+    usage_by_version = ModelCatalogRepository(session).usage_by_model_version()
+    current_production_id = next(
+        (run.id for run in runs if run.status == "PRODUCTION"),
+        None,
+    )
+
+    models: list[ModelVersionSummaryResponse] = []
+    for run in runs:
+        assert run.id is not None
+        assert run.mlflow_run_id is not None
+        model_version = versions_by_model[run.model_key].get(run.mlflow_run_id)
+        dataset = datasets.get(run.dataset_version_id)
+        # MLflow에 실제 등록 모델이 없는 학습 이력은 모델 목록이 아니라
+        # 학습·배포 이력에서 확인한다.
+        if model_version is None or dataset is None:
+            continue
+        display_status = (
+            "RETIRED"
+            if run.status == "PRODUCTION" and run.id != current_production_id
+            else run.status
+        )
+        models.append(
+            ModelVersionSummaryResponse(
+                training_run_id=run.id,
+                model_name=run.model_key,
+                model_version=model_version,
+                status=display_status,
+                dataset_version_id=dataset.id,
+                dataset_version=dataset.version,
+                created_at=run.created_at,
+                usage=_model_usage_payload(
+                    usage_by_version.get((run.model_key, model_version))
+                ),
+            )
+        )
+    return models
+
+
+@router.get(
+    "/models/{run_id}/transactions",
+    response_model=ModelTransactionPageResponse,
+)
+def list_model_transactions(
+    run_id: int,
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+    label_filter: Literal["ALL", "LABELED", "MISMATCH"] = Query(default="ALL"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+) -> ModelTransactionPageResponse:
+    """선택 모델의 최근 처리 거래와 담당자 확정 판정을 조회한다."""
+
+    run = _get_training_run_or_404(run_id, session)
+    model_version = _resolve_run_model_version(run, mlflow)
+    rows, total_count = ModelCatalogRepository(session).list_transactions(
+        model_name=run.model_key,
+        model_version=model_version,
+        label_filter=label_filter,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    return ModelTransactionPageResponse(
+        items=[
+            ModelTransactionResponse(
+                transaction_id=transaction.id,
+                transaction_datetime=transaction.transaction_datetime,
+                transaction_amount=transaction.transaction_amount,
+                channel=transaction.channel,
+                predict_result=prediction.predict_result,
+                predict_proba=prediction.predict_proba,
+                confirmed_is_fraud=(
+                    label.confirmed_is_fraud if label is not None else None
+                ),
+                label_matches=(
+                    prediction.predict_result == label.confirmed_is_fraud
+                    if label is not None
+                    else None
+                ),
+            )
+            for transaction, prediction, label in rows
+        ],
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+    )
 
 
 @router.get("/training/runs/{run_id}", response_model=TrainingRunResponse)

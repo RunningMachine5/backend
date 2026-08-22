@@ -78,6 +78,23 @@ class MLflowRegistryClientTest(unittest.TestCase):
             self.make_client().resolve_model_version("fraud-model", "same")
 
     @patch("app.services.mlops.mlflow.httpx.request")
+    def test_model_versions_by_run_returns_registered_versions(
+        self, request: Mock
+    ) -> None:
+        request.return_value = response(
+            {
+                "model_versions": [
+                    {"name": "fraud-model", "version": "41", "run_id": "run-41"},
+                    {"name": "fraud-model", "version": "42", "run_id": "run-42"},
+                ]
+            }
+        )
+
+        versions = self.make_client().model_versions_by_run("fraud-model")
+
+        self.assertEqual(versions, {"run-41": "41", "run-42": "42"})
+
+    @patch("app.services.mlops.mlflow.httpx.request")
     def test_get_model_details_normalizes_mlflow_run_data(self, request: Mock) -> None:
         request.side_effect = [
             response(
