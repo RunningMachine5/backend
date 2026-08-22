@@ -508,7 +508,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_training_execute_requires_configured_backend_quality_policy(self) -> None:
+    def test_training_execute_disables_incomplete_backend_quality_policy(self) -> None:
         with Session(self.engine) as session:
             dataset = DatasetVersion(
                 version="missing-quality-policy",
@@ -526,9 +526,13 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             json={"dataset_version_id": dataset_id},
         )
         run_id = prepared.json()["id"]
+        self.cloud_run.training_execution_name.return_value = "training-exec-no-gate"
+        self.cloud_run.run_training.return_value = {
+            "name": "projects/p/locations/r/operations/no-gate-op",
+        }
 
         with (
-            patch("app.api.mlops.config.MLOPS_MIN_PR_AUC", 0.0),
+            patch("app.api.mlops.config.MLOPS_MIN_PR_AUC", 0.75),
             patch("app.api.mlops.config.MLOPS_MIN_RECALL", 0.0),
         ):
             response = self.client.post(
@@ -537,12 +541,17 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
                 json={},
             )
 
-        self.assertEqual(response.status_code, 503, response.text)
-        self.cloud_run.run_training.assert_not_called()
+        self.assertEqual(response.status_code, 202, response.text)
+        self.cloud_run.run_training.assert_called_once_with(
+            min_pr_auc=0.0,
+            min_recall=0.0,
+            dataset_uri="gs://bucket/missing-quality-policy.csv",
+            training_run_id=run_id,
+        )
         with Session(self.engine) as session:
             run = session.get(TrainingRun, run_id)
             self.assertIsNotNone(run)
-            self.assertEqual(run.status, "REQUESTED")
+            self.assertEqual(run.status, "RUNNING")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_training_execute_does_not_regress_an_early_callback(self) -> None:
@@ -896,11 +905,18 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.mlflow.set_model_version_tags.assert_not_called()
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_unconfigured_quality_policy_blocks_approval_but_allows_rejection(
+    def test_disabled_quality_policy_allows_approval_without_metric_check(
         self,
     ) -> None:
         run_id = self.make_run("CANDIDATE", "candidate-without-policy")
         self.mlflow.resolve_model_version.return_value = "17"
+        self.cloud_run.stage_model_revision.return_value = {
+            "operation": None,
+            "tag": "model-v17",
+            "revision": "serving-00017-candidate",
+            "previousTraffic": [],
+            "reused": True,
+        }
 
         with (
             patch("app.api.mlops.config.MLOPS_MIN_PR_AUC", 0.0),
@@ -911,16 +927,11 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
                 headers=self.headers,
                 json={"decision": "APPROVE"},
             )
-            rejection = self.client.post(
-                f"/mlops/training/runs/{run_id}/decision",
-                headers=self.headers,
-                json={"decision": "REJECT"},
-            )
 
-        self.assertEqual(approval.status_code, 503, approval.text)
-        self.assertEqual(rejection.status_code, 202, rejection.text)
-        self.assertEqual(rejection.json()["training_run"]["status"], "REJECTED")
-        self.cloud_run.stage_model_revision.assert_not_called()
+        self.assertEqual(approval.status_code, 202, approval.text)
+        self.assertEqual(approval.json()["training_run"]["status"], "STAGED")
+        self.mlflow.get_model_details.assert_not_called()
+        self.cloud_run.stage_model_revision.assert_called_once_with("17")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_staged_candidate_can_be_revalidated_without_new_db_columns(self) -> None:
@@ -1400,6 +1411,42 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         )
         self.mlflow.get_model_details.assert_called_once_with(
             "fdshield-fraud-detector-v2", "candidate-run"
+        )
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_disabled_quality_gate_is_reported_as_non_blocking(self) -> None:
+        run_id = self.make_run("CANDIDATE", "candidate-without-quality-gate")
+        self.mlflow.get_model_details.return_value = {
+            "source": "MLFLOW",
+            "run_id": "candidate-without-quality-gate",
+            "model_name": "fdshield-fraud-detector-v2",
+            "model_version": "18",
+            "metrics": {},
+            "params": {},
+            "tags": {},
+        }
+
+        with (
+            patch("app.api.mlops.config.MLOPS_MIN_PR_AUC", 0.75),
+            patch("app.api.mlops.config.MLOPS_MIN_RECALL", 0.0),
+        ):
+            response = self.client.get(
+                f"/mlops/training/runs/{run_id}/model-details",
+                headers=self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json()["quality_gate"],
+            {
+                "configured": False,
+                "minimum_pr_auc": 0.0,
+                "minimum_recall": 0.0,
+                "validation_pr_auc": None,
+                "validation_recall": None,
+                "validation_status": None,
+                "passed": True,
+            },
         )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
