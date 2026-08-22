@@ -195,6 +195,12 @@ class CloudRunAdminClient:
         params: Mapping[str, str] | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        request_can_change_state = method.upper() in {
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+        }
         try:
             request = (
                 self._http_client.request if self._http_client else httpx.request
@@ -208,11 +214,11 @@ class CloudRunAdminClient:
                 timeout=self.timeout_seconds,
             )
         except httpx.RequestError as exc:
-            # timeout/연결 단절은 서버가 요청을 처리한 뒤 응답만 유실됐을 수도
-            # 있으므로 jobs.run 호출자를 위한 수락 가능성을 보존한다.
+            # 상태 변경 요청은 서버가 처리한 뒤 응답만 유실됐을 수 있다. 조회
+            # 요청 실패는 외부 상태를 바꾸지 않으므로 수락 불명 상태로 보지 않는다.
             raise CloudRunAdminError(
                 f"Cloud Run Admin API {method} 요청에 실패했습니다.",
-                request_may_have_been_accepted=True,
+                request_may_have_been_accepted=request_can_change_state,
             ) from exc
 
         try:
@@ -221,7 +227,7 @@ class CloudRunAdminClient:
             status_code = exc.response.status_code
             # 명시적인 4xx는 Cloud Run이 요청을 거절한 결과다. HTTP 408은
             # 처리 경계를 확정할 수 없는 timeout이므로 보수적으로 남긴다.
-            request_may_have_been_accepted = (
+            request_may_have_been_accepted = request_can_change_state and (
                 status_code >= 500 or status_code == 408
             )
             raise CloudRunAdminError(
@@ -233,18 +239,18 @@ class CloudRunAdminClient:
         try:
             body = response.json()
         except ValueError as exc:
-            # 성공 HTTP 응답까지 왔으므로 요청 자체는 이미 수락됐을 수 있다.
+            # 상태 변경 요청의 성공 응답이라면 외부 변경은 이미 적용됐을 수 있다.
             raise CloudRunAdminError(
                 f"Cloud Run Admin API {method} 응답을 해석하지 못했습니다.",
                 status_code=response.status_code,
-                request_may_have_been_accepted=True,
+                request_may_have_been_accepted=request_can_change_state,
             ) from exc
 
         if not isinstance(body, dict):
             raise CloudRunAdminError(
                 "Cloud Run Admin API 응답이 JSON 객체가 아닙니다.",
                 status_code=response.status_code,
-                request_may_have_been_accepted=True,
+                request_may_have_been_accepted=request_can_change_state,
             )
         return body
 

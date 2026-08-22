@@ -299,6 +299,21 @@ class CloudRunAdminClientTest(unittest.TestCase):
         self.assertTrue(raised.exception.request_may_have_been_accepted)
 
     @patch("app.services.mlops.cloud_run.httpx.request")
+    def test_get_timeout_is_not_marked_as_an_accepted_change(
+        self,
+        request: Mock,
+    ) -> None:
+        request.side_effect = httpx.ReadTimeout(
+            "response timeout",
+            request=httpx.Request("GET", "https://run.googleapis.com/v2/service"),
+        )
+
+        with self.assertRaises(CloudRunAdminError) as raised:
+            self.make_client().get_serving_status()
+
+        self.assertFalse(raised.exception.request_may_have_been_accepted)
+
+    @patch("app.services.mlops.cloud_run.httpx.request")
     def test_stage_reuses_ready_zero_traffic_revision(
         self,
         request: Mock,

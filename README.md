@@ -311,27 +311,32 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
 2. 등록된 `dataset_version_id`로 `POST /mlops/training/runs/prepare`를 호출해
    `training_runs` 이력을 먼저 만듭니다. 반환된 Run ID로
    `POST /mlops/training/runs/{id}/execute`를 호출하면 Cloud Run Training Job을
-   시작합니다.
+   시작합니다. 품질 기준은 요청 본문이 아니라 Backend의 `MLOPS_MIN_PR_AUC`,
+   `MLOPS_MIN_RECALL` 설정을 전달합니다.
 3. Training Job은 후보와 현재 champion을 평가하고 성공 시 `status`, `mlflow_run_id`,
    실제 Cloud Run execution 이름만 `POST /mlops/training/runs/{id}/result`로 보냅니다.
 4. Backend의 `training_runs`에는 실행 연결 정보와 상태만 저장합니다. 관리자는
    `GET /mlops/training/runs/{id}/model-details`에서 MLflow 원본의 모델 버전·지표·파라미터·
-   태그를 확인한 뒤 `POST /mlops/training/runs/{id}/decision`으로 승인 또는 거절합니다.
+   태그와 현재 Backend 품질 게이트를 확인한 뒤 `POST /mlops/training/runs/{id}/decision`으로
+   승인 또는 거절합니다. MLflow 검증 실패, 지표 누락, 현재 기준 미달 모델은 승인할 수
+   없습니다.
 5. 승인하면 Backend가 `mlflow_run_id`에 대응하는 등록 모델 버전을 MLflow에서 확인합니다.
    Backend는 현재 운영 중인 digest 고정 Serving 이미지를 그대로 사용하고
    `ML_MODEL_VERSION`만 승인 버전으로 바꿔 `model-v<version>` 태그의 새 리비전을
    트래픽 0%로 요청합니다. 같은 태그의 Ready 후보가 이미 있으면 새로 만들지 않고
    재사용합니다. Cloud Run이 요청을 수락한 뒤 MLflow 승인 태그와 학습 실행 상태
    `STAGED`를 기록합니다.
-6. Ready 상태를 확인한 뒤 `POST /mlops/serving/promotions`로 실제 예측 스모크를
-   실행하고, 성공한 경우에만 새 리비전으로 트래픽 100% 이동을 요청합니다. 요청자가
-   모델 버전을 직접 지정하지 않습니다.
+6. 담당자가 Ready 상태를 확인하고 운영 전환을 직접 요청하면
+   `POST /mlops/serving/promotions`가 실제 예측 스모크를 실행하고, 성공한 경우에만
+   새 리비전으로 트래픽 100% 이동을 요청합니다. 자동 승격이나 예약 실행은 없으며,
+   Backend는 외부 요청 전에 DB를 `PROMOTING`으로 기록합니다. 요청자가 모델 버전을
+   직접 지정하지 않습니다.
 7. `POST /mlops/training/runs/{id}/deployment/complete`로 선택적인 비동기 operation과
    실제 Ready 리비전·100% 트래픽을 확인합니다. 성공하면 MLflow `champion` alias를
    바꾸고 학습 이력을 `PRODUCTION`으로 확정합니다.
 
-핵심 요청 형태는 다음과 같습니다. 아래 `features`의 말줄임은 설명용 축약이며 실제
-승격 스모크 요청에는 `MLTransactionFeatures`의 51개 필드를 넣습니다.
+핵심 요청 형태는 다음과 같습니다. 승격 스모크에 필요한 `MLTransactionFeatures` 51개는
+Backend가 최근 저장 거래에서 복원하므로 요청자는 학습 Run ID만 전달합니다.
 
 ```text
 POST /mlops/datasets/build
@@ -341,7 +346,7 @@ POST /mlops/training/runs/prepare
 {"dataset_version_id": 2}
 
 POST /mlops/training/runs/12/execute
-{"min_pr_auc": 0.75, "min_recall": 0.8}
+{}
 
 POST /mlops/training/runs/12/result
 {"status": "SUCCEEDED", "mlflow_run_id": "a1b2c3...",
@@ -353,8 +358,7 @@ POST /mlops/training/runs/12/decision
 {"decision": "APPROVE", "reason": "동일 검증셋에서 Recall 상승, FPR 감소"}
 
 POST /mlops/serving/promotions
-{"training_run_id": 12, "transaction_id": 123,
- "features": {...ML Feature 51개...}}
+{"training_run_id": 12}
 
 POST /mlops/training/runs/12/deployment/complete
 {"operation_id": "<serving promotion 응답의 operation_id>"}
@@ -362,6 +366,9 @@ POST /mlops/training/runs/12/deployment/complete
 
 `deployment/complete`의 `operation_id`는 선택 사항입니다. 유실됐거나 페이지를 다시
 연 경우 `{}`로 호출하면 실제 Ready 리비전과 100% 트래픽 상태를 기준으로 복구 확인합니다.
+과거 순서 문제로 DB가 `STAGED`이거나 명확한 실패로 `DEPLOYMENT_FAILED`인 경우도 실제
+트래픽이 해당 모델 100%로 확인되면 `PRODUCTION`으로 복구합니다. 승격 요청 결과가
+불명확한 `PROMOTING` Run에는 승격 요청을 반복하지 않고 이 완료 API로 대조합니다.
 학습 결과 callback이 유실됐다면 `POST /mlops/training/runs/{id}/reconcile`로 저장된
 Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution 실패는 `FAILED`로
 정리하지만, 성공한 실행의 `mlflow_run_id`는 추측하지 않으므로 callback 설정을 고쳐야
@@ -374,7 +381,8 @@ Cloud Run Execution의 종결 상태를 대조할 수 있습니다. Execution �
 `gcs_uri`를 `TRAINING_DATA_URI`로 전달하고 ML이 내부에서 raw59→model80 공용 전처리를
 수행합니다. 별도의 전처리 결과 CSV나 보조 CSV 조합은 Backend 관리 API에서 지원하지
 않습니다.
-학습·검증 분리 정책과 모델별 임계값은 Training Job이 결정하고 MLflow에 기록합니다.
+학습·검증 분리 정책은 Training Job이 결정하고, 최소 PR-AUC·Recall 승인 기준은 Backend
+운영 설정이 Training Job에 전달되어 MLflow에 기록됩니다.
 최신 Backend의 데이터셋 요청과 DB에는 `split_datetime`이 없습니다. 모델 버전, 후보·
 champion 비교 지표와 추천 결과도 `training_runs`에 복제하지 않고 MLflow를 원본으로
 조회합니다. alias와 Serving 트래픽 변경은 Backend 관리자 승인 API에서만 수행합니다.
@@ -399,12 +407,17 @@ TRAINING_RESULT_CALLBACK_TOKEN=<MLOPS_ADMIN_TOKEN과 동일한 보호 값>
 
 Backend가 모델 상세 조회·승인·최종 alias 변경을 하려면 `MLFLOW_TRACKING_URI`,
 `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD`와 `MLOPS_MODEL_ALIAS`를 설정합니다.
+`MLOPS_MIN_PR_AUC`, `MLOPS_MIN_RECALL`은 운영 담당자가 결정해야 하며, 미설정 또는 0이면
+애플리케이션은 기동하지만 학습 실행과 모델 승인은 `503`으로 차단됩니다. 모델 거절은
+품질 기준이 없어도 가능합니다. `.env.example`의 `0.75`, `0.80`은 초기 설정 예시입니다.
 실제 계정과 비밀번호는 `.env.example`이나 Git에 넣지 않습니다. 실패 callback은
 `{"status":"FAILED","error_message":"..."}` 형태이며, 같은 결과 callback은 멱등하게
 처리됩니다.
 `model-details` 응답은 MLflow `artifact_uri`와 후보·champion 성능 비교 파일의 상대 경로
 `model_comparison_artifact_path=metadata/model-comparison.json`을 제공합니다. 모델 지표·
 파라미터·태그와 비교 결과는 MLflow를 원본으로 사용하며 Backend DB에 복제하지 않습니다.
+`quality_gate`에는 현재 최소 기준, 실제 검증 지표, MLflow 검증 상태와 승인 가능 여부가
+같이 포함됩니다.
 운영 VM 서비스 계정에는 최소한 Cloud Run Job 실행·조회와 Service 조회·트래픽 수정
 권한이 필요합니다. 승인 모델의 0% Serving 리비전을 만들기 위해 Cloud Run Service
 수정 권한과 해당 Serving 런타임 서비스 계정에 대한 `iam.serviceAccounts.actAs` 권한도

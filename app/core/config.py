@@ -1,5 +1,14 @@
 import os
 
+
+def _quality_threshold(name: str, default: str) -> float:
+    raw_value = os.getenv(name, default).strip()
+    value = float(raw_value or default)
+    if not 0 <= value <= 1:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return value
+
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+psycopg://root:1234@localhost:5432/fdshield-db",
@@ -70,6 +79,8 @@ MLOPS_MODEL_NAME = os.getenv(
     "fdshield-fraud-detector-v2",
 ).strip()
 MLOPS_MODEL_ALIAS = os.getenv("MLOPS_MODEL_ALIAS", "champion").strip()
+MLOPS_MIN_PR_AUC = _quality_threshold("MLOPS_MIN_PR_AUC", "0")
+MLOPS_MIN_RECALL = _quality_threshold("MLOPS_MIN_RECALL", "0")
 
 # Backend는 학습 실행 이력에 MLflow run ID만 저장합니다. 모델 버전과 학습
 # 지표는 MLflow가 원본이므로 승인/상세 조회 시 Registry REST API에서 확인합니다.
