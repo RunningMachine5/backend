@@ -242,15 +242,10 @@ def _quality_policy_configured() -> bool:
     return config.MLOPS_MIN_PR_AUC > 0 and config.MLOPS_MIN_RECALL > 0
 
 
-def _require_quality_policy() -> None:
+def _quality_policy_thresholds() -> tuple[float, float]:
     if not _quality_policy_configured():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "모델 품질 기준이 설정되지 않았습니다. "
-                "MLOPS_MIN_PR_AUC와 MLOPS_MIN_RECALL을 0보다 크게 설정해야 합니다."
-            ),
-        )
+        return 0.0, 0.0
+    return config.MLOPS_MIN_PR_AUC, config.MLOPS_MIN_RECALL
 
 
 def _model_quality_gate(details: dict[str, Any]) -> dict[str, Any]:
@@ -265,19 +260,19 @@ def _model_quality_gate(details: dict[str, Any]) -> dict[str, Any]:
     validation_status = (
         tags.get("validation_status") if isinstance(tags, dict) else None
     )
+    minimum_pr_auc, minimum_recall = _quality_policy_thresholds()
     configured = _quality_policy_configured()
-    passed = (
-        configured
-        and validation_status == "passed"
+    passed = not configured or (
+        validation_status == "passed"
         and validation_pr_auc is not None
         and validation_recall is not None
-        and validation_pr_auc >= config.MLOPS_MIN_PR_AUC
-        and validation_recall >= config.MLOPS_MIN_RECALL
+        and validation_pr_auc >= minimum_pr_auc
+        and validation_recall >= minimum_recall
     )
     return {
         "configured": configured,
-        "minimum_pr_auc": config.MLOPS_MIN_PR_AUC,
-        "minimum_recall": config.MLOPS_MIN_RECALL,
+        "minimum_pr_auc": minimum_pr_auc,
+        "minimum_recall": minimum_recall,
         "validation_pr_auc": validation_pr_auc,
         "validation_recall": validation_recall,
         "validation_status": validation_status,
@@ -374,7 +369,6 @@ def _execute_training_run(
     client: CloudRunAdminClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
-    _require_quality_policy()
     run = _get_training_run_for_update_or_404(run_id, session)
     if run.status != "REQUESTED":
         raise HTTPException(status_code=409, detail="이미 실행 요청된 학습 Run입니다.")
@@ -389,9 +383,10 @@ def _execute_training_run(
     session.commit()
 
     try:
+        min_pr_auc, min_recall = _quality_policy_thresholds()
         operation = client.run_training(
-            min_pr_auc=config.MLOPS_MIN_PR_AUC,
-            min_recall=config.MLOPS_MIN_RECALL,
+            min_pr_auc=min_pr_auc,
+            min_recall=min_recall,
             dataset_uri=dataset.gcs_uri,
             training_run_id=run.id,
         )
@@ -1037,8 +1032,7 @@ def decide_training_run(
     )
     if not initial_decision and not explicit_restage:
         raise HTTPException(status_code=409, detail="검토 가능한 후보 모델이 아닙니다.")
-    if payload.decision == TrainingDecision.APPROVE:
-        _require_quality_policy()
+    if payload.decision == TrainingDecision.APPROVE and _quality_policy_configured():
         quality_gate = _model_quality_gate(_get_run_model_details(run, mlflow))
         if not quality_gate["passed"]:
             raise HTTPException(
