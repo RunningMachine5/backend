@@ -24,10 +24,17 @@ class AgentTaskRunnerTest(unittest.TestCase):
     ) -> None:
         session = self._session_from(session_class)
 
-        run_agent_task(self.agent_input)
+        with patch(
+            "app.services.agent.task_runner.dashboard_event_broker.publish"
+        ) as publish:
+            run_agent_task(self.agent_input)
 
         workflow_factory.assert_called_once_with(session, send_email=True)
         workflow_factory.return_value.run.assert_called_once_with(self.agent_input)
+        publish.assert_called_once_with(
+            event="dashboard_updated",
+            data={"source": "agent"},
+        )
 
     @patch("app.services.agent.task_runner.create_agent_workflow")
     @patch("app.services.agent.task_runner.Session")
@@ -55,10 +62,19 @@ class AgentTaskRunnerTest(unittest.TestCase):
         self._session_from(session_class)
         workflow_factory.return_value.run.side_effect = RuntimeError("agent")
 
-        with self.assertLogs("app.services.agent.task_runner", "ERROR"):
+        with (
+            self.assertLogs("app.services.agent.task_runner", "ERROR"),
+            patch(
+                "app.services.agent.task_runner.dashboard_event_broker.publish"
+            ) as publish,
+        ):
             result = run_agent_task(self.agent_input)
 
         self.assertIsNone(result)
+        publish.assert_called_once_with(
+            event="dashboard_updated",
+            data={"source": "agent"},
+        )
 
     @staticmethod
     def _session_from(session_class) -> MagicMock:

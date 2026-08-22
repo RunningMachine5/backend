@@ -2,6 +2,7 @@ import os
 import unittest
 from datetime import UTC, datetime
 from statistics import pstdev
+from unittest.mock import patch
 
 os.environ.setdefault("OPENAI_API_KEY", "test-only-key")
 
@@ -258,10 +259,13 @@ class TransactionApiLatestDBTest(unittest.TestCase):
         self.ml_client.predict_result = 1
         self.ml_client.predict_proba = 0.91
 
-        response = self.client.post(
-            "/transactions",
-            json=valid_transaction_request(),
-        )
+        with patch(
+            "app.api.transaction.dashboard_event_broker.publish"
+        ) as publish:
+            response = self.client.post(
+                "/transactions",
+                json=valid_transaction_request(),
+            )
 
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
@@ -283,6 +287,18 @@ class TransactionApiLatestDBTest(unittest.TestCase):
             },
         )
         self.assertEqual(len(self.agent_inputs), 1)
+        publish.assert_called_once()
+        event = publish.call_args.kwargs
+        self.assertEqual(event["event"], "dashboard_updated")
+        self.assertEqual(event["data"]["source"], "transaction")
+        self.assertEqual(
+            event["data"]["transaction_patch"]["event_id"],
+            f"transaction:{body['transaction_id']}",
+        )
+        self.assertEqual(
+            event["data"]["transaction_patch"]["suspicious_case"]["risk_grade"],
+            "MEDIUM",
+        )
         agent_input = self.agent_inputs[0]
         self.assertEqual(agent_input.transaction_id, body["transaction_id"])
         self.assertEqual(agent_input.risk_score, 42)
