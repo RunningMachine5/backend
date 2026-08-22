@@ -1,6 +1,6 @@
 import unittest
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,6 +10,7 @@ from app.services.demo_transaction_injection import (
     DEMO_TRANSACTION_COUNT,
     DemoTransactionInjectionManager,
     load_demo_transaction_rows,
+    run_demo_transaction_injection,
 )
 
 
@@ -46,6 +47,59 @@ class DemoTransactionResourceTest(unittest.TestCase):
         self.assertEqual(status.total_count, 500)
         self.assertEqual(status.transactions_per_second, 20)
         self.assertFalse(manager.start())
+
+    def test_publishes_transaction_patch_for_demo_transaction(self) -> None:
+        row = MagicMock()
+        result = MagicMock()
+        result.response.prediction_status = "COMPLETED"
+        pipeline = MagicMock()
+        pipeline.run.return_value = result
+        manager = MagicMock()
+        dashboard_event = {
+            "source": "demo_transaction",
+            "transaction_patch": {"event_id": "transaction:1"},
+        }
+
+        with (
+            patch(
+                "app.services.demo_transaction_injection.load_demo_transaction_rows",
+                return_value=[row],
+            ),
+            patch(
+                "app.services.demo_transaction_injection._pipeline",
+                return_value=pipeline,
+            ),
+            patch("app.services.demo_transaction_injection.Session"),
+            patch(
+                "app.services.demo_transaction_injection.build_agent_input",
+                return_value=None,
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "build_transaction_dashboard_event",
+                return_value=dashboard_event,
+            ) as build_event,
+            patch(
+                "app.services.demo_transaction_injection.dashboard_event_broker.publish"
+            ) as publish,
+            patch(
+                "app.services.demo_transaction_injection."
+                "demo_transaction_injection_manager",
+                manager,
+            ),
+        ):
+            run_demo_transaction_injection(MagicMock(), transaction_count=1)
+
+        build_event.assert_called_once_with(
+            source="demo_transaction",
+            result=result,
+            agent_input=None,
+        )
+        publish.assert_called_once_with(
+            event="dashboard_updated",
+            data=dashboard_event,
+        )
+        manager.complete.assert_called_once_with()
 
 
 class DemoTransactionApiTest(unittest.TestCase):

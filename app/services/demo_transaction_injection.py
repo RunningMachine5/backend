@@ -21,6 +21,9 @@ from app.repositories.transaction import TransactionRepository
 from app.services.agent.input_builder import build_agent_input
 from app.services.agent.task_runner import run_demo_agent_task
 from app.services.dashboard.dashboard_event_broker import dashboard_event_broker
+from app.services.dashboard.transaction_patch import (
+    build_transaction_dashboard_event,
+)
 from app.services.features.derived_features_service import DerivedFeatureService
 from app.services.ml_serving.client import MLServingClient
 from app.services.transaction.detection_result_service import DetectionResultService
@@ -197,10 +200,15 @@ def run_demo_transaction_injection(
                 result = _pipeline(session, ml_serving_client).run(payload)
                 session.commit()
                 agent_input = build_agent_input(result)
+                dashboard_event = build_transaction_dashboard_event(
+                    source="demo_transaction",
+                    result=result,
+                    agent_input=agent_input,
+                )
 
             dashboard_event_broker.publish(
                 event="dashboard_updated",
-                data={"source": "demo_transaction"},
+                data=dashboard_event,
             )
             if agent_input is not None:
                 run_demo_agent_task(agent_input)
