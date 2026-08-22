@@ -151,6 +151,26 @@ class MLflowRegistryClient:
             raise MLflowRegistryError("MLflow model version 형식이 올바르지 않습니다.")
         return version
 
+    def model_versions_by_run(self, model_name: str) -> dict[str, str]:
+        """등록 모델의 MLflow run ID와 모델 버전을 한 번에 연결한다."""
+
+        versions_by_run: dict[str, str] = {}
+        for item in self._model_versions(model_name):
+            if item.get("name") != model_name:
+                continue
+            run_id = item.get("run_id")
+            version = str(item.get("version", ""))
+            if not isinstance(run_id, str) or not run_id:
+                continue
+            if not version.isdigit() or int(version) <= 0:
+                raise MLflowRegistryError("MLflow model version 형식이 올바르지 않습니다.")
+            if run_id in versions_by_run and versions_by_run[run_id] != version:
+                raise MLflowRegistryError(
+                    "하나의 MLflow run에 등록 모델 버전이 여러 개 연결되어 있습니다."
+                )
+            versions_by_run[run_id] = version
+        return versions_by_run
+
     @staticmethod
     def _key_value_map(
         value: Any,

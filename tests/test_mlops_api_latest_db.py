@@ -923,6 +923,37 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             self.assertEqual(run.status, "CANDIDATE")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_previous_production_can_be_prepared_again(self) -> None:
+        previous_run_id = self.make_run("PRODUCTION", "previous-production")
+        current_run_id = self.make_run("PRODUCTION", "current-production")
+        self.mlflow.resolve_model_version.return_value = "16"
+        self.cloud_run.stage_model_revision.return_value = {
+            "operation": {"name": "projects/p/locations/r/operations/reactivate"},
+            "tag": "model-v16",
+            "reused": False,
+        }
+
+        response = self.client.post(
+            f"/mlops/training/runs/{previous_run_id}/reactivate",
+            headers=self.headers,
+        )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(response.json()["training_run"]["status"], "STAGED")
+        self.assertEqual(response.json()["model_version"], "16")
+        self.cloud_run.stage_model_revision.assert_called_once_with("16")
+        with Session(self.engine) as session:
+            current_run = session.get(TrainingRun, current_run_id)
+            self.assertIsNotNone(current_run)
+            self.assertEqual(current_run.status, "PRODUCTION")
+
+        current_response = self.client.post(
+            f"/mlops/training/runs/{current_run_id}/reactivate",
+            headers=self.headers,
+        )
+        self.assertEqual(current_response.status_code, 409, current_response.text)
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_promotion_requires_run_and_rejects_client_model_version(self) -> None:
         missing_run = self.client.post(
             "/mlops/serving/promotions",
@@ -950,6 +981,7 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_promotion_and_live_completion_use_resolved_version(self) -> None:
+        previous_production_id = self.make_run("PRODUCTION", "production-run")
         run_id = self.make_run("STAGED", "candidate-run")
         self.mlflow.resolve_model_version.return_value = "17"
         self.cloud_run.promote_model_revision.return_value = {
@@ -993,6 +1025,10 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         self.mlflow.set_model_alias.assert_called_once_with(
             "fdshield-fraud-detector-v2", "champion", "17"
         )
+        with Session(self.engine) as session:
+            previous_production = session.get(TrainingRun, previous_production_id)
+            self.assertIsNotNone(previous_production)
+            self.assertEqual(previous_production.status, "RETIRED")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_promotion_requires_a_stored_verification_transaction(self) -> None:
