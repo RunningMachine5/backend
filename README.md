@@ -326,10 +326,11 @@ ParadeDB의 최초 초기화 과정에서 PostgreSQL이 한 번 재시작되므�
    트래픽 0%로 요청합니다. 같은 태그의 Ready 후보가 이미 있으면 새로 만들지 않고
    재사용합니다. Cloud Run이 요청을 수락한 뒤 MLflow 승인 태그와 학습 실행 상태
    `STAGED`를 기록합니다.
-6. Ready 상태를 확인한 뒤 `POST /mlops/serving/promotions`로 실제 예측 스모크를
-   실행하고, 성공한 경우에만 새 리비전으로 트래픽 100% 이동을 요청합니다. Backend는
-   외부 요청 전에 DB를 `PROMOTING`으로 기록하며 요청자가 모델 버전을 직접 지정하지
-   않습니다.
+6. 담당자가 Ready 상태를 확인하고 운영 전환을 직접 요청하면
+   `POST /mlops/serving/promotions`가 실제 예측 스모크를 실행하고, 성공한 경우에만
+   새 리비전으로 트래픽 100% 이동을 요청합니다. 자동 승격이나 예약 실행은 없으며,
+   Backend는 외부 요청 전에 DB를 `PROMOTING`으로 기록합니다. 요청자가 모델 버전을
+   직접 지정하지 않습니다.
 7. `POST /mlops/training/runs/{id}/deployment/complete`로 선택적인 비동기 operation과
    실제 Ready 리비전·100% 트래픽을 확인합니다. 성공하면 MLflow `champion` alias를
    바꾸고 학습 이력을 `PRODUCTION`으로 확정합니다.
