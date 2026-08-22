@@ -183,6 +183,44 @@ class ModelCatalogApiTest(unittest.TestCase):
         self.assertFalse(body["items"][0]["confirmed_is_fraud"])
         self.assertFalse(body["items"][0]["label_matches"])
 
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_model_usage_and_transactions_keep_only_latest_prediction(self) -> None:
+        with Session(self.engine) as session:
+            session.add(
+                MLPredictionResult(
+                    transaction_id=1,
+                    predict_result=False,
+                    predict_proba=0.24,
+                    model_name="fraud-model",
+                    model_version="41",
+                    latency_ms=14,
+                    created_at=datetime.now(UTC) + timedelta(minutes=1),
+                )
+            )
+            session.commit()
+
+        response = self.client.get("/mlops/models", headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        retired = response.json()[1]
+        self.assertEqual(retired["usage"]["processed_transaction_count"], 2)
+        self.assertEqual(retired["usage"]["fraud_prediction_count"], 1)
+        self.assertEqual(retired["usage"]["label_agreement_percent"], 0.0)
+
+        self.mlflow.resolve_model_version.return_value = "41"
+        transactions = self.client.get(
+            f"/mlops/models/{retired['training_run_id']}/transactions",
+            headers=self.headers,
+        )
+        self.assertEqual(transactions.status_code, 200, transactions.text)
+        self.assertEqual(transactions.json()["total_count"], 2)
+        latest = next(
+            item
+            for item in transactions.json()["items"]
+            if item["transaction_id"] == 1
+        )
+        self.assertFalse(latest["predict_result"])
+        self.assertEqual(latest["predict_proba"], 0.24)
+
 
 if __name__ == "__main__":
     unittest.main()

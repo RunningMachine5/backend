@@ -95,6 +95,27 @@ class MLflowRegistryClientTest(unittest.TestCase):
         self.assertEqual(versions, {"run-41": "41", "run-42": "42"})
 
     @patch("app.services.mlops.mlflow.httpx.request")
+    def test_model_version_lookup_reuses_recent_registry_result(
+        self, request: Mock
+    ) -> None:
+        request.return_value = response(
+            {
+                "model_versions": [
+                    {"name": "fraud-model", "version": "41", "run_id": "run-41"},
+                    {"name": "fraud-model", "version": "42", "run_id": "run-42"},
+                ]
+            }
+        )
+        client = self.make_client()
+
+        versions = client.model_versions_by_run("fraud-model")
+        resolved = client.resolve_model_version("fraud-model", "run-42")
+
+        self.assertEqual(versions["run-41"], "41")
+        self.assertEqual(resolved, "42")
+        request.assert_called_once()
+
+    @patch("app.services.mlops.mlflow.httpx.request")
     def test_get_model_details_normalizes_mlflow_run_data(self, request: Mock) -> None:
         request.side_effect = [
             response(
@@ -186,7 +207,7 @@ class MLflowRegistryClientTest(unittest.TestCase):
             client.resolve_model_version("fraud-model", "missing-again")
         client.close()
 
-        self.assertEqual(http_client.request.call_count, 2)
+        self.assertEqual(http_client.request.call_count, 1)
         http_client.close.assert_called_once_with()
 
 

@@ -923,8 +923,8 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             self.assertEqual(run.status, "CANDIDATE")
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
-    def test_previous_production_can_be_prepared_again(self) -> None:
-        previous_run_id = self.make_run("PRODUCTION", "previous-production")
+    def test_retired_model_can_be_prepared_again(self) -> None:
+        previous_run_id = self.make_run("RETIRED", "previous-production")
         current_run_id = self.make_run("PRODUCTION", "current-production")
         self.mlflow.resolve_model_version.return_value = "16"
         self.cloud_run.stage_model_revision.return_value = {
