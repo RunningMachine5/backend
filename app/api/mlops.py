@@ -238,6 +238,53 @@ def _upstream_error(exc: Exception) -> HTTPException:
     )
 
 
+def _quality_policy_configured() -> bool:
+    return config.MLOPS_MIN_PR_AUC > 0 and config.MLOPS_MIN_RECALL > 0
+
+
+def _require_quality_policy() -> None:
+    if not _quality_policy_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "모델 품질 기준이 설정되지 않았습니다. "
+                "MLOPS_MIN_PR_AUC와 MLOPS_MIN_RECALL을 0보다 크게 설정해야 합니다."
+            ),
+        )
+
+
+def _model_quality_gate(details: dict[str, Any]) -> dict[str, Any]:
+    metrics = details.get("metrics")
+    tags = details.get("tags")
+    validation_pr_auc = (
+        metrics.get("validation_pr_auc") if isinstance(metrics, dict) else None
+    )
+    validation_recall = (
+        metrics.get("validation_recall") if isinstance(metrics, dict) else None
+    )
+    validation_status = (
+        tags.get("validation_status") if isinstance(tags, dict) else None
+    )
+    configured = _quality_policy_configured()
+    passed = (
+        configured
+        and validation_status == "passed"
+        and validation_pr_auc is not None
+        and validation_recall is not None
+        and validation_pr_auc >= config.MLOPS_MIN_PR_AUC
+        and validation_recall >= config.MLOPS_MIN_RECALL
+    )
+    return {
+        "configured": configured,
+        "minimum_pr_auc": config.MLOPS_MIN_PR_AUC,
+        "minimum_recall": config.MLOPS_MIN_RECALL,
+        "validation_pr_auc": validation_pr_auc,
+        "validation_recall": validation_recall,
+        "validation_status": validation_status,
+        "passed": passed,
+    }
+
+
 def _dataset_payload(dataset: DatasetVersion) -> DatasetVersionResponse:
     assert dataset.id is not None
     period_start, period_end, normal_count, fraud_count = (
@@ -324,11 +371,10 @@ def _create_requested_training_run(
 
 def _execute_training_run(
     run_id: int,
-    min_pr_auc: float,
-    min_recall: float,
     client: CloudRunAdminClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
+    _require_quality_policy()
     run = _get_training_run_for_update_or_404(run_id, session)
     if run.status != "REQUESTED":
         raise HTTPException(status_code=409, detail="이미 실행 요청된 학습 Run입니다.")
@@ -344,8 +390,8 @@ def _execute_training_run(
 
     try:
         operation = client.run_training(
-            min_pr_auc=min_pr_auc,
-            min_recall=min_recall,
+            min_pr_auc=config.MLOPS_MIN_PR_AUC,
+            min_recall=config.MLOPS_MIN_RECALL,
             dataset_uri=dataset.gcs_uri,
             training_run_id=run.id,
         )
@@ -383,6 +429,21 @@ def _resolve_run_model_version(
         )
     try:
         return mlflow.resolve_model_version(run.model_key, run.mlflow_run_id)
+    except MLflowRegistryError as exc:
+        raise _upstream_error(exc) from exc
+
+
+def _get_run_model_details(
+    run: TrainingRun,
+    mlflow: MLflowRegistryClientDep,
+) -> dict[str, Any]:
+    if run.mlflow_run_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="학습 실행에 MLflow run ID가 기록되지 않았습니다.",
+        )
+    try:
+        return mlflow.get_model_details(run.model_key, run.mlflow_run_id)
     except MLflowRegistryError as exc:
         raise _upstream_error(exc) from exc
 
@@ -600,7 +661,7 @@ def prepare_training_run(
 )
 def execute_training_run(
     run_id: int,
-    payload: TrainingRunExecutionRequest,
+    _payload: TrainingRunExecutionRequest,
     client: CloudRunAdminClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
@@ -608,8 +669,6 @@ def execute_training_run(
 
     return _execute_training_run(
         run_id,
-        payload.min_pr_auc,
-        payload.min_recall,
         client,
         session,
     )
@@ -806,15 +865,8 @@ def get_training_run_model_details(
     """지표·모델 버전을 DB 복제본이 아닌 MLflow 원본에서 조회한다."""
 
     run = _get_training_run_or_404(run_id, session)
-    if run.mlflow_run_id is None:
-        raise HTTPException(
-            status_code=409,
-            detail="학습 실행에 MLflow run ID가 기록되지 않았습니다.",
-        )
-    try:
-        return mlflow.get_model_details(run.model_key, run.mlflow_run_id)
-    except MLflowRegistryError as exc:
-        raise _upstream_error(exc) from exc
+    details = _get_run_model_details(run, mlflow)
+    return {**details, "quality_gate": _model_quality_gate(details)}
 
 
 @router.post(
@@ -985,6 +1037,15 @@ def decide_training_run(
     )
     if not initial_decision and not explicit_restage:
         raise HTTPException(status_code=409, detail="검토 가능한 후보 모델이 아닙니다.")
+    if payload.decision == TrainingDecision.APPROVE:
+        _require_quality_policy()
+        quality_gate = _model_quality_gate(_get_run_model_details(run, mlflow))
+        if not quality_gate["passed"]:
+            raise HTTPException(
+                status_code=409,
+                detail="모델 품질 기준을 충족하지 못해 승인할 수 없습니다.",
+            )
+
     model_version = _resolve_run_model_version(run, mlflow)
     decision_tags = {"backend_decision": payload.decision.value}
     if payload.reason:

@@ -18,6 +18,8 @@ class TrainingRunPrepareRequest(StrictMLOpsDTO):
 
 
 class TrainingRunExecutionRequest(StrictMLOpsDTO):
+    """기존 요청 호환 필드이며 실제 기준은 Backend 운영 설정을 사용한다."""
+
     min_pr_auc: float = Field(default=0.0, ge=0.0, le=1.0)
     min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -373,6 +375,16 @@ class TrainingRunStartResponse(StrictMLOpsDTO):
     operation: CloudRunOperationResponse
 
 
+class ModelQualityGateResponse(StrictMLOpsDTO):
+    configured: bool
+    minimum_pr_auc: float
+    minimum_recall: float
+    validation_pr_auc: float | None
+    validation_recall: float | None
+    validation_status: str | None
+    passed: bool
+
+
 class MLflowModelDetails(StrictMLOpsDTO):
     source: Literal["MLFLOW"] = "MLFLOW"
     run_id: str
@@ -385,6 +397,7 @@ class MLflowModelDetails(StrictMLOpsDTO):
     metrics: dict[str, float]
     params: dict[str, str]
     tags: dict[str, str]
+    quality_gate: ModelQualityGateResponse
 
 
 class ModelReviewResponse(StrictMLOpsDTO):
@@ -404,6 +417,7 @@ __all__ = [
     "LabeledDatasetBuildResponse",
     "MLflowDetailsPointer",
     "MLflowModelDetails",
+    "ModelQualityGateResponse",
     "ModelTransactionPageResponse",
     "ModelTransactionResponse",
     "ModelUsageSummaryResponse",
