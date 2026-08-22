@@ -1,19 +1,9 @@
-"""고객 답변에서 가이드 검색 질의와 사기 정황을 구조화 출력으로 추출한다."""
+"""고객 답변에서 만든 가이드 검색 질의를 정규화한다."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
-
-from app.core.config import CHAT_LLM_MAX_ATTEMPTS, CHAT_LLM_TIMEOUT_SECONDS
-from app.dto.chatbot import (
-    ExtractedGuideSearchQuery,
-    FraudCircumstanceExtractionResult,
-)
-from app.services.chatbot.llm import build_structured_llm
-from app.services.chatbot.prompts import (
-    render_fraud_circumstance_extraction_prompt,
-)
+from app.dto.chatbot import ExtractedGuideSearchQuery
 
 
 logger = logging.getLogger(__name__)
@@ -56,83 +46,7 @@ def normalize_guide_search_queries(
     return valid_queries
 
 
-class ChatbotExtractionError(RuntimeError):
-    """추출 LLM이 재시도 상한 안에 유효한 결과를 반환하지 못한 경우."""
-
-
-class FraudCircumstanceExtractionError(ChatbotExtractionError):
-    """사기 정황 추출에 실패한 경우."""
-
-
-class FraudCircumstanceExtractor:
-    """프롬프트로 사기 정황을 추출"""
-
-    def __init__(
-        self,
-        *,
-        structured_llm: Any | None = None,
-        model: str | None = None,
-        timeout_seconds: float = CHAT_LLM_TIMEOUT_SECONDS,
-        max_attempts: int = CHAT_LLM_MAX_ATTEMPTS,
-    ) -> None:
-        self.structured_llm = structured_llm or build_structured_llm(
-            FraudCircumstanceExtractionResult,
-            model=model,
-            timeout_seconds=timeout_seconds,
-        )
-        self.max_attempts = max(1, max_attempts)
-
-    def extract(
-        self,
-        *,
-        user_answers: str,
-    ) -> FraudCircumstanceExtractionResult:
-        prompt = render_fraud_circumstance_extraction_prompt(
-            user_answers=user_answers
-        )
-
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                raw_result = self.structured_llm.invoke(prompt)
-                result = FraudCircumstanceExtractionResult.model_validate(
-                    raw_result
-                )
-            except Exception as exc:
-                logger.warning(
-                    "사기 정황 추출 LLM 호출 실패: attempt=%s/%s error=%s: %s",
-                    attempt,
-                    self.max_attempts,
-                    type(exc).__name__,
-                    exc,
-                )
-                if attempt < self.max_attempts:
-                    continue
-                raise FraudCircumstanceExtractionError(
-                    "fraud_circumstance 추출에 실패했습니다."
-                ) from exc # 예외 체이닝
-
-            valid_circumstances = []
-            for circumstance in result.fraud_circumstances:
-                if circumstance.evidence not in user_answers:
-                    logger.warning(
-                        "LLM 이 꾸며낸 응답이므로 패스합니다: evidence=%s",
-                        circumstance.evidence,
-                    )
-                    continue
-                valid_circumstances.append(circumstance)
-            return FraudCircumstanceExtractionResult(
-                fraud_circumstances=valid_circumstances
-            )
-
-        raise AssertionError("사기 정황 추출 재시도 루프가 종료되었습니다.")
-
-
-__all__ = [
-    "ChatbotExtractionError",
-    "FraudCircumstanceExtractionError",
-    "FraudCircumstanceExtractor",
-    "normalize_guide_search_queries",
-]
+__all__ = ["normalize_guide_search_queries"]
 
 
 def _normalize_search_query(search_query: str) -> str:

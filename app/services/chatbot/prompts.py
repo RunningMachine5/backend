@@ -1,11 +1,8 @@
-"""챗봇 분석·사기 정황 추출·가이드 생성 프롬프트."""
+"""챗봇 답변 분석과 가이드 생성 프롬프트."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from string import Template
-
-from app.domain.fraud_circumstance_codes import FRAUD_CIRCUMSTANCE_DESCRIPTIONS
 
 
 GUIDE_SEARCH_QUERY_RULES = """- 금융사기 대응에 의미 있는 행동, 정보 노출, 상대방과의 접촉을 가이드 검색 질의로 변환합니다.
@@ -48,49 +45,6 @@ ANSWER_ANALYSIS_PROMPT_TEMPLATE = Template(f"""당신은 금융 이상거래 상
 """)
 
 
-FRAUD_CIRCUMSTANCE_EXTRACTION_PROMPT_TEMPLATE = Template("""당신은 금융 이상거래 상담에서 고객 답변에 나타난 사기 식별 정황을 빠짐없이 추출하는 분류기입니다.
-
-판정 원칙:
-
-- 사용자 답변 전체를 읽고, 같은 사건을 설명하는 여러 문장이나 절에 나뉜 정보를 함께 판단합니다.
-- 정의와 단어가 정확히 같지 않아도 같은 의미의 일상적인 표현이면 인정합니다. 정의에 든 대상이나 표현은 예시이며, 의미상 같은 사례를 포함합니다.
-- 정의의 "명확히 말함"은 필수 사실이 답변에서 확인된다는 뜻입니다. 사용자가 직접 "사기"라고 판단하거나 법적 사실을 확정할 필요는 없습니다.
-- 상대방의 발언·요청·사칭·통화 회피는 사용자가 그런 일을 겪었다고 말하면 사용자의 경험으로 봅니다. "아들이라면서", "친구라고 연락해" 같은 표현도 상대가 그 관계를 자처한 것으로 봅니다.
-- 각 정의의 필수 조건을 모두 확인합니다. 정의가 실제 이체·입력·전달·게시 등 행동 완료를 요구할 때만 완료 사실이 필요합니다.
-- 정의가 상대방의 요청이나 주장 자체를 정황으로 삼으면 사용자가 그 요청을 수행하지 않았어도 추출합니다.
-- 하나의 답변에서 여러 정황이 확인되면 빠뜨리지 말고 각각 추출합니다.
-- 정황들은 서로 배타적이지 않습니다. 더 구체적인 정황을 추출했더라도 그 전제가 다른 정의에도 해당하면 둘 다 추출합니다. 특히 가족·지인 사칭과 휴대폰 고장 설명·제3자 계좌 송금 요청·상품권 정보 요청은 함께 추출할 수 있습니다.
-- urgent_transfer_to_third_party_account 또는 gift_card_pin_requested_by_impersonated_contact을 추출하면, 두 정의에 가족·지인 사칭이 필수로 포함되므로 family_or_friend_impersonated_in_messenger도 함께 추출합니다.
-- 사용자 답변에 없는 사실을 일반적인 사기 수법만으로 보충하지 않습니다.
-- 사용자가 하지 않았다고 부정한 내용, 가정·질문, 일반적인 설명, 사용자와 무관한 타인의 사건은 추출하지 않습니다.
-- 모호하거나 서로 충돌하는 내용은 추출하지 않으며, 사용자가 이전 답변을 정정하면 가장 최신 답변을 따릅니다.
-- 탐지된 거래와 관계없는 과거 사건의 정황은 추출하지 않습니다.
-
-evidence 규칙:
-
-- evidence는 사용자 답변에 실제로 존재하는 연속된 원문 문자열이어야 하며, 요약하거나 문장을 새로 만들지 않습니다.
-- 근거가 여러 문장이나 절에 나뉘면 첫 근거부터 마지막 근거까지를 포함하는 가장 짧은 연속 구간을 그대로 선택합니다. 여러 문장을 포함해도 됩니다.
-- 동일한 enum은 한 번만 추출하며, 해당 정황의 필수 조건을 가장 잘 보여주는 evidence를 선택합니다.
-- 확인되는 정황이 없으면 fraud_circumstances를 빈 배열로 반환합니다.
-
-판정 예시:
-
-- "검찰청이라고 전화가 왔어요. 제 통장이 범죄 자금 세탁에 쓰였다고 했습니다."에서는 두 문장을 함께 판단해 criminal_involvement_claim_by_phone을 추출합니다.
-- "아들이라고 온 문자에서 급하다며 다른 사람 계좌로 보내 달라고 했지만 송금하지 않았어요."에서는 family_or_friend_impersonated_in_messenger와 urgent_transfer_to_third_party_account을 추출합니다. 실제 송금은 두 정황의 필수 조건이 아닙니다.
-- "제 적금을 현금으로 찾았습니다. 금융감독원 직원이 보낸 사람에게 그 돈을 건넸어요."에서는 출금과 전달을 함께 판단해 own_cash_delivered_to_courier를 추출합니다.
-- "새 기기에서 로그인됐다며 계정이 정지되기 전에 링크에서 본인 인증을 다시 하라는 문자를 받았어요."에서는 account_reauthentication_phishing을 추출합니다. 서비스 이름이 생략돼도 계정의 재인증 요구가 확인됩니다.
-- "게임 계정의 유료 아이템이 모르는 사이 다른 계정으로 전송됐어요."에서는 unauthorized_platform_asset_use를 추출합니다. 게임 아이템도 플랫폼 계정의 자산입니다.
-- "검사가 자산을 보호하려면 안전계좌로 보내야 한다고 해서 700만 원을 이체했어요."에서는 실제 이체가 확인되므로 safe_account_or_asset_inspection_transfer를 추출합니다.
-- "검사가 안전계좌로 보내라고 했지만 송금하지 않았어요."에서는 실제 이체가 없으므로 safe_account_or_asset_inspection_transfer를 추출하지 않습니다.
-
-fraud_circumstance 정의:
-
-$fraud_circumstance_definitions
-
-사용자 답변:
-$user_answers""")
-
-
 GUIDE_RESPONSE_PROMPT_TEMPLATE = Template("""당신은 금융사기가 의심되는 거래의 고객에게 대응 방법을 안내하는 상담 챗봇입니다.
 
 고객 답변에서 분해한 가이드 검색 질의와, 질의별로 검색된 대응 가이드 근거가 아래에 있습니다.
@@ -119,21 +73,6 @@ $ungrounded_message
 $guide_search_query_context_block""")
 
 
-def _render_definition_block(descriptions: Mapping[str, str]) -> str:
-    """도메인 코드와 설명을 프롬프트의 enum 정의 형식으로 변환한다."""
-
-    definitions = []
-    for code, description in descriptions.items():
-        formatted_description = description.replace("\n", "\n: ")
-        definitions.append(f"{code}\n: {formatted_description}")
-    return "\n\n".join(definitions)
-
-
-FRAUD_CIRCUMSTANCE_DEFINITION_BLOCK = _render_definition_block(
-    FRAUD_CIRCUMSTANCE_DESCRIPTIONS
-)
-
-
 def render_answer_analysis_prompt(
     *,
     question_text: str,
@@ -144,18 +83,6 @@ def render_answer_analysis_prompt(
     return ANSWER_ANALYSIS_PROMPT_TEMPLATE.substitute(
         question_text=question_text,
         customer_answer=customer_answer,
-    )
-
-
-def render_fraud_circumstance_extraction_prompt(
-    *,
-    user_answers: str,
-) -> str:
-    """사기 정황을 추출하는 프롬프트를 만든다."""
-
-    return FRAUD_CIRCUMSTANCE_EXTRACTION_PROMPT_TEMPLATE.substitute(
-        fraud_circumstance_definitions=FRAUD_CIRCUMSTANCE_DEFINITION_BLOCK,
-        user_answers=user_answers,
     )
 
 

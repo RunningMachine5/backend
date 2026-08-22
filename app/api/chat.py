@@ -3,22 +3,23 @@
 import json
 import logging
 from collections.abc import Callable, Iterator
-from queue import Empty
 from typing import Annotated, Any, TypeVar
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Path, status
+from fastapi import APIRouter, HTTPException, Path, status
 from fastapi.responses import StreamingResponse
 
 from app.core.common_response import ApiResponse, success_response
 from app.core.db import SessionDep
 from app.data.model.chatbot import (
+    ChatConversationPhase,
     ChatMessage,
     ChatSession,
     ChatSessionStatus,
 )
 from app.dto.chatbot import (
-    ChatButtonActionRequest,
+    ChatDiscriminationActionRequest,
     ChatMessageResponse,
+    ChatQuickReplyResponse,
     ChatSessionDetailResponse,
     ChatTurnResponse,
     ChatVerifyRequest,
@@ -33,14 +34,6 @@ from app.pipelines.customer_chatbot_pipeline import (
     CustomerChatbotPipeline,
 )
 from app.repositories.chat_session import ChatSessionRepository
-from app.services.chatbot.chat_score_event_broker import chat_score_event_broker
-from app.services.chatbot.chat_score_publisher import (
-    build_type_score_responses,
-    publish_chat_score_update,
-)
-from app.services.chatbot.fraud_circumstance_task_runner import (
-    FraudCircumstanceTaskRunnerDep,
-)
 from app.services.chatbot.identity_verifier import verify_birth_year
 
 
@@ -154,7 +147,7 @@ def verify_chat_session(
         and chat_session.last_message_id is None
     ):
         _run_turn(
-            lambda: _pipeline(session, chat_session).send_initial_notification()
+            lambda: _pipeline(session, chat_session).start_discrimination()
         )
 
     return success_response(_session_detail(session, chat_session))
@@ -177,30 +170,40 @@ def get_chat_session(
 
 
 @router.post(
-    "/{chat_session_id}/actions",
-    response_model=ApiResponse[ChatTurnResponse],
-    summary="최초 알림 뒤 버튼 선택",
+    "/{chat_session_id}/discrimination-actions",
+    summary="유형 판별 네/아니요 퀵리플라이(SSE)",
     responses={
         status.HTTP_404_NOT_FOUND: _SESSION_NOT_FOUND_RESPONSE,
         status.HTTP_409_CONFLICT: _error_response(
             "현재 세션 상태에서 받을 수 없는 입력",
             status_code=status.HTTP_409_CONFLICT,
-            message="버튼 선택은 URL_SENT 상태에서만 처리할 수 있습니다",
+            message="현재 단계에서 처리할 수 없는 유형 판별 액션입니다",
         ),
     },
 )
-def send_chat_button_action(
+def send_discrimination_action(
     chat_session_id: ChatSessionIdPath,
-    payload: ChatButtonActionRequest,
+    payload: ChatDiscriminationActionRequest,
     session: SessionDep,
-) -> ApiResponse[ChatTurnResponse]:
-    """최초 알림 화면의 상담 시작·상담사 연결·종료 액션을 처리한다."""
+) -> StreamingResponse:
+    """현재 질문과 request_id를 검증하고 유형 판별 분기를 진행한다."""
 
-    chat_session = _require_session(session, chat_session_id)
-    result = _run_turn(
-        lambda: _pipeline(session, chat_session).handle_button(payload.action)
+    chat_session = ChatSessionRepository(session).lock_for_discrimination_action(
+        chat_session_id
     )
-    return success_response(_turn_response(chat_session_id, result))
+    if chat_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="채팅 세션을 찾을 수 없습니다.",
+        )
+    stream = _run_turn(
+        lambda: _pipeline(session, chat_session).handle_discrimination_action_stream(
+            action=payload.action,
+            question_id=payload.question_id,
+            request_id=payload.request_id,
+        )
+    )
+    return _chat_turn_streaming_response(chat_session_id, stream)
 
 
 @router.post(
@@ -237,16 +240,10 @@ def send_chat_message(
     chat_session_id: ChatSessionIdPath,
     payload: SendChatMessageRequest,
     session: SessionDep,
-    background_tasks: BackgroundTasks,
-    fraud_circumstance_task_runner: FraudCircumstanceTaskRunnerDep,
 ) -> StreamingResponse:
-    """고객 답변을 처리하고 가이드 스냅샷과 최종 결과를 SSE로 반환한다.
-
-    사기 정황 추출은 턴 커밋 후 백그라운드에서 실행한다.
-    """
+    """대응가이드 이후 자유 질문을 처리하고 SSE로 반환한다."""
 
     chat_session = _require_session(session, chat_session_id)
-    transaction_id = chat_session.transaction_id
     # handle_message_stream은 iterator를 만들기 전에 상태를 검증한다. 409는 SSE 응답
     # 헤더를 보내기 전 기존 ApiResponse JSON으로 유지된다.
     stream = _run_turn(
@@ -255,51 +252,7 @@ def send_chat_message(
         )
     )
 
-    def event_stream() -> Iterator[str]:
-        yield _sse_event(
-            "chat_turn_started",
-            {"chat_session_id": chat_session_id},
-        )
-
-        try:
-            for item in stream:
-                if isinstance(item, ChatTurnStreamEvent):
-                    yield _sse_event(item.event, item.data)
-                    continue
-
-                # 이 지점에는 턴 커밋과 세션 refresh가 끝나 있다. 아직 이번 답변의
-                # 정황이 반영되기 전 점수를 발행하고, 추출은 응답 종료 뒤 예약한다.
-                publish_chat_score_update(session, transaction_id)
-                if item.pending_extraction is not None:
-                    background_tasks.add_task(
-                        fraud_circumstance_task_runner,
-                        item.pending_extraction,
-                    )
-                yield _sse_event(
-                    "chat_turn_completed",
-                    _turn_response(chat_session_id, item).model_dump(mode="json"),
-                )
-        except Exception:
-            # 파이프라인이 아직 커밋 전이라면 자체적으로 rollback한다. 응답 헤더가 이미
-            # 전송됐으므로 HTTP 상태를 바꾸는 대신 명시적인 오류 이벤트로 끝낸다.
-            logger.exception(
-                "챗봇 턴 스트림 처리에 실패했습니다: session=%s",
-                chat_session_id,
-            )
-            yield _sse_event(
-                "chat_turn_error",
-                {
-                    "code": "INTERNAL_SERVER_ERROR",
-                    "message": "서버 내부 오류가 발생했습니다.",
-                },
-            )
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers=SSE_RESPONSE_HEADERS,
-        background=background_tasks,
-    )
+    return _chat_turn_streaming_response(chat_session_id, stream)
 
 
 # ----------------------------------------------------------------------
@@ -332,45 +285,6 @@ def get_transaction_chat_session_status(
             chat_session_id=chat_session.chat_session_id,
             status=chat_session.status,
         )
-    )
-
-
-@transaction_chat_router.get("/{transaction_id}/chat-session/score-events")
-def stream_transaction_chat_score_events(
-    transaction_id: TransactionIdPath,
-) -> StreamingResponse:
-    """거래의 사기유형 점수 변경을 SSE로 전송한다.
-
-    세션 상태는 포함하지 않으며 이벤트가 없을 때는 keep-alive를 보낸다.
-    """
-
-    def event_stream() -> Iterator[str]:
-        subscriber_queue = chat_score_event_broker.subscribe(transaction_id)
-
-        try:
-            # 브라우저가 SSE 연결이 끊겼을 때 3초 후 재연결
-            yield "retry: 3000\n\n"
-
-            while True:
-                try:
-                    chat_score_event = subscriber_queue.get(timeout=15)
-                except Empty:
-                    # 연결 유지용 메시지
-                    yield ": keep-alive\n\n"
-                    continue
-
-                yield _sse_event(
-                    chat_score_event.event,
-                    chat_score_event.data,
-                )
-
-        finally:
-            chat_score_event_broker.unsubscribe(transaction_id, subscriber_queue)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers=SSE_RESPONSE_HEADERS,
     )
 
 
@@ -433,6 +347,46 @@ def _sse_event(event: str, data: dict[str, Any]) -> str:
     )
 
 
+def _chat_turn_streaming_response(
+    chat_session_id: str,
+    stream: Iterator[ChatTurnStreamEvent | ChatTurnResult],
+) -> StreamingResponse:
+    """판별 액션과 자유 대화가 공유하는 SSE 응답을 만든다."""
+
+    def event_stream() -> Iterator[str]:
+        yield _sse_event(
+            "chat_turn_started",
+            {"chat_session_id": chat_session_id},
+        )
+        try:
+            for item in stream:
+                if isinstance(item, ChatTurnStreamEvent):
+                    yield _sse_event(item.event, item.data)
+                    continue
+                yield _sse_event(
+                    "chat_turn_completed",
+                    _turn_response(chat_session_id, item).model_dump(mode="json"),
+                )
+        except Exception:
+            logger.exception(
+                "챗봇 턴 스트림 처리에 실패했습니다: session=%s",
+                chat_session_id,
+            )
+            yield _sse_event(
+                "chat_turn_error",
+                {
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "message": "서버 내부 오류가 발생했습니다.",
+                },
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers=SSE_RESPONSE_HEADERS,
+    )
+
+
 def _require_session(
     session: SessionDep,
     chat_session_id: str,
@@ -457,6 +411,11 @@ def _session_detail(
         status=chat_session.status,
         is_older=chat_session.is_older,
         question_step=chat_session.question_step,
+        conversation_phase=chat_session.conversation_phase,
+        input_mode=_input_mode(chat_session),
+        question_id=chat_session.discrimination_question_id,
+        quick_replies=_quick_replies(chat_session),
+        confirmed_fraud_type=chat_session.confirmed_fraud_type,
         messages=[_message_response(message) for message in messages],
     )
 
@@ -466,7 +425,7 @@ def _transaction_session_detail(
     transaction_id: int,
     chat_session: ChatSession,
 ) -> TransactionChatSessionDetailResponse:
-    """대화 이력에 추출·채점 결과를 붙여 담당자 화면용 상세 응답을 만든다."""
+    """대화 이력과 네/아니요로 확정된 유형을 담당자 화면에 반환한다."""
 
     return TransactionChatSessionDetailResponse(
         transaction_id=transaction_id,
@@ -477,9 +436,7 @@ def _transaction_session_detail(
             _message_response(message)
             for message in repository.list_messages(chat_session)
         ],
-        type_scores=build_type_score_responses(
-            repository.get_fraud_type_scores(transaction_id)
-        ),
+        confirmed_fraud_type=chat_session.confirmed_fraud_type,
     )
 
 
@@ -500,5 +457,58 @@ def _turn_response(
         chat_session_id=chat_session_id,
         status=result.status.value,
         question_step=result.question_step,
+        conversation_phase=result.conversation_phase,
+        input_mode=_input_mode_values(result.conversation_phase, result.status.value),
+        question_id=result.question_id,
+        quick_replies=_quick_replies_values(
+            result.conversation_phase,
+            result.question_id,
+            result.status.value,
+        ),
+        confirmed_fraud_type=result.confirmed_fraud_type,
         messages=list(result.messages),
     )
+
+
+def _input_mode(chat_session: ChatSession) -> str:
+    return _input_mode_values(
+        chat_session.conversation_phase,
+        chat_session.status,
+    )
+
+
+def _input_mode_values(phase: str | None, status_value: str) -> str:
+    if phase == ChatConversationPhase.DISCRIMINATION.value:
+        return "QUICK_REPLY"
+    if phase == ChatConversationPhase.HANDOFF_PENDING.value:
+        return "FREE_TEXT"
+    if (
+        phase == ChatConversationPhase.FREE_CHAT.value
+        and status_value == ChatSessionStatus.IN_PROGRESS.value
+    ):
+        return "FREE_TEXT"
+    return "NONE"
+
+
+def _quick_replies(chat_session: ChatSession) -> list[ChatQuickReplyResponse]:
+    return _quick_replies_values(
+        chat_session.conversation_phase,
+        chat_session.discrimination_question_id,
+        chat_session.status,
+    )
+
+
+def _quick_replies_values(
+    phase: str | None,
+    question_id: str | None,
+    status_value: str,
+) -> list[ChatQuickReplyResponse]:
+    if (
+        _input_mode_values(phase, status_value) != "QUICK_REPLY"
+        or question_id is None
+    ):
+        return []
+    return [
+        ChatQuickReplyResponse(label="네", action="ANSWER_YES"),
+        ChatQuickReplyResponse(label="아니요", action="ANSWER_NO"),
+    ]

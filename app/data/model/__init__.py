@@ -9,13 +9,14 @@ from app.data.model.agent import (  # noqa: F401
 )
 from app.data.model.chatbot import (  # noqa: F401
     ChatAnswer,
-    ChatFraudCircumstance,
+    ChatConversationPhase,
+    ChatDiscriminationAction,
+    ChatDiscriminationQuestionId,
     ChatGuideSearchQuery,
     ChatMessage,
     ChatSession,
     ChatSenderType,
     ChatSessionStatus,
-    FraudTypeScoreAfterChat,
 )
 from app.data.model.cs_guide_document import CsGuideDocument  # noqa: F401
 from app.data.model.cs_guide_document_chunk import (  # noqa: F401
@@ -50,7 +51,9 @@ __all__ = [
     "ChatSenderType",
     "ChatSessionStatus",
     "ChatAnswer",
-    "ChatFraudCircumstance",
+    "ChatConversationPhase",
+    "ChatDiscriminationAction",
+    "ChatDiscriminationQuestionId",
     "ChatGuideSearchQuery",
     "ChatMessage",
     "ChatSession",
@@ -67,7 +70,6 @@ __all__ = [
     "FraudRuleComponent",
     "FraudRuleSet",
     "FraudRuleSetStatus",
-    "FraudTypeScoreAfterChat",
     "FraudTypeScoreResult",
     "MLPredictionResult",
     "TrainingRun",

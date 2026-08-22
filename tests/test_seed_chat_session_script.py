@@ -40,8 +40,8 @@ class ParseArgsTest(unittest.TestCase):
         self.assertIsNone(args.email)
         self.assertIsNone(args.amount)
         self.assertFalse(args.no_fraud_types)
-        self.assertFalse(args.older)
-        self.assertFalse(args.younger)
+        self.assertFalse(args.ambiguous_fraud_types)
+        self.assertIsNone(args.is_older)
         self.assertFalse(args.cleanup)
         self.assertFalse(args.yes)
 
@@ -52,6 +52,14 @@ class ParseArgsTest(unittest.TestCase):
     def test_older_and_younger_are_mutually_exclusive(self) -> None:
         with self.assertRaises(SystemExit):
             parse_args(["--older", "--younger"])
+
+    def test_is_older_options_are_mutually_exclusive(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["--is-older", "--no-is-older"])
+
+    def test_no_fraud_types_and_ambiguous_are_mutually_exclusive(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["--no-fraud-types", "--ambiguous-fraud-types"])
 
 
 class CleanupOptionTest(unittest.TestCase):
@@ -70,7 +78,7 @@ class CleanupOptionTest(unittest.TestCase):
                 "--cleanup",
                 "--seed",
                 "1",
-                "--older",
+                "--is-older",
                 "--no-fraud-types",
                 "--email",
                 "a@b.com",
@@ -81,7 +89,31 @@ class CleanupOptionTest(unittest.TestCase):
 
         self.assertEqual(
             conflicting_seeding_options(args),
-            ["--seed", "--no-fraud-types", "--older", "--email", "--amount"],
+            [
+                "--seed",
+                "--no-fraud-types",
+                "--is-older/--no-is-older",
+                "--email",
+                "--amount",
+            ],
+        )
+
+    def test_reports_new_seeding_options_given_with_cleanup(self) -> None:
+        ambiguous = parse_args(["--cleanup", "--ambiguous-fraud-types"])
+        is_older = parse_args(["--cleanup", "--is-older"])
+        no_is_older = parse_args(["--cleanup", "--no-is-older"])
+
+        self.assertEqual(
+            conflicting_seeding_options(ambiguous),
+            ["--ambiguous-fraud-types"],
+        )
+        self.assertEqual(
+            conflicting_seeding_options(is_older),
+            ["--is-older/--no-is-older"],
+        )
+        self.assertEqual(
+            conflicting_seeding_options(no_is_older),
+            ["--is-older/--no-is-older"],
         )
 
     def test_zero_and_empty_values_still_count_as_given(self) -> None:
@@ -148,6 +180,18 @@ class BuildSeedTest(unittest.TestCase):
         age = NOW.year - result.customer.birth_date.year
         self.assertLess(age, OLDER_CUSTOMER_AGE)
 
+    def test_is_older_flag_puts_birth_year_at_or_before_boundary(self) -> None:
+        result = seed(["--is-older"])
+
+        age = NOW.year - result.customer.birth_date.year
+        self.assertGreaterEqual(age, OLDER_CUSTOMER_AGE)
+
+    def test_no_is_older_flag_puts_birth_year_after_boundary(self) -> None:
+        result = seed(["--no-is-older"])
+
+        age = NOW.year - result.customer.birth_date.year
+        self.assertLess(age, OLDER_CUSTOMER_AGE)
+
     def test_top_fraud_types_default_to_two_distinct_codes(self) -> None:
         result = seed([])
 
@@ -155,6 +199,32 @@ class BuildSeedTest(unittest.TestCase):
         self.assertNotEqual(result.top_fraud_types[0], result.top_fraud_types[1])
         for code in result.top_fraud_types:
             self.assertIn(code, FINAL_FRAUD_TYPE_CODES)
+        self.assertEqual(
+            set(result.top_fraud_type_scores),
+            set(result.top_fraud_types),
+        )
+        self.assertGreaterEqual(
+            result.top_fraud_type_scores[result.top_fraud_types[0]],
+            result.top_fraud_type_scores[result.top_fraud_types[1]],
+        )
+        margin = (
+            result.top_fraud_type_scores[result.top_fraud_types[0]]
+            - result.top_fraud_type_scores[result.top_fraud_types[1]]
+        )
+        self.assertGreaterEqual(round(margin, 10), 0.15)
+
+    def test_ambiguous_fraud_types_have_margin_below_point_fifteen(self) -> None:
+        for rng_seed in range(30):
+            with self.subTest(rng_seed=rng_seed):
+                result = seed(["--ambiguous-fraud-types"], rng_seed=rng_seed)
+                primary, secondary = result.top_fraud_types
+                margin = (
+                    result.top_fraud_type_scores[primary]
+                    - result.top_fraud_type_scores[secondary]
+                )
+
+                self.assertGreaterEqual(margin, 0)
+                self.assertLess(round(margin, 10), 0.15)
 
     def test_explicit_top_fraud_types_are_kept(self) -> None:
         result = seed(["--top-fraud-types", VOICE_PHISHING, MESSENGER_PHISHING])
@@ -168,6 +238,7 @@ class BuildSeedTest(unittest.TestCase):
         result = seed(["--no-fraud-types"])
 
         self.assertIsNone(result.top_fraud_types)
+        self.assertIsNone(result.top_fraud_type_scores)
 
     def test_email_defaults_to_none_for_fallback_path(self) -> None:
         self.assertIsNone(seed([]).customer.email)

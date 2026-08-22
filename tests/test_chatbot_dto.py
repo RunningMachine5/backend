@@ -2,15 +2,12 @@ import unittest
 
 from pydantic import ValidationError
 
-from app.domain.fraud_circumstance_codes import (
-    ACCOUNT_REAUTHENTICATION_PHISHING,
-)
 from app.domain.fraud_type_codes import MESSENGER_PHISHING, VOICE_PHISHING
 from app.dto.chatbot import (
     AnswerAnalysisResult,
     AnswerQualityVerdict,
+    ChatDiscriminationActionRequest,
     CreateChatRequest,
-    FraudCircumstanceExtractionResult,
 )
 
 
@@ -83,36 +80,6 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
                         }
                     )
 
-    def test_accepts_fraud_circumstance_whitelist_value(self) -> None:
-        result = FraudCircumstanceExtractionResult.model_validate(
-            {
-                "fraud_circumstances": [
-                    {
-                        "type": ACCOUNT_REAUTHENTICATION_PHISHING,
-                        "evidence": "재인증 링크라고 했어요",
-                    }
-                ]
-            }
-        )
-
-        self.assertEqual(
-            result.fraud_circumstances[0].type,
-            ACCOUNT_REAUTHENTICATION_PHISHING,
-        )
-
-    def test_rejects_fraud_circumstance_outside_whitelist(self) -> None:
-        with self.assertRaises(ValidationError):
-            FraudCircumstanceExtractionResult.model_validate(
-                {
-                    "fraud_circumstances": [
-                        {
-                            "type": "unknown_fraud_circumstance",
-                            "evidence": "임의의 정황이 있었어요",
-                        }
-                    ]
-                }
-            )
-
     def test_rejects_answer_quality_verdict_outside_contract(self) -> None:
         for verdict in ("NON_ANSWER", "REFUSAL", "UNKNOWN"):
             with self.subTest(verdict=verdict), self.assertRaises(ValidationError):
@@ -124,6 +91,30 @@ class TestChatbotStructuredOutputDTO(unittest.TestCase):
             {"verdict": "SUFFICIENT", "guide_search_queries": []}
         )
         self.assertEqual(result.verdict, AnswerQualityVerdict.SUFFICIENT)
+
+    def test_discrimination_action_requires_action_question_and_request_id(self) -> None:
+        request = ChatDiscriminationActionRequest.model_validate(
+            {
+                "action": "ANSWER_YES",
+                "question_id": "OWNERSHIP",
+                "request_id": "request-1",
+            }
+        )
+        self.assertEqual(request.action.value, "ANSWER_YES")
+
+        for field, value in (
+            ("action", "YES"),
+            ("question_id", "OLD_QUESTION"),
+            ("request_id", ""),
+        ):
+            payload = {
+                "action": "ANSWER_YES",
+                "question_id": "OWNERSHIP",
+                "request_id": "request-1",
+            }
+            payload[field] = value
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                ChatDiscriminationActionRequest.model_validate(payload)
 
 
 class TestCreateChatRequestTopFraudTypes(unittest.TestCase):
