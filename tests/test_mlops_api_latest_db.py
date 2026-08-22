@@ -984,11 +984,19 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
         previous_production_id = self.make_run("PRODUCTION", "production-run")
         run_id = self.make_run("STAGED", "candidate-run")
         self.mlflow.resolve_model_version.return_value = "17"
-        self.cloud_run.promote_model_revision.return_value = {
-            "operation": {"name": "projects/p/locations/r/operations/promote"},
-            "revision": "serving-00017",
-            "smokePrediction": {},
-        }
+
+        def promote_after_db_transition(**_kwargs):
+            with Session(self.engine) as session:
+                promoting_run = session.get(TrainingRun, run_id)
+                self.assertIsNotNone(promoting_run)
+                self.assertEqual(promoting_run.status, "PROMOTING")
+            return {
+                "operation": {"name": "projects/p/locations/r/operations/promote"},
+                "revision": "serving-00017",
+                "smokePrediction": {},
+            }
+
+        self.cloud_run.promote_model_revision.side_effect = promote_after_db_transition
         promoted = self.client.post(
             "/mlops/serving/promotions",
             headers=self.headers,
@@ -1029,6 +1037,81 @@ class LatestDatabaseMLOpsApiTest(unittest.TestCase):
             previous_production = session.get(TrainingRun, previous_production_id)
             self.assertIsNotNone(previous_production)
             self.assertEqual(previous_production.status, "RETIRED")
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_definitive_promotion_failure_is_marked_retryable(self) -> None:
+        run_id = self.make_run("STAGED", "candidate-rejected-promotion")
+        self.mlflow.resolve_model_version.return_value = "17"
+        self.cloud_run.promote_model_revision.side_effect = CloudRunAdminError(
+            "Cloud Run이 트래픽 변경을 거절했습니다.",
+            status_code=400,
+        )
+
+        response = self.client.post(
+            "/mlops/serving/promotions",
+            headers=self.headers,
+            json={"training_run_id": run_id},
+        )
+
+        self.assertEqual(response.status_code, 502, response.text)
+        with Session(self.engine) as session:
+            run = session.get(TrainingRun, run_id)
+            self.assertIsNotNone(run)
+            self.assertEqual(run.status, "DEPLOYMENT_FAILED")
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_unknown_promotion_result_stays_promoting_for_live_reconcile(self) -> None:
+        run_id = self.make_run("STAGED", "candidate-unknown-promotion")
+        self.mlflow.resolve_model_version.return_value = "17"
+        self.cloud_run.promote_model_revision.side_effect = CloudRunAdminError(
+            "Cloud Run 응답이 유실됐습니다.",
+            request_may_have_been_accepted=True,
+        )
+
+        response = self.client.post(
+            "/mlops/serving/promotions",
+            headers=self.headers,
+            json={"training_run_id": run_id},
+        )
+
+        self.assertEqual(response.status_code, 502, response.text)
+        with Session(self.engine) as session:
+            run = session.get(TrainingRun, run_id)
+            self.assertIsNotNone(run)
+            self.assertEqual(run.status, "PROMOTING")
+
+        duplicate = self.client.post(
+            "/mlops/serving/promotions",
+            headers=self.headers,
+            json={"training_run_id": run_id},
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.cloud_run.promote_model_revision.assert_called_once()
+
+    @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
+    def test_live_completion_recovers_a_legacy_staged_mismatch(self) -> None:
+        run_id = self.make_run("STAGED", "candidate-live-but-staged")
+        self.mlflow.resolve_model_version.return_value = "17"
+        self.cloud_run.get_model_deployment_status.return_value = {
+            "ready": True,
+            "reason": None,
+            "revision": "serving-00017",
+            "trafficPercent": 100,
+        }
+
+        response = self.client.post(
+            f"/mlops/training/runs/{run_id}/deployment/complete",
+            headers=self.headers,
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["training_run"]["status"], "PRODUCTION")
+        self.mlflow.set_model_alias.assert_called_once_with(
+            "fdshield-fraud-detector-v2",
+            "champion",
+            "17",
+        )
 
     @patch("app.api.mlops.config.MLOPS_ADMIN_TOKEN", "admin-secret")
     def test_promotion_requires_a_stored_verification_transaction(self) -> None:

@@ -1299,10 +1299,16 @@ def promote_serving_revision(
     """태그 리비전을 실제 예측으로 검증하고 100% 트래픽 승격을 요청한다."""
 
     run = _get_training_run_for_update_or_404(payload.training_run_id, session)
-    if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED"}:
+    if run.status not in {"STAGED", "DEPLOYMENT_FAILED"}:
         raise HTTPException(status_code=409, detail="승격 가능한 학습 실행이 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
     transaction_id, features = _latest_verification_sample(session)
+
+    # 외부 트래픽 변경보다 DB 상태를 먼저 확정한다. 이후 응답이 유실돼도
+    # deployment/complete가 실제 Cloud Run 상태를 기준으로 복구할 수 있다.
+    run.status = "PROMOTING"
+    session.add(run)
+    session.commit()
     try:
         result = client.promote_model_revision(
             model_version=model_version,
@@ -1310,10 +1316,20 @@ def promote_serving_revision(
             features=features,
         )
     except (CloudRunAdminError, MLServingError) as exc:
+        request_may_have_been_accepted = (
+            isinstance(exc, CloudRunAdminError)
+            and exc.request_may_have_been_accepted
+        )
+        if not request_may_have_been_accepted:
+            failed_run = _get_training_run_for_update_or_404(
+                payload.training_run_id,
+                session,
+            )
+            if failed_run.status == "PROMOTING":
+                failed_run.status = "DEPLOYMENT_FAILED"
+                session.add(failed_run)
+                session.commit()
         raise _upstream_error(exc) from exc
-    run.status = "PROMOTING"
-    session.add(run)
-    session.commit()
     session.refresh(run)
     operation = result["operation"]
     return {
@@ -1336,7 +1352,7 @@ def complete_model_deployment(
     """Cloud Run live traffic를 확인하고 champion alias와 상태를 종결한다."""
 
     run = _get_training_run_for_update_or_404(run_id, session)
-    if run.status not in {"PROMOTING", "PRODUCTION"}:
+    if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED", "PRODUCTION"}:
         raise HTTPException(status_code=409, detail="완료 확인 대상 배포가 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
     operation: dict[str, Any] | None = None
