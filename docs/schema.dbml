@@ -346,9 +346,14 @@ Table chat_sessions {
   chat_session_id varchar(64) [pk]
   transaction_id bigint [not null, ref: > transactions.id, note: "ON DELETE CASCADE"]
   status varchar(32) [not null, note: "CHECK IN ('URL_SENT','IN_PROGRESS','HANDOFF_REQUESTED','DONE','FAILED'), 애플리케이션 기본값: URL_SENT"]
+  conversation_phase varchar(32) [note: "CHECK IN ('DISCRIMINATION','FREE_CHAT','HANDOFF_PENDING','NORMAL_GUIDE') OR NULL"]
+  discrimination_question_id varchar(32) [note: "CHECK IN ('OWNERSHIP','PRIMARY_CHECK','SECONDARY_CHECK') OR NULL"]
+  ownership_answer varchar(16) [note: "CHECK IN ('ANSWER_YES','ANSWER_NO') OR NULL"]
+  confirmed_fraud_type varchar(64)
   last_message_id bigint [ref: > chat_messages.message_id, note: "순환 FK, ON DELETE SET NULL"]
   is_older boolean [not null, note: "애플리케이션 기본값: false"]
   top_fraud_types jsonb [note: "상위 사기 유형 코드 string[]"]
+  top_fraud_type_scores jsonb [note: "top_fraud_types의 Rule Engine 원본 점수"]
   question_step integer [not null, default: 0]
   email_sent_at timestamptz
   notified_email varchar(255)
@@ -407,22 +412,16 @@ Table chat_guide_search_queries {
   }
 }
 
-Table chat_fraud_circumstances {
-  circumstance_id bigint [pk, increment]
+Table chat_discrimination_actions {
+  action_id bigint [pk, increment]
   chat_session_id varchar(64) [not null, ref: > chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
-  circumstance_code varchar(64) [not null]
-  evidence text [not null]
-  source_answer_id bigint [ref: > chat_answers.answer_id, note: "ON DELETE SET NULL"]
-  extracted_at timestamptz [not null]
+  request_id varchar(64) [not null]
+  question_id varchar(32) [not null, note: "CHECK IN ('OWNERSHIP','PRIMARY_CHECK','SECONDARY_CHECK')"]
+  action varchar(16) [not null, note: "CHECK IN ('ANSWER_YES','ANSWER_NO')"]
+  response_payload jsonb [not null]
+  created_at timestamptz [not null]
 
   indexes {
-    (chat_session_id, circumstance_code) [unique, name: "uq_chat_fraud_circumstances_session_code"]
+    (chat_session_id, request_id) [unique, name: "uq_chat_discrimination_actions_session_request"]
   }
-}
-
-Table fraud_type_score_after_chat {
-  transaction_id bigint [pk, ref: - transactions.id, note: "ON DELETE CASCADE"]
-  chat_session_id varchar(64) [not null, ref: > chat_sessions.chat_session_id, note: "ON DELETE CASCADE"]
-  type_scores jsonb [not null, default: "{}"]
-  scored_at timestamptz [not null]
 }

@@ -9,7 +9,8 @@
 
 ```bash
 uv run --env-file .env python -m scripts.seed_chat_session
-uv run --env-file .env python -m scripts.seed_chat_session --older --seed 42
+uv run --env-file .env python -m scripts.seed_chat_session --is-older --seed 42
+uv run --env-file .env python -m scripts.seed_chat_session --ambiguous-fraud-types
 uv run --env-file .env python -m scripts.seed_chat_session \
     --top-fraud-types VOICE_PHISHING MESSENGER_PHISHING
 uv run --env-file .env python -m scripts.seed_chat_session --cleanup
@@ -86,6 +87,7 @@ class SeedResult:
     recipient_account: Account
     transaction: Transaction
     top_fraud_types: list[str] | None
+    top_fraud_type_scores: dict[str, float] | None
     # transactions 에는 좌표만 남으므로 지역 이름은 출력용으로만 들고 있는다.
     location_name: str
 
@@ -120,22 +122,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "생략하면 무작위로 두 개를 고른다."
         ),
     )
-    parser.add_argument(
+    fraud_score_mode = parser.add_mutually_exclusive_group()
+    fraud_score_mode.add_argument(
         "--no-fraud-types",
         action="store_true",
         help="상위 사기유형을 비운다. 일반 질문 폴백 경로를 보려면 쓴다.",
     )
+    fraud_score_mode.add_argument(
+        "--ambiguous-fraud-types",
+        "--ambiguous",
+        dest="ambiguous_fraud_types",
+        action="store_true",
+        help="상위 두 사기유형의 점수 차이를 0.15 미만으로 만든다.",
+    )
 
     age = parser.add_mutually_exclusive_group()
     age.add_argument(
+        "--is-older",
         "--older",
+        dest="is_older",
         action="store_true",
-        help=f"{OLDER_CUSTOMER_AGE}세 이상 고객으로 만든다(is_older = true).",
+        default=None,
+        help=f"is_older=true가 되도록 {OLDER_CUSTOMER_AGE}세 이상 고객으로 만든다.",
     )
     age.add_argument(
+        "--no-is-older",
         "--younger",
-        action="store_true",
-        help=f"{OLDER_CUSTOMER_AGE}세 미만 고객으로 만든다.",
+        dest="is_older",
+        action="store_false",
+        default=None,
+        help=f"is_older=false가 되도록 {OLDER_CUSTOMER_AGE}세 미만 고객으로 만든다.",
     )
 
     parser.add_argument(
@@ -173,8 +189,8 @@ SEEDING_ONLY_OPTIONS = (
     ("--seed", lambda args: args.seed is not None),
     ("--top-fraud-types", lambda args: args.top_fraud_types is not None),
     ("--no-fraud-types", lambda args: args.no_fraud_types),
-    ("--older", lambda args: args.older),
-    ("--younger", lambda args: args.younger),
+    ("--ambiguous-fraud-types", lambda args: args.ambiguous_fraud_types),
+    ("--is-older/--no-is-older", lambda args: args.is_older is not None),
     ("--email", lambda args: args.email is not None),
     ("--amount", lambda args: args.amount is not None),
 )
@@ -261,12 +277,18 @@ def build_seed(
         flag_terminal_malicious_behavior_6=_rare(rng),
     )
 
+    top_fraud_types = _pick_top_fraud_types(args, rng=rng)
     return SeedResult(
         customer=customer,
         source_account=source_account,
         recipient_account=recipient_account,
         transaction=transaction,
-        top_fraud_types=_pick_top_fraud_types(args, rng=rng),
+        top_fraud_types=top_fraud_types,
+        top_fraud_type_scores=_pick_top_fraud_type_scores(
+            top_fraud_types,
+            ambiguous=args.ambiguous_fraud_types,
+            rng=rng,
+        ),
         location_name=location_name,
     )
 
@@ -277,16 +299,11 @@ def _pick_birth_year(
     rng: random.Random,
     now: datetime,
 ) -> int:
-    """``--older``/``--younger`` 가 없으면 고령자 여부도 무작위로 고른다."""
+    """고령자 옵션이 없으면 고령자 여부도 무작위로 고른다."""
 
     # is_older 는 출생연도만으로 판정한다(session_creator._is_older_customer).
     older_boundary = now.year - OLDER_CUSTOMER_AGE
-    if args.older:
-        older = True
-    elif args.younger:
-        older = False
-    else:
-        older = rng.random() < 0.5
+    older = args.is_older if args.is_older is not None else rng.random() < 0.5
 
     if older:
         return rng.randint(older_boundary - 30, older_boundary)
@@ -305,6 +322,31 @@ def _pick_top_fraud_types(
     if args.top_fraud_types is not None:
         return list(args.top_fraud_types)
     return rng.sample(sorted(FINAL_FRAUD_TYPE_CODES), 2)
+
+
+def _pick_top_fraud_type_scores(
+    top_fraud_types: list[str] | None,
+    *,
+    ambiguous: bool,
+    rng: random.Random,
+) -> dict[str, float] | None:
+    """판별 흐름을 실행할 수 있는 1·2순위 원본 점수를 만든다.
+
+    ``ambiguous`` 이면 1·2위 차이를 0.01~0.14로 제한한다. 기본값은 반대로
+    최소 0.15 차이가 나게 해 옵션 없이 만든 데이터가 우연히 애매해지지 않게 한다.
+    """
+
+    if top_fraud_types is None:
+        return None
+    primary_percent = rng.randint(65, 95)
+    if ambiguous:
+        secondary_percent = primary_percent - rng.randint(1, 14)
+    else:
+        secondary_percent = rng.randint(10, primary_percent - 15)
+    return {
+        top_fraud_types[0]: primary_percent / 100,
+        top_fraud_types[1]: secondary_percent / 100,
+    }
 
 
 def _unique_account_number() -> str:
@@ -485,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
             result = ChatSessionCreator(session).create(
                 transaction_id=request.transaction_id,
                 top_fraud_types=request.top_fraud_types,
+                top_fraud_type_scores=seeded.top_fraud_type_scores,
             )
             session.commit()
         except ValidationError as error:
@@ -532,6 +575,14 @@ def _print_summary(
         if seeded.top_fraud_types
         else "(없음 — 일반 질문 폴백)"
     )
+    top_fraud_type_scores = (
+        ", ".join(
+            f"{fraud_type}={score:.2f}"
+            for fraud_type, score in seeded.top_fraud_type_scores.items()
+        )
+        if seeded.top_fraud_type_scores
+        else "(없음)"
+    )
 
     print("")
     print("── 만든 테스트 데이터 ──")
@@ -551,6 +602,7 @@ def _print_summary(
     print(f"세션 id     : {chat_session_id}")
     print(f"상태        : {status}")
     print(f"상위 사기유형: {top_fraud_types}")
+    print(f"사기유형 점수: {top_fraud_type_scores}")
     print(
         f"수신 예정 주소: {notified_email}"
         f"{' (기본 주소 폴백)' if used_fallback_email else ''}"

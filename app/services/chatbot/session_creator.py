@@ -58,6 +58,7 @@ class ChatSessionCreator:
         *,
         transaction_id: int,
         top_fraud_types: list[str] | None = None,
+        top_fraud_type_scores: dict[str, float] | None = None,
     ) -> ChatSessionCreationResult:
         """세션이 있으면 그대로 반환하고 없으면 새로 만든다."""
 
@@ -87,6 +88,7 @@ class ChatSessionCreator:
             chat_session_id=self._chat_session_id_factory(),
             transaction_id=transaction_id,
             top_fraud_types=top_fraud_types,
+            top_fraud_type_scores=top_fraud_type_scores,
             is_older=_is_older_customer(customer, now=self._now_factory()),
         )
         # 접속 URL에 사용할 세션 id를 확정한다.

@@ -26,10 +26,8 @@ def docs_embedding(texts: list[str])->list[list[float]]:
 def normalize_page_text(raw_text: str | None) -> str:
     """PDF 에서 뽑은 페이지 텍스트를 저장 가능한 형태로 정리한다.
 
-    - NUL(0x00) 제거: 일부 PDF 는 글리프 매핑 실패분을 0x00 으로 내보내는데,
-      PostgreSQL 의 text 컬럼은 NUL 을 저장하지 못해 적재가 통째로 실패한다
-      (psycopg DataError). 공백으로 바꿔 앞뒤 단어가 붙지 않게 한다.
-    - 반복되는 공백·줄바꿈을 한 칸으로 접는다.
+    - NUL(코드값이 0인 바이트) 제거: 일부 PDF 는 변환 실패분을 0x00 으로 내보내는데,
+      PostgreSQL 의 text 컬럼은 NUL 을 저장하지 못해 적재가 통째로 실패하는 경우가 있으므로 이를 정규화한다
     """
 
     if not raw_text:
@@ -134,6 +132,10 @@ def save_pdf(pdf_path):
 
         # 문서와 청크가 같은 트랜잭션이라 하나라도 실패하면 통째로 롤백된다
         session.commit()
+
+# ==========================================
+# 이 밑으로는 임베딩 메인 로직이랑은 상관없다
+# ==========================================
 
 def main():
     """디렉터리의 모든 pdf 를 읽어서 임베딩한다.

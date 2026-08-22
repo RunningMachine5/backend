@@ -11,15 +11,13 @@ from sqlmodel import Session, select
 
 from app.data.model.chatbot import (
     ChatAnswer,
-    ChatFraudCircumstance,
+    ChatDiscriminationAction,
     ChatGuideSearchQuery,
     ChatMessage,
     ChatSenderType,
     ChatSession,
     ChatSessionStatus,
-    FraudTypeScoreAfterChat,
 )
-from app.domain.fraud_circumstance_codes import FINAL_FRAUD_CIRCUMSTANCE_CODES
 from app.dto.chatbot import AnswerQualityVerdict
 from app.dto.agent import CustomerResponseContextDTO
 
@@ -33,6 +31,19 @@ class ChatSessionRepository:
 
     def get(self, chat_session_id: str) -> ChatSession | None:
         return self.session.get(ChatSession, chat_session_id)
+
+    def lock_for_discrimination_action(
+        self,
+        chat_session_id: str,
+    ) -> ChatSession | None:
+        """동시 퀵리플라이가 같은 질문을 두 번 진행하지 못하게 행을 잠근다."""
+
+        return self.session.exec(
+            select(ChatSession)
+            .where(ChatSession.chat_session_id == chat_session_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).first()
 
     def find_by_transaction(self, transaction_id: int) -> ChatSession | None:
         """거래에 연결된 채팅 세션을 조회한다."""
@@ -48,6 +59,7 @@ class ChatSessionRepository:
         chat_session_id: str,
         transaction_id: int,
         top_fraud_types: list[str] | None = None,
+        top_fraud_type_scores: dict[str, float] | None = None,
         is_older: bool = False,
     ) -> ChatSession:
         """거래에 연결된 세션이 있으면 반환하고 없으면 생성한다."""
@@ -61,6 +73,11 @@ class ChatSessionRepository:
             transaction_id=transaction_id,
             top_fraud_types=(
                 list(top_fraud_types) if top_fraud_types is not None else None
+            ),
+            top_fraud_type_scores=(
+                dict(top_fraud_type_scores)
+                if top_fraud_type_scores is not None
+                else None
             ),
             is_older=is_older,
         )
@@ -248,98 +265,48 @@ class ChatSessionRepository:
             index_elements=["source_answer_id", "position"],
         )
 
-    def add_fraud_circumstance(
+    def get_discrimination_action(
         self,
         chat_session: ChatSession,
         *,
-        circumstance_code: str,
-        evidence: str,
-        source_answer: ChatAnswer | None = None,
-    ) -> bool:
-        """같은 세션에서 같은 사기 정황 코드는 한 번만 저장"""
+        request_id: str,
+    ) -> ChatDiscriminationAction | None:
+        """같은 세션에서 이미 처리한 퀵리플라이 요청을 조회한다."""
 
-        if circumstance_code not in FINAL_FRAUD_CIRCUMSTANCE_CODES:
-            return False
+        return self.session.exec(
+            select(ChatDiscriminationAction).where(
+                ChatDiscriminationAction.chat_session_id
+                == chat_session.chat_session_id,
+                ChatDiscriminationAction.request_id == request_id,
+            )
+        ).first()
 
-        return self._insert_do_nothing(
-            ChatFraudCircumstance,
-            values={
-                "chat_session_id": chat_session.chat_session_id,
-                "circumstance_code": circumstance_code,
-                "evidence": evidence,
-                "extracted_at": datetime.now(UTC),
-                "source_answer_id": self._source_answer_id(
-                    chat_session,
-                    source_answer,
-                ),
-            },
-            index_elements=["chat_session_id", "circumstance_code"],
-        )
-
-    def list_fraud_circumstances(
-        self,
-        chat_session: ChatSession,
-    ) -> list[ChatFraudCircumstance]:
-        """세션에서 추출된 사기 정황을 저장 순서대로 조회한다."""
-
-        return list(
-            self.session.exec(
-                select(ChatFraudCircumstance)
-                .where(
-                    ChatFraudCircumstance.chat_session_id
-                    == chat_session.chat_session_id
-                )
-                .order_by(ChatFraudCircumstance.circumstance_id)
-            ).all()
-        )
-
-    def upsert_fraud_type_scores(
+    def add_discrimination_action(
         self,
         chat_session: ChatSession,
         *,
-        type_scores: dict[str, float],
-    ) -> None:
-        """사기 정황이 추출될 때마다 거래당 한 행을 다시 계산해 덮어쓴다.
+        request_id: str,
+        question_id: str,
+        action: str,
+        response_payload: dict[str, object],
+    ) -> ChatDiscriminationAction:
+        """처리한 퀵리플라이와 재전송에 사용할 완료 응답을 저장한다."""
 
-        ``transaction_id`` 가 PK라 거래당 행은 하나로 유지되고, 매 채점마다
-        전체 정황을 다시 읽어 계산한 값으로 갱신한다(증분 가산이 아니다).
-        """
-
-        statement = (
-            postgresql_insert(FraudTypeScoreAfterChat)
-            .values(
-                transaction_id=chat_session.transaction_id,
-                chat_session_id=chat_session.chat_session_id,
-                type_scores=dict(type_scores),
-                scored_at=datetime.now(UTC),
-            )
-            .on_conflict_do_update(
-                index_elements=["transaction_id"],
-                set_={
-                    "type_scores": dict(type_scores),
-                    "scored_at": datetime.now(UTC),
-                },
-            )
+        receipt = ChatDiscriminationAction(
+            chat_session_id=chat_session.chat_session_id,
+            request_id=request_id,
+            question_id=question_id,
+            action=action,
+            response_payload=dict(response_payload),
         )
-        self.session.exec(statement)
-
-    def get_fraud_type_scores(
-        self,
-        transaction_id: int,
-    ) -> FraudTypeScoreAfterChat | None:
-        """거래의 채팅 채점 결과를 조회한다(담당자 화면용).
-
-        사기 정황이 추출될 때마다 갱신되므로 상담 도중에도 그때까지의 점수를
-        볼 수 있다. 정황이 한 번도 추출되지 않았으면 ``None`` 이다.
-        """
-
-        return self.session.get(FraudTypeScoreAfterChat, transaction_id)
+        self.session.add(receipt)
+        return receipt
 
     def get_customer_response_context(
         self,
         transaction_id: int,
     ) -> CustomerResponseContextDTO:
-        """가이드 생성 시점에 사용할 고객 채택 답변과 챗봇 유형 점수를 조회한다."""
+        """가이드 생성 시점에 사용할 고객 채택 답변을 조회한다."""
 
         answers = list(
             self.session.exec(
@@ -356,10 +323,9 @@ class ChatSessionRepository:
                 .order_by(ChatAnswer.question_step, ChatAnswer.attempt_no)
             ).all()
         )
-        scores = self.get_fraud_type_scores(transaction_id)
         return CustomerResponseContextDTO(
             customer_answers=answers,
-            type_scores=dict(scores.type_scores) if scores is not None else {},
+            type_scores={},
         )
 
     def get_status_by_transaction(

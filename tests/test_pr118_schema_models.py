@@ -59,7 +59,6 @@ class PR118SchemaModelTests(unittest.TestCase):
             "fraud_type_score_results",
             "agent_cases",
             "chat_sessions",
-            "fraud_type_score_after_chat",
         ):
             with self.subTest(table=table_name):
                 self.assertEqual(
@@ -76,7 +75,6 @@ class PR118SchemaModelTests(unittest.TestCase):
             ("fraud_type_score_results", "transaction_id"),
             ("agent_cases", "transaction_id"),
             ("chat_sessions", "transaction_id"),
-            ("fraud_type_score_after_chat", "transaction_id"),
         ):
             with self.subTest(table=table_name):
                 self.assertIsInstance(

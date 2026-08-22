@@ -31,6 +31,23 @@ class ChatSessionStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class ChatConversationPhase(str, Enum):
+    """세션 생명주기와 분리된 고객 대화 단계."""
+
+    DISCRIMINATION = "DISCRIMINATION"
+    FREE_CHAT = "FREE_CHAT"
+    HANDOFF_PENDING = "HANDOFF_PENDING"
+    NORMAL_GUIDE = "NORMAL_GUIDE"
+
+
+class ChatDiscriminationQuestionId(str, Enum):
+    """네/아니요 퀵리플라이로 답하는 유형 판별 질문."""
+
+    OWNERSHIP = "OWNERSHIP"
+    PRIMARY_CHECK = "PRIMARY_CHECK"
+    SECONDARY_CHECK = "SECONDARY_CHECK"
+
+
 class ChatSenderType(str, Enum):
     """상담 메시지 작성 주체."""
 
@@ -54,8 +71,22 @@ class ChatSession(SQLModel, table=True):
             "('URL_SENT', 'IN_PROGRESS', 'HANDOFF_REQUESTED', 'DONE', 'FAILED')",
             name="ck_chat_sessions_status",
         ),
+        CheckConstraint(
+            "conversation_phase IS NULL OR conversation_phase IN "
+            "('DISCRIMINATION', 'FREE_CHAT', 'HANDOFF_PENDING', 'NORMAL_GUIDE')",
+            name="ck_chat_sessions_conversation_phase",
+        ),
+        CheckConstraint(
+            "discrimination_question_id IS NULL OR discrimination_question_id IN "
+            "('OWNERSHIP', 'PRIMARY_CHECK', 'SECONDARY_CHECK')",
+            name="ck_chat_sessions_discrimination_question_id",
+        ),
+        CheckConstraint(
+            "ownership_answer IS NULL OR ownership_answer IN "
+            "('ANSWER_YES', 'ANSWER_NO')",
+            name="ck_chat_sessions_ownership_answer",
+        ),
     )
-
     chat_session_id: str = Field(primary_key=True, max_length=64)
     transaction_id: int = Field(
         foreign_key="transactions.id",
@@ -63,6 +94,10 @@ class ChatSession(SQLModel, table=True):
         sa_type=BIGINT_PRIMARY_KEY,
     )
     status: str = Field(default=ChatSessionStatus.URL_SENT.value, max_length=32)
+    conversation_phase: str | None = Field(default=None, max_length=32)
+    discrimination_question_id: str | None = Field(default=None, max_length=32)
+    ownership_answer: str | None = Field(default=None, max_length=16)
+    confirmed_fraud_type: str | None = Field(default=None, max_length=64)
     # 순환 참조를 피하기 위해 테이블 생성 후 FK를 추가한다.
     last_message_id: int | None = Field(
         default=None,
@@ -81,9 +116,14 @@ class ChatSession(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False),
     )
-    # 룰 채점 점수 내림차순 상위 2개 사기유형 코드. 1step 유형판별 질문 선택에 쓴다.
-    # 룰 채점 실패로 값이 없으면(NULL) 유형판별 질문 대신 일반 질문 폴백을 쓴다.
+    # 룰 채점 점수 내림차순 상위 2개 사기유형 코드. 1·2순위 확인 질문에 쓴다.
+    # 값이 없으면 유형을 판별할 수 없으므로 상담사 연결 단계로 전환한다.
     top_fraud_types: list[str] | None = Field(
+        default=None,
+        sa_column=Column(JSON_COLUMN, nullable=True),
+    )
+    # top_fraud_types에 대응하는 Rule Engine 원본 점수. 두 점수 차이로 분기를 정한다.
+    top_fraud_type_scores: dict[str, float] | None = Field(
         default=None,
         sa_column=Column(JSON_COLUMN, nullable=True),
     )
@@ -246,6 +286,52 @@ class ChatAnswer(SQLModel, table=True):
     )
 
 
+class ChatDiscriminationAction(SQLModel, table=True):
+    """퀵리플라이 액션의 중복 처리를 막고 완료 응답을 재사용한다."""
+
+    __tablename__ = "chat_discrimination_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_session_id",
+            "request_id",
+            name="uq_chat_discrimination_actions_session_request",
+        ),
+        CheckConstraint(
+            "question_id IN ('OWNERSHIP', 'PRIMARY_CHECK', 'SECONDARY_CHECK')",
+            name="ck_chat_discrimination_actions_question_id",
+        ),
+        CheckConstraint(
+            "action IN ('ANSWER_YES', 'ANSWER_NO')",
+            name="ck_chat_discrimination_actions_action",
+        ),
+    )
+
+    action_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BIGINT_PRIMARY_KEY,
+            primary_key=True,
+            autoincrement=True,
+        ),
+    )
+    chat_session_id: str = Field(
+        foreign_key="chat_sessions.chat_session_id",
+        ondelete="CASCADE",
+        max_length=64,
+    )
+    request_id: str = Field(max_length=64)
+    question_id: str = Field(max_length=32)
+    action: str = Field(max_length=16)
+    response_payload: dict[str, object] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON_COLUMN, nullable=False),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 class ChatGuideSearchQuery(SQLModel, table=True):
     """고객 답변에서 분해한 가이드 검색 질의를 저장한다."""
 
@@ -296,82 +382,6 @@ class ChatGuideSearchQuery(SQLModel, table=True):
         ),
     )
     extracted_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-    )
-
-
-class ChatFraudCircumstance(SQLModel, table=True):
-    """고객 답변에서 추출한 사기 정황을 저장한다."""
-
-    __tablename__ = "chat_fraud_circumstances"
-    __table_args__ = (
-        UniqueConstraint(
-            "chat_session_id",
-            "circumstance_code",
-            name="uq_chat_fraud_circumstances_session_code",
-        ),
-    )
-
-    circumstance_id: int | None = Field(
-        default=None,
-        sa_column=Column(
-            BIGINT_PRIMARY_KEY,
-            primary_key=True,
-            autoincrement=True,
-        ),
-    )
-    chat_session_id: str = Field(
-        foreign_key="chat_sessions.chat_session_id",
-        ondelete="CASCADE",
-        max_length=64,
-    )
-    circumstance_code: str = Field(max_length=64)
-    # 추출 판단의 근거가 된 고객 답변의 연속된 원문이다.
-    evidence: str = Field(sa_column=Column(Text, nullable=False))
-    # 어떤 채택 답변에서 추출했는지 연결하며, 답변 삭제 시 추출 기록은 보존한다.
-    source_answer_id: int | None = Field(
-        default=None,
-        sa_column=Column(
-            BIGINT_PRIMARY_KEY,
-            ForeignKey(
-                "chat_answers.answer_id",
-                ondelete="SET NULL",
-            ),
-            nullable=True,
-        ),
-    )
-    extracted_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-    )
-
-
-class FraudTypeScoreAfterChat(SQLModel, table=True):
-    """챗봇 대화에서 집계한 사기유형별 점수."""
-
-    __tablename__ = "fraud_type_score_after_chat"
-
-    transaction_id: int = Field(
-        primary_key=True,
-        foreign_key="transactions.id",
-        ondelete="CASCADE",
-        sa_type=BIGINT_PRIMARY_KEY,
-    )
-    chat_session_id: str = Field(
-        foreign_key="chat_sessions.chat_session_id",
-        ondelete="CASCADE",
-        max_length=64,
-    )
-    type_scores: dict[str, float] = Field(
-        default_factory=dict,
-        sa_column=Column(
-            JSON_COLUMN,
-            nullable=False,
-            server_default=text("'{}'"),
-        ),
-    )
-    scored_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )

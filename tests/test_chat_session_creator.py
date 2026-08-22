@@ -106,6 +106,10 @@ class ChatSessionCreatorTest(unittest.TestCase):
         result = self._create(
             transaction_id,
             top_fraud_types=[VOICE_PHISHING, MESSENGER_PHISHING],
+            top_fraud_type_scores={
+                VOICE_PHISHING: 0.8,
+                MESSENGER_PHISHING: 0.4,
+            },
         )
 
         chat_session = result.chat_session
@@ -119,6 +123,13 @@ class ChatSessionCreatorTest(unittest.TestCase):
         self.assertEqual(
             chat_session.top_fraud_types,
             [VOICE_PHISHING, MESSENGER_PHISHING],
+        )
+        self.assertEqual(
+            chat_session.top_fraud_type_scores,
+            {
+                VOICE_PHISHING: 0.8,
+                MESSENGER_PHISHING: 0.4,
+            },
         )
 
     def test_falls_back_to_default_email_when_customer_email_is_blank(

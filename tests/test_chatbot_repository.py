@@ -7,17 +7,12 @@ from sqlmodel import Session, create_engine, func, select
 
 from app.data.model.chatbot import (
     ChatAnswer,
-    ChatFraudCircumstance,
+    ChatDiscriminationAction,
     ChatGuideSearchQuery,
     ChatMessage,
     ChatSenderType,
     ChatSession,
     ChatSessionStatus,
-    FraudTypeScoreAfterChat,
-)
-from app.domain.fraud_circumstance_codes import (
-    ACCOUNT_REAUTHENTICATION_PHISHING,
-    CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
 )
 from app.domain.fraud_type_codes import (
     ACCOUNT_TAKEOVER,
@@ -40,8 +35,7 @@ class ChatSessionRepositoryTest(unittest.TestCase):
         ChatMessage.__table__.create(self.engine)
         ChatAnswer.__table__.create(self.engine)
         ChatGuideSearchQuery.__table__.create(self.engine)
-        ChatFraudCircumstance.__table__.create(self.engine)
-        FraudTypeScoreAfterChat.__table__.create(self.engine)
+        ChatDiscriminationAction.__table__.create(self.engine)
         self.session = Session(self.engine)
         self.repository = ChatSessionRepository(self.session)
 
@@ -346,163 +340,27 @@ class ChatSessionRepositoryTest(unittest.TestCase):
             "모르는 사람에게 전화번호를 제공한 경우 대응 방법",
         )
 
-    def test_saves_fraud_circumstance_with_source_answer(self) -> None:
+    def test_saves_and_reads_discrimination_action_receipt(self) -> None:
         chat_session = self.repository.create_or_get(
-            chat_session_id="CHAT-CIRCUMSTANCE",
-            transaction_id=113,
-        )
-        message = self.repository.add_message(
-            chat_session,
-            sender_type=ChatSenderType.HUMAN,
-            message_text="재인증 링크라고 했어요",
-        )
-        answer = self.repository.add_answer(
-            chat_session,
-            message=message,
-            question_step=1,
-            attempt_no=1,
-            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
-            is_adopted=True,
-        )
-
-        inserted = self.repository.add_fraud_circumstance(
-            chat_session,
-            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
-            evidence="재인증 링크라고 했어요",
-            source_answer=answer,
-        )
-        duplicate_inserted = self.repository.add_fraud_circumstance(
-            chat_session,
-            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
-            evidence="중복 근거",
-            source_answer=answer,
-        )
-
-        self.assertIs(inserted, True)
-        self.assertIs(duplicate_inserted, False)
-        circumstances = list(
-            self.session.exec(select(ChatFraudCircumstance)).all()
-        )
-        self.assertEqual(len(circumstances), 1)
-        self.assertEqual(circumstances[0].source_answer_id, answer.answer_id)
-
-    def test_filters_invalid_guide_search_query_and_circumstance(self) -> None:
-        chat_session = self.repository.create_or_get(
-            chat_session_id="CHAT-INVALID-EXTRACTION",
-            transaction_id=114,
-        )
-        message = self.repository.add_message(
-            chat_session,
-            sender_type=ChatSenderType.HUMAN,
-            message_text="고객 원문",
-        )
-        answer = self.repository.add_answer(
-            chat_session,
-            message=message,
-            question_step=1,
-            attempt_no=1,
-            quality_verdict=AnswerQualityVerdict.SUFFICIENT,
-            is_adopted=True,
-        )
-
-        query_inserted = self.repository.add_guide_search_query(
-            chat_session,
-            position=6,
-            title="잘못된 위치",
-            search_query="검색 질의",
-            evidence="고객 원문",
-            source_answer=answer,
-        )
-        invented_evidence_inserted = self.repository.add_guide_search_query(
-            chat_session,
-            position=1,
-            title="원문 밖 근거",
-            search_query="검색 질의",
-            evidence="답변에 없는 내용",
-            source_answer=answer,
-        )
-        circumstance_inserted = self.repository.add_fraud_circumstance(
-            chat_session,
-            circumstance_code="unknown_fraud_circumstance",
-            evidence="잘못된 정황",
-        )
-
-        self.assertIs(query_inserted, False)
-        self.assertIs(invented_evidence_inserted, False)
-        self.assertIs(circumstance_inserted, False)
-        query_count = self.session.exec(
-            select(func.count()).select_from(ChatGuideSearchQuery)
-        ).one()
-        circumstance_count = self.session.exec(
-            select(func.count()).select_from(ChatFraudCircumstance)
-        ).one()
-        self.assertEqual(query_count, 0)
-        self.assertEqual(circumstance_count, 0)
-
-    def test_lists_all_fraud_circumstances_for_session(self) -> None:
-        chat_session = self.repository.create_or_get(
-            chat_session_id="CHAT-SCORE-SOURCE",
-            transaction_id=115,
-        )
-        other_session = self.repository.create_or_get(
-            chat_session_id="CHAT-SCORE-OTHER",
-            transaction_id=116,
-        )
-        self.repository.add_fraud_circumstance(
-            chat_session,
-            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
-            evidence="재인증 링크라고 했어요",
-        )
-        self.repository.add_fraud_circumstance(
-            chat_session,
-            circumstance_code=CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
-            evidence="검찰이 범죄에 연루됐다고 전화했어요",
-        )
-        self.repository.add_fraud_circumstance(
-            other_session,
-            circumstance_code=ACCOUNT_REAUTHENTICATION_PHISHING,
-            evidence="다른 세션의 답변",
-        )
-
-        circumstances = self.repository.list_fraud_circumstances(chat_session)
-
-        self.assertEqual(
-            [item.circumstance_code for item in circumstances],
-            [
-                ACCOUNT_REAUTHENTICATION_PHISHING,
-                CRIMINAL_INVOLVEMENT_CLAIM_BY_PHONE,
-            ],
-        )
-
-    def test_upserts_fraud_type_scores_per_transaction(self) -> None:
-        chat_session = self.repository.create_or_get(
-            chat_session_id="CHAT-SCORE",
+            chat_session_id="CHAT-ACTION",
             transaction_id=117,
         )
-        type_scores = {
-            VOICE_PHISHING: 3.0,
-            MESSENGER_PHISHING: 0.0,
-            ACCOUNT_TAKEOVER: 1.0,
-            FRAUD_USED_ACCOUNT: 0.0,
-        }
-        updated_scores = {**type_scores, VOICE_PHISHING: 99.0}
-
-        self.repository.upsert_fraud_type_scores(
+        self.repository.add_discrimination_action(
             chat_session,
-            type_scores=type_scores,
+            request_id="request-1",
+            question_id="OWNERSHIP",
+            action="ANSWER_YES",
+            response_payload={"status": "IN_PROGRESS"},
         )
-        self.repository.upsert_fraud_type_scores(
-            chat_session,
-            type_scores=updated_scores,
-        )
+        self.session.flush()
 
-        # 정황이 추출될 때마다 같은 행을 최신 집계 결과로 덮어쓴다(거래당 한 행).
-        score = self.session.get(FraudTypeScoreAfterChat, 117)
-        self.assertIsNotNone(score)
-        assert score is not None
-        self.assertEqual(score.chat_session_id, chat_session.chat_session_id)
-        self.assertEqual(score.type_scores, updated_scores)
-        self.assertIsInstance(score.scored_at, datetime)
+        receipt = self.repository.get_discrimination_action(
+            chat_session,
+            request_id="request-1",
+        )
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.action, "ANSWER_YES")
+        self.assertEqual(receipt.response_payload, {"status": "IN_PROGRESS"})
 
     def test_gets_session_status_by_transaction(self) -> None:
         chat_session = self.repository.create_or_get(

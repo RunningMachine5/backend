@@ -60,11 +60,11 @@ This applies to work touching:
 - `app/services/{chatbot,rag}/`
 - `app/pipelines/customer_chatbot_pipeline.py`
 - `app/api/chat.py`
-- the `chat_*` / `fraud_type_score_after_chat` tables in `app/data/model/chatbot.py`
+- the `chat_*` tables in `app/data/model/chatbot.py`
 - `docs/customer-chatbot/`
 
 The design lives in `docs/customer-chatbot/`, with `README.md` as the entry point (flow and
-branching only; prompts, customer-facing wording, the scoring table, and the table definitions are
+branching only; prompts, customer-facing wording, and the table definitions are
 split into sibling files). **Never invent new prompt text or customer-facing wording in code** —
 add it to the relevant document first, then move it into code. The skill's index table tells you
 which file that is.

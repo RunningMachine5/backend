@@ -425,7 +425,7 @@ class AgentWorkflow:
         }
 
     def _load_customer_response(self, state: AgentGraphState) -> dict[str, object]:
-        """가이드 생성 직전 챗봇 결과를 읽고, 고객 재채점 유형을 우선 적용한다."""
+        """가이드 생성 직전 챗봇 고객 발언을 읽는다."""
 
         if self.customer_response_provider is None:
             context = CustomerResponseContextDTO([], {})
@@ -433,19 +433,9 @@ class AgentWorkflow:
             context = self.customer_response_provider.get_customer_response_context(
                 state["agent_input"].transaction_id
             )
-        applied_fraud_type = state["applied_fraud_type"]
-        positive_scores = [
-            (code, score)
-            for code, score in context.type_scores.items()
-            if score > 0
-        ]
-        if positive_scores:
-            applied_fraud_type = sorted(
-                positive_scores, key=lambda item: (-item[1], item[0])
-            )[0][0]
         return {
             "customer_response": context,
-            "applied_fraud_type": applied_fraud_type,
+            "applied_fraud_type": state["applied_fraud_type"],
         }
 
     def _search_guides(self, state: AgentGraphState) -> dict[str, object]:

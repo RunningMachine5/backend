@@ -100,7 +100,9 @@ class FraudAlertEmailServiceTest(unittest.TestCase):
         return FraudAlertEmailCommand(
             transaction_id=1,
             primary_suspected_type="ACCOUNT_TAKEOVER",
+            primary_suspected_score=0.8,
             secondary_suspected_type="MESSENGER_PHISHING",
+            secondary_suspected_score=0.4,
             classification_status=ClassificationStatus.AMBIGUOUS,
         )
 

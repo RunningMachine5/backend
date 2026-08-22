@@ -9,11 +9,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.domain.fraud_circumstance_codes import FINAL_FRAUD_CIRCUMSTANCE_CODES
 from app.domain.fraud_type_codes import FINAL_FRAUD_TYPE_CODES
 
 
-FraudCircumstanceCode = Literal[*FINAL_FRAUD_CIRCUMSTANCE_CODES]
 FraudTypeCode = Literal[*FINAL_FRAUD_TYPE_CODES]
 ChatSessionStatusValue = Literal[
     "URL_SENT",
@@ -22,14 +20,21 @@ ChatSessionStatusValue = Literal[
     "DONE",
     "FAILED",
 ]
+ChatConversationPhaseValue = Literal[
+    "DISCRIMINATION",
+    "FREE_CHAT",
+    "HANDOFF_PENDING",
+    "NORMAL_GUIDE",
+]
+ChatInputMode = Literal["QUICK_REPLY", "FREE_TEXT", "NONE"]
 
 class CreateChatRequest(BaseModel):
     """거래에 연결할 고객 채팅 세션 생성 입력."""
 
     # transactions.id 와 chat_sessions.transaction_id 는 DB가 발급하는 BIGINT 다.
     transaction_id: int = Field(gt=0)
-    # 룰 채점 점수 내림차순 상위 2개 사기유형. 첫 질문 선택에 쓴다.
-    # 룰 채점 실패로 유형 점수가 없으면 생략하며, 그 세션은 일반 질문 폴백을 쓴다.
+    # 룰 채점 점수 내림차순 상위 2개 사기유형. 1·2순위 확인 질문에 쓴다.
+    # 유형 점수가 없으면 생략할 수 있으며, 해당 세션은 상담사 연결로 전환한다.
     top_fraud_types: list[FraudTypeCode] | None = Field(
         default=None,
         min_length=2,
@@ -71,34 +76,42 @@ class AnswerAnalysisResult(BaseModel):
     guide_search_queries: list[ExtractedGuideSearchQuery] = Field(max_length=5)
 
 
-class ExtractedFraudCircumstance(BaseModel):
-    """고객 답변에서 추출한 화이트리스트 사기 정황과 원문 근거."""
+class ChatDiscriminationAction(StrEnum):
+    """유형 판별 질문의 네/아니요 퀵리플라이 액션."""
 
-    type: FraudCircumstanceCode
-    evidence: str = Field(min_length=1)
-
-class FraudCircumstanceExtractionResult(BaseModel):
-    """사기 정황 추출 LLM의 구조화 출력."""
-
-    fraud_circumstances: list[ExtractedFraudCircumstance]
+    ANSWER_YES = "ANSWER_YES"
+    ANSWER_NO = "ANSWER_NO"
 
 
-class ChatButtonAction(StrEnum):
-    """최초 알림 뒤 고객이 선택할 수 있는 버튼 액션."""
+class DiscriminationQuestionId(StrEnum):
+    """현재 답변하고 있는 유형 판별 질문."""
 
-    START_CHAT = "START_CHAT"
-    REQUEST_HANDOFF = "REQUEST_HANDOFF"
-    END_CHAT = "END_CHAT"
+    OWNERSHIP = "OWNERSHIP"
+    PRIMARY_CHECK = "PRIMARY_CHECK"
+    SECONDARY_CHECK = "SECONDARY_CHECK"
 
-class ChatButtonActionRequest(BaseModel):
-    """최초 알림 뒤 고객이 누른 버튼."""
 
-    action: ChatButtonAction = Field(
-        description=(
-            "`START_CHAT`(챗봇 상담 시작) / `REQUEST_HANDOFF`(상담사 연결) / "
-            "`END_CHAT`(상담 종료)"
-        ),
-    )
+class ChatDiscriminationActionRequest(BaseModel):
+    """유형 판별 퀵리플라이 입력과 멱등 키."""
+
+    action: ChatDiscriminationAction
+    question_id: DiscriminationQuestionId
+    request_id: str = Field(min_length=1, max_length=64)
+
+
+class ChatQuickReplyResponse(BaseModel):
+    """프론트가 현재 질문에 표시할 퀵리플라이 버튼."""
+
+    label: str
+    action: ChatDiscriminationAction
+
+
+class ChatUiEvent(BaseModel):
+    """대화 메시지와 별도로 프론트 컴포넌트를 구동하는 이벤트."""
+
+    event: Literal["fraud_type_confirmed"]
+    confirmed_fraud_type: FraudTypeCode
+    message: str
 
 class SendChatMessageRequest(BaseModel):
     """고객이 질문에 답한 메시지 한 건."""
@@ -151,6 +164,25 @@ class ChatSessionDetailResponse(BaseModel):
         ge=0,
         description="진행 중인 질문 번호. 0 이면 아직 첫 질문을 내보내지 않았다.",
     )
+    conversation_phase: ChatConversationPhaseValue | None = Field(
+        default=None,
+        description="현재 고객 대화 단계. 본인 확인 전에는 `null`.",
+    )
+    input_mode: ChatInputMode = Field(
+        description="현재 화면에서 허용할 고객 입력 방식.",
+    )
+    question_id: DiscriminationQuestionId | None = Field(
+        default=None,
+        description="현재 퀵리플라이 질문. 자유 대화 또는 종료 상태이면 `null`.",
+    )
+    quick_replies: list[ChatQuickReplyResponse] = Field(
+        default_factory=list,
+        description="현재 표시할 퀵리플라이. 재접속 시에도 복원한다.",
+    )
+    confirmed_fraud_type: FraudTypeCode | None = Field(
+        default=None,
+        description="네/아니요 응답으로 확정된 의심 사기유형.",
+    )
     messages: list[ChatMessageResponse] = Field(
         description="이 세션의 전체 대화 이력(오래된 순).",
     )
@@ -173,6 +205,11 @@ class ChatTurnResponse(BaseModel):
             "이 턴을 처리한 뒤의 질문 번호. 재질문 턴에서는 값이 그대로 유지된다."
         ),
     )
+    conversation_phase: ChatConversationPhaseValue | None = None
+    input_mode: ChatInputMode
+    question_id: DiscriminationQuestionId | None = None
+    quick_replies: list[ChatQuickReplyResponse] = Field(default_factory=list)
+    confirmed_fraud_type: FraudTypeCode | None = None
     # 이번 턴에 챗봇이 보낸 메시지 본문. 대화 이력은 이미 chat_messages 에 저장돼 있다.
     messages: list[str] = Field(
         description=(
@@ -196,14 +233,6 @@ class TransactionChatSessionStatusResponse(BaseModel):
     )
 
 
-class ChatFraudTypeScoreResponse(BaseModel):
-    """대화 채점으로 계산한 사기유형 점수."""
-
-    type_code: FraudTypeCode = Field(description="사기유형 코드.")
-    display_name: str = Field(description="사기유형의 화면 표시 이름.")
-    score: int = Field(ge=0, description="이 유형에 누적된 점수.")
-
-
 class TransactionChatSessionDetailResponse(BaseModel):
     """담당자가 거래 한 건의 상담 내용을 열었을 때 받는 내역"""
 
@@ -224,24 +253,10 @@ class TransactionChatSessionDetailResponse(BaseModel):
         default_factory=list,
         description="이 세션의 전체 대화 이력(오래된 순).",
     )
-    # 룰 채점과 같은 원칙으로 대표 유형을 고르지 않는다. 순위는 클라이언트가 정한다.
-    type_scores: list[ChatFraudTypeScoreResponse] = Field(
-        default_factory=list,
-        description=(
-            "사기유형별 점수 전체(점수 내림차순, 동점이면 코드 오름차순). "
-            "사기 정황이 추출될 때마다 갱신하므로 한 번도 추출되지 않았으면 빈 배열이다."
-        ),
+    confirmed_fraud_type: FraudTypeCode | None = Field(
+        default=None,
+        description="네/아니요 판별에서 확정된 의심 사기유형.",
     )
-
-
-@dataclass(frozen=True, slots=True)
-class FraudCircumstanceExtractionTask:
-    """턴 커밋 뒤 별도 DB 세션에서 실행할 사기 정황 추출 작업."""
-
-    chat_session_id: str
-    transaction_id: int
-    answer_id: int
-    message_text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,19 +272,20 @@ class RetrievedChatbotGuideChunkDTO:
 __all__ = [
     "AnswerAnalysisResult",
     "AnswerQualityVerdict",
-    "ChatButtonAction",
-    "ChatButtonActionRequest",
+    "ChatConversationPhaseValue",
+    "ChatDiscriminationAction",
+    "ChatDiscriminationActionRequest",
+    "ChatInputMode",
     "ChatMessageResponse",
+    "ChatQuickReplyResponse",
     "ChatSessionDetailResponse",
     "ChatSessionStatusValue",
     "ChatTurnResponse",
+    "ChatUiEvent",
     "ChatVerifyRequest",
     "CreateChatRequest",
+    "DiscriminationQuestionId",
     "ExtractedGuideSearchQuery",
-    "ExtractedFraudCircumstance",
-    "FraudCircumstanceCode",
-    "FraudCircumstanceExtractionResult",
-    "FraudCircumstanceExtractionTask",
     "FraudTypeCode",
     "RetrievedChatbotGuideChunkDTO",
     "SendChatMessageRequest",

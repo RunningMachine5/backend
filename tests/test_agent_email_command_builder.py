@@ -24,7 +24,9 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
         )
 
         self.assertEqual(command.primary_suspected_type, "ACCOUNT_TAKEOVER")
+        self.assertEqual(command.primary_suspected_score, 0.80)
         self.assertEqual(command.secondary_suspected_type, "MESSENGER_PHISHING")
+        self.assertEqual(command.secondary_suspected_score, 0.40)
         self.assertEqual(
             command.classification_status,
             ClassificationStatus.CONFIDENT,
@@ -40,7 +42,9 @@ class AgentEmailCommandBuilderTest(unittest.TestCase):
         )
 
         self.assertEqual(command.primary_suspected_type, "ACCOUNT_TAKEOVER")
+        self.assertEqual(command.primary_suspected_score, 0.62)
         self.assertEqual(command.secondary_suspected_type, "MESSENGER_PHISHING")
+        self.assertEqual(command.secondary_suspected_score, 0.57)
         self.assertEqual(
             command.classification_status,
             ClassificationStatus.AMBIGUOUS,

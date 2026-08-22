@@ -87,6 +87,10 @@ class ChatSessionAlertNotifierTest(unittest.TestCase):
                         "ACCOUNT_TAKEOVER",
                         "MESSENGER_PHISHING",
                     ],
+                    "top_fraud_type_scores": {
+                        "ACCOUNT_TAKEOVER": 0.8,
+                        "MESSENGER_PHISHING": 0.4,
+                    },
                 }
             ],
         )
@@ -174,7 +178,9 @@ class ChatSessionAlertNotifierTest(unittest.TestCase):
         return FraudAlertEmailCommand(
             transaction_id=1,
             primary_suspected_type="ACCOUNT_TAKEOVER",
+            primary_suspected_score=0.8,
             secondary_suspected_type="MESSENGER_PHISHING",
+            secondary_suspected_score=0.4,
             classification_status=ClassificationStatus.CONFIDENT,
         )
 
@@ -217,6 +223,13 @@ class ChatSessionAlertNotifierIntegrationTest(unittest.TestCase):
             chat_session.top_fraud_types,
             ["ACCOUNT_TAKEOVER", "MESSENGER_PHISHING"],
         )
+        self.assertEqual(
+            chat_session.top_fraud_type_scores,
+            {
+                "ACCOUNT_TAKEOVER": 0.8,
+                "MESSENGER_PHISHING": 0.4,
+            },
+        )
 
     def test_email_failure_keeps_transaction_and_marks_session_failed(
         self,
@@ -254,7 +267,9 @@ class ChatSessionAlertNotifierIntegrationTest(unittest.TestCase):
         return FraudAlertEmailCommand(
             transaction_id=self.transaction_id,
             primary_suspected_type="ACCOUNT_TAKEOVER",
+            primary_suspected_score=0.8,
             secondary_suspected_type="MESSENGER_PHISHING",
+            secondary_suspected_score=0.4,
             classification_status=ClassificationStatus.CONFIDENT,
         )
 

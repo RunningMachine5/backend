@@ -278,7 +278,7 @@ class FakeCustomerResponseProvider:
 
 
 class AgentWorkflowTest(unittest.TestCase):
-    def test_customer_chatbot_result_overrides_rule_type_for_plan_and_checklist(self) -> None:
+    def test_customer_chatbot_scores_do_not_override_rule_type(self) -> None:
         provider = FakeCustomerResponseProvider(
             CustomerResponseContextDTO(
                 customer_answers=["모르는 사람이 원격제어 앱 설치를 유도했습니다."],
@@ -299,8 +299,8 @@ class AgentWorkflowTest(unittest.TestCase):
         response = workflow.run(self._input())
 
         self.assertEqual(provider.transaction_ids, [1])
-        self.assertEqual(policy_repository.requested_fraud_type, "VOICE_PHISHING")
-        self.assertEqual(response.response_result.applied_fraud_type, "VOICE_PHISHING")
+        self.assertEqual(policy_repository.requested_fraud_type, "ACCOUNT_TAKEOVER")
+        self.assertEqual(response.response_result.applied_fraud_type, "ACCOUNT_TAKEOVER")
         self.assertTrue(
             response.response_result.summary.startswith("챗봇 고객 응답을 우선 반영한")
         )

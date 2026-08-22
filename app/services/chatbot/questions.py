@@ -1,8 +1,8 @@
-"""질문 단계와 상위 사기유형에 맞는 챗봇 질문을 선택한다."""
+"""네/아니요 유형 판별 질문과 확정 유형별 고정 RAG 질의."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 from app.domain.fraud_type_codes import (
     ACCOUNT_TAKEOVER,
@@ -10,94 +10,81 @@ from app.domain.fraud_type_codes import (
     MESSENGER_PHISHING,
     VOICE_PHISHING,
 )
+from app.dto.chatbot import ExtractedGuideSearchQuery
 
 
-# question_step 1의 시작 멘트. 유형판별 질문 앞에 붙는다.
-GREETING = (
-    "고객님의 상황을 판단하기 위해 먼저 하나만 질문을 드릴게요!"
-)
+OWNERSHIP_QUESTION = "본인이 한 거래가 맞나요?"
 
-# question_step 2 이상에서 상한 없이 반복하는 추가 질문 멘트.
-FOLLOW_UP_QUESTION = (
-    "지금까지 말씀해주신 것 외에, 그 상황에서 따로 하신 행동"
-    "(예: 링크 클릭, 앱 설치, 송금, 정보 입력 등)이 있으신가요?\n"
-    '없으시면 "종료할게요"라고 말씀해주세요.'
-)
+FRAUD_TYPE_CONFIRMATION_QUESTIONS: Mapping[str, str] = {
+    ACCOUNT_TAKEOVER: "최근 인터넷 사이트에 개인정보 등을 입력한 적이 있나요?",
+    FRAUD_USED_ACCOUNT: (
+        "최근 인터넷 사이트에 계좌 비밀번호 등을 입력한 적이 있나요?"
+    ),
+    MESSENGER_PHISHING: (
+        "최근 카카오톡이나 메시지를 통해 받은 URL에 접속한 적이 있나요?"
+    ),
+    VOICE_PHISHING: "최근 모르는 사람에게 금융 관련 전화가 온 적이 있나요?",
+}
 
-# top_fraud_types 가 없는 세션(룰 채점 실패)이 유형판별 질문 대신 쓰는 일반 질문.
-GENERAL_FALLBACK_QUESTION = (
-    "이 거래를 알고 계셨는지, 본인이 직접 실행하거나 승인한 거래인지 말씀해 주세요."
-)
+_PREDEFINED_GUIDE_TITLES: Mapping[str, str] = {
+    ACCOUNT_TAKEOVER: "계정 탈취 의심 즉시 대응",
+    FRAUD_USED_ACCOUNT: "사기이용계좌 우려 즉시 대응",
+    MESSENGER_PHISHING: "메신저피싱 의심 즉시 대응",
+    VOICE_PHISHING: "보이스피싱 의심 즉시 대응",
+}
 
-# 상위 2개 후보 유형의 조합(순서 무관)으로 고르는 유형판별 질문 6종.
-TYPE_DISCRIMINATION_QUESTIONS: Mapping[frozenset[str], str] = {
-    frozenset({VOICE_PHISHING, MESSENGER_PHISHING}): (
-        "이번 거래나 정보 제공을 하게 만든 상대와 주로 어떻게 연락했나요:"
-        " 전화로 연락한 수사기관·금융회사·대출상담사 등이었나요,"
-        " 아니면 카카오톡·문자·SNS로 연락한 가족·지인이었나요?"
-        " 실제 연락 방식과 상대가 누구라고 했는지 말씀해주세요."
+_PREDEFINED_GUIDE_QUERIES: Mapping[str, str] = {
+    ACCOUNT_TAKEOVER: (
+        "웹사이트에 개인정보를 입력한 뒤 계정 탈취가 의심됩니다. "
+        "계정 비밀번호 변경, 로그인 세션 해제, 명의도용·금융피해 예방을 위한 "
+        "즉시 대응 방법을 알려주세요."
     ),
-    frozenset({VOICE_PHISHING, ACCOUNT_TAKEOVER}): (
-        "문제 거래는 통화 상대의 지시를 받고 고객님이 직접 송금·승인하거나"
-        " 현금을 전달한 것인가요, 아니면 고객님은 거래를 입력하거나 승인하지 않았는데"
-        " 계정에서 본인 모르게 발생한 것인가요?"
+    FRAUD_USED_ACCOUNT: (
+        "인터넷 사이트에 계좌 비밀번호 등 계좌정보를 입력해 제 계좌가 "
+        "금융사기에 악용될 우려가 있습니다. 계좌 지급정지, 비밀번호 변경, "
+        "은행 신고 등 즉시 해야 할 대응 방법을 알려주세요."
     ),
-    frozenset({VOICE_PHISHING, FRAUD_USED_ACCOUNT}): (
-        "문제 자금은 고객님의 예금이나 대출금을 상대에게 송금·전달한 것인가요,"
-        " 아니면 다른 사람에게서 고객님 계좌로 들어온 돈을 다시"
-        " 송금·출금·전달한 것인가요?"
+    MESSENGER_PHISHING: (
+        "카카오톡 또는 문자 메시지로 받은 의심스러운 URL에 접속해 메신저 피싱 "
+        "피해가 우려됩니다. 악성앱 점검·삭제, 개인정보 및 금융정보 보호, "
+        "신고 절차를 포함한 즉시 대응 방법을 알려주세요."
     ),
-    frozenset({MESSENGER_PHISHING, ACCOUNT_TAKEOVER}): (
-        "가족·지인이라고 믿은 메신저 상대의 요청을 보고 고객님이 직접 송금하거나"
-        " 정보를 제공한 것인가요, 아니면 고객님의 메신저·쇼핑·금융 계정에서"
-        " 본인이 하지 않은 메시지·결제·거래가 발생한 것인가요?"
-    ),
-    frozenset({MESSENGER_PHISHING, FRAUD_USED_ACCOUNT}): (
-        "메신저로 연락한 가족·지인의 요청을 믿고 고객님의 돈을 보낸 것인가요,"
-        " 아니면 타인에게서 고객님 계좌로 돈을 받은 뒤 메신저 지시에 따라 다시"
-        " 송금·출금·전달한 것인가요?"
-    ),
-    frozenset({ACCOUNT_TAKEOVER, FRAUD_USED_ACCOUNT}): (
-        "계좌나 인증정보가 속아서 탈취되어 고객님 모르게 거래가 발생한 것인가요,"
-        " 아니면 다른 사람이 계좌를 사용하도록 빌려주거나 고객님이 입금된 돈을"
-        " 직접 재송금·출금·전달한 것인가요?"
+    VOICE_PHISHING: (
+        "모르는 사람의 금융 관련 전화로 보이스피싱 피해가 의심됩니다. "
+        "송금·개인정보 제공 여부와 관계없이 계좌 보호, 지급정지, 신고를 위해 "
+        "즉시 해야 할 대응 방법을 알려주세요."
     ),
 }
 
 
-def select_type_discrimination_question(
-    top_fraud_types: Sequence[str] | None,
-) -> str:
-    """상위 2개 후보 유형 조합에 맞는 유형판별 질문을 고른다.
+def render_fraud_type_confirmation_question(fraud_type: str) -> str:
+    """1·2순위 유형에 맞는 네/아니요 확인 질문을 반환한다."""
 
-    조합이 없거나(룰 채점 실패) 등록되지 않은 조합이면 일반 질문으로 폴백한다.
-    """
+    try:
+        return FRAUD_TYPE_CONFIRMATION_QUESTIONS[fraud_type]
+    except KeyError as error:
+        raise ValueError(f"지원하지 않는 사기유형입니다: {fraud_type}") from error
 
-    if top_fraud_types is None or len(top_fraud_types) != 2:
-        return GENERAL_FALLBACK_QUESTION
-    return TYPE_DISCRIMINATION_QUESTIONS.get(
-        frozenset(top_fraud_types),
-        GENERAL_FALLBACK_QUESTION,
+
+def predefined_guide_search_query(fraud_type: str) -> ExtractedGuideSearchQuery:
+    """AnswerAnalyzer 없이 GuideResponder에 전달할 유형별 고정 질의."""
+
+    try:
+        search_query = _PREDEFINED_GUIDE_QUERIES[fraud_type]
+        title = _PREDEFINED_GUIDE_TITLES[fraud_type]
+    except KeyError as error:
+        raise ValueError(f"지원하지 않는 사기유형입니다: {fraud_type}") from error
+    # 시스템 정제 질의는 고객 발언 기반 chat_guide_search_queries에 저장하지 않는다.
+    return ExtractedGuideSearchQuery(
+        title=title,
+        search_query=search_query,
+        evidence="유형 판별 퀵리플라이 결과",
     )
 
 
-def render_question(
-    *,
-    question_step: int,
-    top_fraud_types: Sequence[str] | None,
-) -> str:
-    """해당 질문 단계에서 고객에게 출력할 질문 전문을 만든다."""
-
-    if question_step <= 1:
-        return f"{GREETING}\n\n{select_type_discrimination_question(top_fraud_types)}"
-    return FOLLOW_UP_QUESTION
-
-
 __all__ = [
-    "FOLLOW_UP_QUESTION",
-    "GENERAL_FALLBACK_QUESTION",
-    "GREETING",
-    "TYPE_DISCRIMINATION_QUESTIONS",
-    "render_question",
-    "select_type_discrimination_question",
+    "FRAUD_TYPE_CONFIRMATION_QUESTIONS",
+    "OWNERSHIP_QUESTION",
+    "predefined_guide_search_query",
+    "render_fraud_type_confirmation_question",
 ]
