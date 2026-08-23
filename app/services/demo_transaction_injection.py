@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 DEMO_TRANSACTION_COUNT = 100
 DEMO_TRANSACTIONS_PER_SECOND = 1
+DEMO_AGENT_WORKER_COUNT = 2
 DEMO_TRANSACTION_CSV = (
     Path(__file__).resolve().parents[1]
     / "resources"
@@ -189,9 +191,15 @@ def run_demo_transaction_injection(
 ) -> None:
     """선택한 거래를 지정한 최대 속도로 처리하고 진행 상태를 갱신한다."""
 
+    agent_executor: ThreadPoolExecutor | None = None
     try:
         rows = load_demo_transaction_rows(transaction_count)
         interval_seconds = 1 / transactions_per_second
+        # Agent 분석은 수 초 걸릴 수 있으므로 거래 주입과 분리한다.
+        # Worker 수를 제한해 DB 연결과 외부 AI 요청이 한꺼번에 몰리지 않게 한다.
+        agent_executor = ThreadPoolExecutor(
+            max_workers=DEMO_AGENT_WORKER_COUNT,
+        )
         for index, row in enumerate(rows):
             transaction_started_at = monotonic()
             with Session(engine) as session:
@@ -212,7 +220,7 @@ def run_demo_transaction_injection(
                 data=dashboard_event,
             )
             if agent_input is not None:
-                run_demo_agent_task(agent_input)
+                agent_executor.submit(run_demo_agent_task, agent_input)
             demo_transaction_injection_manager.record(
                 result.response.prediction_status
             )
@@ -222,10 +230,15 @@ def run_demo_transaction_injection(
                 )
                 if remaining_seconds > 0:
                     sleep(remaining_seconds)
-        demo_transaction_injection_manager.complete()
     except Exception as exc:
+        if agent_executor is not None:
+            agent_executor.shutdown(wait=False, cancel_futures=True)
         logger.exception("시연 거래 주입 실패")
         demo_transaction_injection_manager.fail(str(exc))
+    else:
+        # 새 시연과 이전 Agent 분석이 겹치지 않도록 모두 끝난 뒤 완료 처리한다.
+        agent_executor.shutdown(wait=True)
+        demo_transaction_injection_manager.complete()
 
 
 __all__ = [
