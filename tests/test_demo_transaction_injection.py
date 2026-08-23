@@ -170,22 +170,27 @@ class DemoTransactionResourceTest(unittest.TestCase):
             try:
                 self.assertTrue(agent_started.wait(timeout=3))
                 self.assertTrue(second_transaction_processed.wait(timeout=3))
-                manager.complete.assert_not_called()
+                injection_thread.join(timeout=3)
+                self.assertFalse(injection_thread.is_alive())
+                manager.complete.assert_called_once_with()
             finally:
                 release_agent.set()
-                injection_thread.join(timeout=3)
 
-        self.assertFalse(injection_thread.is_alive())
         self.assertEqual(manager.record.call_count, 2)
-        manager.complete.assert_called_once_with()
 
-    def test_pipeline_failure_cancels_waiting_agent_tasks(self) -> None:
+    def test_pipeline_failure_does_not_wait_for_running_agent_task(self) -> None:
         rows = [MagicMock(), MagicMock()]
         result = MagicMock()
         result.response.prediction_status = "DECLINED"
         pipeline = MagicMock()
         pipeline.run.side_effect = [result, RuntimeError("pipeline")]
         agent_input = MagicMock()
+        agent_started = Event()
+        release_agent = Event()
+
+        def wait_for_release(_):
+            agent_started.set()
+            release_agent.wait(timeout=2)
 
         with (
             patch(
@@ -214,11 +219,9 @@ class DemoTransactionResourceTest(unittest.TestCase):
                 "demo_transaction_injection_manager"
             ) as manager,
             patch(
-                "app.services.demo_transaction_injection.ThreadPoolExecutor"
-            ) as executor_class,
-            patch(
-                "app.services.demo_transaction_injection.run_demo_agent_task"
-            ) as agent_task,
+                "app.services.demo_transaction_injection.run_demo_agent_task",
+                side_effect=wait_for_release,
+            ),
             patch(
                 "app.services.demo_transaction_injection.monotonic",
                 side_effect=[10.0, 10.1, 10.2],
@@ -229,18 +232,22 @@ class DemoTransactionResourceTest(unittest.TestCase):
                 "ERROR",
             ),
         ):
-            run_demo_transaction_injection(
-                MagicMock(),
-                transaction_count=2,
-                transactions_per_second=2,
+            injection_thread = Thread(
+                target=run_demo_transaction_injection,
+                args=(MagicMock(),),
+                kwargs={
+                    "transaction_count": 2,
+                    "transactions_per_second": 2,
+                },
             )
+            injection_thread.start()
+            try:
+                self.assertTrue(agent_started.wait(timeout=3))
+                injection_thread.join(timeout=3)
+                self.assertFalse(injection_thread.is_alive())
+            finally:
+                release_agent.set()
 
-        executor = executor_class.return_value
-        executor.submit.assert_called_once_with(agent_task, agent_input)
-        executor.shutdown.assert_called_once_with(
-            wait=False,
-            cancel_futures=True,
-        )
         manager.fail.assert_called_once_with("pipeline")
         manager.complete.assert_not_called()
 
