@@ -10,7 +10,7 @@ class TransactionService:
 
     def save_transaction(self, tx, predict_result) -> tuple:
         # 예측 결과에 따라 거래 승인 여부, 에러 코드 추가
-        if predict_result.predict_proba >= 0.5:
+        if predict_result.predict_proba >= 0.45:
             # 거래 실패 상태 = True, error_code = f
             tx.transaction_status = TransactionStatus.DECLINED
             tx.error_code = "f"
