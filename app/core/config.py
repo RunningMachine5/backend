@@ -37,6 +37,29 @@ CHAT_RESPONSE_LLM_MODEL = os.getenv("CHAT_RESPONSE_LLM_MODEL", "gpt-5.6-luna").s
 # 추론 모델의 노력을 low 로 설정해 응답속도를 빠르게 한다
 CHAT_LLM_REASONING_EFFORT = os.getenv("CHAT_LLM_REASONING_EFFORT", "low").strip()
 
+# 고객 대응 가이드 벡터 검색 결과를 Cohere로 재정렬한다.
+COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
+COHERE_RERANK_ENABLED = os.getenv(
+    "COHERE_RERANK_ENABLED",
+    "true",
+).strip().lower() in {"1", "true", "yes", "on"}
+COHERE_RERANK_MODEL = os.getenv(
+    "COHERE_RERANK_MODEL",
+    "rerank-v4.0-fast",
+).strip()
+COHERE_RERANK_CANDIDATE_K = max(
+    1,
+    int(os.getenv("COHERE_RERANK_CANDIDATE_K", "30")),
+)
+COHERE_RERANK_TIMEOUT_SECONDS = max(
+    0.1,
+    float(os.getenv("COHERE_RERANK_TIMEOUT_SECONDS", "5")),
+)
+COHERE_RERANK_MAX_RETRIES = max(
+    0,
+    int(os.getenv("COHERE_RERANK_MAX_RETRIES", "1")),
+)
+
 # RAGAS 평가에서 심판(judge) 역할을 하는 LLM (luna는 temperature 지정이 불가해서 4mini씀)
 RAGAS_JUDGE_MODEL = os.getenv("RAGAS_JUDGE_MODEL", "gpt-4.1-mini").strip()
 # 심판 LLM 의 temperature

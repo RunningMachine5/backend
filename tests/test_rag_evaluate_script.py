@@ -10,9 +10,11 @@ import unittest
 from contextlib import redirect_stderr
 
 from app.scripts.evaluate_rag_ragas import (
+    _parse_args,
     _format_duration,
     _print_summary,
     _ProgressPrinter,
+    _RerankRateLimiter,
 )
 from app.services.rag.golden_dataset import GoldenCase, GoldenContext
 from app.services.rag.ragas_evaluation import (
@@ -58,6 +60,41 @@ class FormatDurationTest(unittest.TestCase):
 
     def test_0초도_처리한다(self):
         self.assertEqual(_format_duration(0), "0초")
+
+
+class RerankRateLimitOptionTest(unittest.TestCase):
+    def test_옵션을_생략하면_호출_제한을_사용하지_않는다(self):
+        self.assertIsNone(_parse_args([]).rerank_rpm)
+
+    def test_분당_9회를_옵션으로_받는다(self):
+        self.assertEqual(_parse_args(["--rerank-rpm", "9"]).rerank_rpm, 9)
+
+    def test_0이하_RPM은_거부한다(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            _parse_args(["--rerank-rpm", "0"])
+
+    def test_실제_요청_시작을_분당_지정_횟수로_간격_제한한다(self):
+        now = [100.0]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        limiter = _RerankRateLimiter(
+            9,
+            clock=lambda: now[0],
+            sleep=sleep,
+        )
+
+        limiter()
+        limiter()
+        now[0] += 2
+        limiter()
+
+        self.assertEqual(len(sleeps), 2)
+        self.assertAlmostEqual(sleeps[0], 60 / 9)
+        self.assertAlmostEqual(sleeps[1], 60 / 9 - 2)
 
 
 class ProgressPrinterTest(unittest.TestCase):

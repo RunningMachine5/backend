@@ -24,7 +24,7 @@ from app.services.rag.chatbot_retriever import retriever_source
 logger = logging.getLogger(__name__)
 
 
-RETRIEVE_TOP_K = 3
+RETRIEVE_TOP_K = 5
 GUIDE_SEARCH_QUERY_HEADING_PREFIX = "■ "
 RetrieverCallable = Callable[..., list[RetrievedChatbotGuideChunkDTO]]
 SnapshotCallback = Callable[[str], None]

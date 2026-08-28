@@ -1,10 +1,17 @@
-"""pyloader를 써서 적당히 임베딩"""
+"""고객 대응 가이드 PDF를 청킹하고 임베딩해 원자적으로 교체한다."""
+
+from __future__ import annotations
+
+import argparse
 import os
-import sys
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Any
+
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
-from pypdf import PdfReader
-from sqlmodel import Session, select
+from sqlalchemy import delete
+from sqlmodel import Session
 
 from app.core.db import engine
 from app.data.model.cs_guide_document import CsGuideDocument
@@ -12,196 +19,275 @@ from app.data.model.cs_guide_document_chunk import CsGuideDocumentChunk
 
 load_dotenv()
 
-# 1. 임베딩 모델 설정 (db 연결 정보는 app.core.db 가 DATABASE_URL 로 관리한다)
+# 평가에서 채택한 U-1200 설정. 정상적인 제목 경계에는 overlap을 추가하지 않고,
+# hard max를 넘은 요소를 분할할 때만 100자를 겹친다.
+MAX_CHARACTERS = 1200
+NEW_AFTER_N_CHARS = 800
+COMBINE_TEXT_UNDER_N_CHARS = 200
+OVERLAP = 100
+
+# DB 연결 정보는 app.core.db 가 DATABASE_URL 로 관리한다.
 embedder = OpenAIEmbeddings(model="text-embedding-3-small")
 
-def query_embedding(text: str)->list[float]:
-    """사용자 질문에 대한 임베딩 (문서 임베딩이랑 구분해서 쓰기)"""
+
+class EmptyPdfError(ValueError):
+    """Unstructured ``fast``에서 저장할 텍스트를 얻지 못했다."""
+
+
+class EmbeddingCountMismatchError(ValueError):
+    """청크 수와 임베딩 수가 달라 안전하게 교체할 수 없다."""
+
+
+def query_embedding(text: str) -> list[float]:
+    """사용자 질문에 대한 임베딩을 생성한다."""
+
     return embedder.embed_query(text)
 
-def docs_embedding(texts: list[str])->list[list[float]]:
-    """문서에 대한 임베딩"""
+
+def docs_embedding(texts: list[str]) -> list[list[float]]:
+    """문서 청크에 대한 임베딩을 생성한다."""
+
     return embedder.embed_documents(texts)
 
-def normalize_page_text(raw_text: str | None) -> str:
-    """PDF 에서 뽑은 페이지 텍스트를 저장 가능한 형태로 정리한다.
 
-    - NUL(코드값이 0인 바이트) 제거: 일부 PDF 는 변환 실패분을 0x00 으로 내보내는데,
-      PostgreSQL 의 text 컬럼은 NUL 을 저장하지 못해 적재가 통째로 실패하는 경우가 있으므로 이를 정규화한다
-    """
+def normalize_page_text(raw_text: str | None) -> str:
+    """PDF 텍스트에서 PostgreSQL이 저장할 수 없는 NUL과 빈 공백을 정리한다."""
 
     if not raw_text:
         return ""
     return " ".join(raw_text.replace("\x00", " ").split())
 
 
-def get_chunks_from_pdf(pdf_path, overlap_size=100) -> tuple[str, str, list[dict]]:
+def get_chunks_from_unstructured_pdf(
+    pdf_path: str | os.PathLike[str],
+    *,
+    partitioner: Callable[..., Sequence[Any]] | None = None,
+    chunker: Callable[..., Sequence[Any]] | None = None,
+) -> tuple[str, str, list[dict[str, Any]]]:
     """
-    페이지 단위로 청킹
-    - 불량 페이지 전처리 (빈 청크는 무시 + 공백,줄바꿈 제거)
-    - 이전 페이지 오버랩 기능 (overlap_size)
-
-    리턴값: (pdf 제목, 전체 원문, 청킹된 리스트)
+    unstructured의 fast 전략으로 partition 후 제목·페이지 경계를 보존해 의미 단위 청크를 만든다.
+    ``partitioner``와 ``chunker``는 단위 테스트용 입력 부분 실 사용시에는 무시해도됨
     """
-    # 페이지 단위 텍스트 로드 (1페이지 = 1청크)
-    reader = PdfReader(pdf_path)
-    chunks = []
-    full_text_parts = [] # 전체 원문 리턴용
-    previous_context = "" # 앞 페이지 뒷부분을 기억할 변수
 
-    for idx,page in enumerate(reader.pages):
-        page_num = idx + 1
-        cleaned_text = normalize_page_text(page.extract_text())
+    using_default_partitioner = partitioner is None
+    if using_default_partitioner and not pdf_has_extractable_text(pdf_path):
+        return Path(pdf_path).name, "", []
 
-        # 텍스트가 실제로 있는 페이지만 청크로 만들겠다
-        if not cleaned_text:
+    if partitioner is None or chunker is None:
+        try:
+            from unstructured.chunking.title import chunk_by_title
+            from unstructured.partition.pdf import partition_pdf
+        except ImportError as exc:
+            raise RuntimeError(
+                "Unstructured 인덱싱 의존성이 없습니다. "
+                "`uv sync --group indexing`으로 설치하세요."
+            ) from exc
+        partitioner = partitioner or partition_pdf
+        chunker = chunker or chunk_by_title
+
+    elements = partitioner(
+        filename=os.fspath(pdf_path),
+        strategy="fast",
+        languages=["kor", "eng"],
+    )
+    cleaned_elements = []
+    full_text_parts = []
+    for element in elements:
+        text = normalize_page_text(getattr(element, "text", str(element)))
+        if not text:
             continue
-        full_text_parts.append(cleaned_text)
+        element.text = text
+        cleaned_elements.append(element)
+        full_text_parts.append(text)
 
-        # 앞 페이지의 오버랩 텍스트와 현재 페이지 텍스트 결합 (문맥 보존)
-        if previous_context:
-            chunk_content = f"...{previous_context} {cleaned_text}"
-        else:
-            chunk_content = cleaned_text
+    if not cleaned_elements:
+        return Path(pdf_path).name, "", []
 
-        chunks.append({
-            "page": page_num,
-            "content": chunk_content
-        })
-        # 다음 페이지를 위해 현재 페이지의 마지막 부분을 오버랩 사이즈만큼 보관
-        previous_context = cleaned_text[-overlap_size:] if len(cleaned_text) > overlap_size else cleaned_text
-
-    title = os.path.basename(pdf_path)
-    full_text = "\n".join(full_text_parts)
-
-    return title, full_text, chunks
-
-def delete_document(title: str) -> bool:
-    """같은 파일명으로 적재된 문서를 지운다. 청크는 FK CASCADE 로 함께 지워진다."""
-
-    with Session(engine) as session:
-        document = session.exec(
-            select(CsGuideDocument).where(CsGuideDocument.title == title)
-        ).first()
-        if document is None:
-            return False
-        session.delete(document)
-        session.commit()
-        return True
-
-
-def save_pdf(pdf_path):
-    """pdf 를 청킹하여 임베딩한다"""
-
-    title, full_text, chunks = get_chunks_from_pdf(pdf_path, overlap_size=100)
-
-    contents = [chunk["content"] for chunk in chunks]
-    vectors = docs_embedding(contents)
-
-    # 디비 세션 확보 (engine 풀에서 커넥션을 빌려오고, 블록을 나가면 풀로 반환된다)
-    with Session(engine) as session:
-        # cs_guide_documents 테이블에 원본 문서 1건 먼저 넣고 DB 가 만든 id 를 받아온다
-        document = CsGuideDocument(
-            title=title,
-            source=pdf_path,
-            content=full_text,
-        )
-        session.add(document)
-        # flush 는 INSERT 만 보내고 커밋은 하지 않는다. id 를 얻으려고 호출한다
-        session.flush()
-
-        # db 에 삽입 할 행 뭉텅이 만들기 (cs_guide_document_chunks)
-        # (cs_guide_document_id, chunk_index) 가 UNIQUE 라 한 페이지에서 청크가
-        # 여러 개 나와도 겹치지 않도록 문서 전체에서 단조 증가하는 순번을 쓰고,
-        # 원본 페이지 번호는 page 컬럼에 따로 넣는다 (한 페이지에서 청크가 여러
-        # 개 나오면 같은 page 값이 반복된다)
-        document_chunks = []
-        for chunk_index, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            document_chunks.append(
-                CsGuideDocumentChunk(
-                    cs_guide_document_id=document.id,
-                    chunk_index=chunk_index,
-                    page=chunk["page"],
-                    content=chunk["content"],
-                    embedding=vector,
-                )
-            )
-
-        # 문서에 대한 청크 내용 db에 저장하기 (INSERT 한 방으로 묶여서 나간다)
-        session.add_all(document_chunks)
-
-        # 문서와 청크가 같은 트랜잭션이라 하나라도 실패하면 통째로 롤백된다
-        session.commit()
-
-# ==========================================
-# 이 밑으로는 임베딩 메인 로직이랑은 상관없다
-# ==========================================
-
-def main():
-    """디렉터리의 모든 pdf 를 읽어서 임베딩한다.
-
-    같은 파일명이 이미 적재돼 있으면 지우고 다시 넣는다. save_pdf 는 upsert 가
-    아니라 매번 INSERT 이고 title 에 유니크 제약이 없어서, 그냥 두 번 돌리면
-    문서와 청크가 중복 적재되고 검색이 같은 청크를 여러 번 물어오기 때문이다.
-
-    적재 결과를 디렉터리와 일치시키려면 디렉터리에 넣을 pdf 만 두고 돌리면 된다.
-    코퍼스에서 뺀 문서는 여기서 지워주지 않으므로 DB 에서 직접 지워야 한다.
-
-        uv run --env-file .env python -m app.services.rag.docs_embedding
-        uv run --env-file .env python -m app.services.rag.docs_embedding /다른/경로
-    """
-    # 인자로 경로를 주지 않으면 docs/embed_target_pdfs 를 쓴다
-    if len(sys.argv) > 1:
-        target_dir = os.path.abspath(sys.argv[1])
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        target_dir = os.path.normpath(
-            os.path.join(base_dir, "..", "..", "..", "docs", "embed_target_pdfs")
-        )
-
-    if not os.path.isdir(target_dir):
-        print(f"디렉터리가 아닙니다: {target_dir}")
-        return
-
-    # 경로에서 pdf 각각의 경로명 읽어오기
-    pdf_paths = sorted(
-        os.path.join(target_dir, filename)
-        for filename in os.listdir(target_dir)
-        if filename.lower().endswith(".pdf")
+    chunk_elements = chunker(
+        cleaned_elements,
+        max_characters=MAX_CHARACTERS,
+        new_after_n_chars=NEW_AFTER_N_CHARS,
+        combine_text_under_n_chars=COMBINE_TEXT_UNDER_N_CHARS,
+        overlap=OVERLAP,
+        overlap_all=False,
+        multipage_sections=False,
     )
 
+    chunks = []
+    for chunk in chunk_elements:
+        content = normalize_page_text(getattr(chunk, "text", str(chunk)))
+        if not content:
+            continue
+        chunks.append({"page": _chunk_page_number(chunk), "content": content})
+
+    return Path(pdf_path).name, "\n".join(full_text_parts), chunks
+
+
+def pdf_has_extractable_text(pdf_path: str | os.PathLike[str]) -> bool:
+    """pdf에 텍스트가 하나라도 있는지 확인한다 (이미지만 있으면 추출하지 않는다)
+    """
+
+    from pypdf import PdfReader
+
+    return any(
+        normalize_page_text(page.extract_text())
+        for page in PdfReader(pdf_path).pages
+    )
+
+
+def _chunk_page_number(chunk: Any) -> int:
+    """페이지 경계를 보존한 Unstructured 청크에서 1부터 시작하는 페이지를 얻는다."""
+
+    metadata = getattr(chunk, "metadata", None)
+    page_number = getattr(metadata, "page_number", None)
+    if page_number is not None:
+        return int(page_number)
+
+    original_elements = getattr(metadata, "orig_elements", None) or ()
+    pages = {
+        int(page)
+        for element in original_elements
+        if (page := getattr(getattr(element, "metadata", None), "page_number", None))
+        is not None
+    }
+    if len(pages) == 1:
+        return pages.pop()
+    if not pages:
+        raise ValueError("Unstructured 청크에 페이지 번호가 없습니다.")
+    raise ValueError(f"페이지 경계를 넘는 Unstructured 청크입니다: {sorted(pages)}")
+
+
+def prepare_pdf(
+    pdf_path: str | os.PathLike[str],
+    *,
+    embedding_fn: Callable[[list[str]], list[list[float]]] = docs_embedding,
+) -> tuple[str, str, list[dict[str, Any]], list[list[float]]]:
+    """DB를 건드리기 전에 문서 하나의 파싱과 전체 임베딩을 완료한다."""
+
+    title, full_text, chunks = get_chunks_from_unstructured_pdf(pdf_path)
+
+    if not chunks:
+        raise EmptyPdfError(f"텍스트 청크가 없습니다: {title}")
+
+    vectors = embedding_fn([chunk["content"] for chunk in chunks])
+    if len(vectors) != len(chunks):
+        raise EmbeddingCountMismatchError(
+            f"청크 {len(chunks)}개와 임베딩 {len(vectors)}개의 개수가 다릅니다: {title}"
+        )
+    return title, full_text, chunks, vectors
+
+
+def replace_document(
+    session: Session,
+    *,
+    title: str,
+    source: str,
+    content: str,
+    chunks: Sequence[dict[str, Any]],
+    vectors: Sequence[Sequence[float]],
+) -> None:
+    """같은 제목의 기존 적재분을 현재 트랜잭션 안에서 신규 데이터로 교체한다."""
+
+    if len(chunks) != len(vectors):
+        raise EmbeddingCountMismatchError(
+            f"청크 {len(chunks)}개와 임베딩 {len(vectors)}개의 개수가 다릅니다: {title}"
+        )
+
+    # DELETE를 즉시 실행해 같은 제목으로 중복 적재된 과거 행까지 전부 정리한다.
+    # 이후 INSERT가 실패하면 바깥 transaction이 DELETE도 함께 롤백한다.
+    session.exec(delete(CsGuideDocument).where(CsGuideDocument.title == title))
+
+    document = CsGuideDocument(title=title, source=source, content=content)
+    session.add(document)
+    session.flush()
+    if document.id is None:
+        raise RuntimeError(f"문서 ID를 발급받지 못했습니다: {title}")
+
+    session.add_all(
+        [
+            CsGuideDocumentChunk(
+                cs_guide_document_id=document.id,
+                chunk_index=chunk_index,
+                page=int(chunk["page"]),
+                content=str(chunk["content"]),
+                embedding=list(vector),
+            )
+            for chunk_index, (chunk, vector) in enumerate(zip(chunks, vectors))
+        ]
+    )
+
+
+def save_pdf(
+    pdf_path: str | os.PathLike[str],
+) -> int:
+    """문서 하나를 준비한 뒤 단일 DB 트랜잭션으로 기존 적재분과 교체한다."""
+
+    title, full_text, chunks, vectors = prepare_pdf(pdf_path)
+
+    with Session(engine) as session:
+        with session.begin():
+            replace_document(
+                session,
+                title=title,
+                source=os.fspath(pdf_path),
+                content=full_text,
+                chunks=chunks,
+                vectors=vectors,
+            )
+    return len(chunks)
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="고객 대응 가이드 PDF를 문서별 원자적 트랜잭션으로 인덱싱"
+    )
+    parser.add_argument(
+        "target_dir",
+        nargs="?",
+        default=str(Path(__file__).resolve().parents[3] / "docs" / "embed_target_pdfs"),
+        help="PDF 디렉터리 (기본값: docs/embed_target_pdfs)",
+    )
+    return parser.parse_args(argv)
+
+
+# PDF 적제 테스트용
+def main(argv: Sequence[str] | None = None) -> int:
+    """디렉터리의 PDF를 각각 독립된 트랜잭션으로 인덱싱한다."""
+
+    args = _parse_args(argv)
+    target_dir = Path(args.target_dir).expanduser().resolve()
+    if not target_dir.is_dir():
+        print(f"디렉터리가 아닙니다: {target_dir}")
+        return 2
+
+    pdf_paths = sorted(target_dir.glob("*.pdf"), key=lambda path: path.name.lower())
     if not pdf_paths:
         print(f"임베딩할 pdf가 없습니다: {target_dir}")
-        return
+        return 2
 
-    print(f"{target_dir} (pdf {len(pdf_paths)}개)")
-    saved, skipped, failed = 0, [], []
+    print(f"{target_dir} (pdf {len(pdf_paths)}개, 청킹 U-1200)")
 
+    saved = 0
+    failed: list[tuple[str, Exception]] = []
     for pdf_path in pdf_paths:
-        title = os.path.basename(pdf_path)
-
-        # try except 로 감싸줘야 중간에 에러나도 다른 파일들은 전부 임베딩 할 수 있다
         try:
-            # 텍스트가 없는 이미지형 pdf 는 청크가 0개라 적재할 것이 없다
-            _, _, chunks = get_chunks_from_pdf(pdf_path)
-            if not chunks:
-                skipped.append(title)
-                print(f"건너뜀(텍스트 없음): {title}")
-                continue
-
-            if delete_document(title):
-                print(f"기존 적재분 삭제: {title}")
-            save_pdf(pdf_path)
-        except Exception as e:
-            failed.append((title, e))
-            print(f"임베딩 실패: {title} - {e}")
+            chunk_count = save_pdf(pdf_path)
+        except Exception as exc:
+            failed.append((pdf_path.name, exc))
+            label = "인덱싱 제외" if isinstance(exc, EmptyPdfError) else "인덱싱 실패"
+            print(f"{label}: {pdf_path.name} - {exc}")
             continue
 
         saved += 1
-        print(f"임베딩 완료: {title} ({len(chunks)}청크)")
+        print(f"임베딩 완료: {pdf_path.name} ({chunk_count}청크)")
 
-    print(f"\n적재 {saved} / 건너뜀 {len(skipped)} / 실패 {len(failed)}")
+    print(f"\n적재 {saved} / 실패·제외 {len(failed)}")
+    if failed:
+        print("실패 목록:")
+        for title, exc in failed:
+            print(f"- {title}: {type(exc).__name__}: {exc}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
