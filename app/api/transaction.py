@@ -25,6 +25,9 @@ from app.repositories.transaction import (
 from app.services.agent.task_runner import AgentTaskRunnerDep
 from app.services.agent.input_builder import build_agent_input
 from app.services.dashboard.dashboard_event_broker import dashboard_event_broker
+from app.services.dashboard.transaction_patch import (
+    build_transaction_dashboard_event,
+)
 
 # FastAPI() 대신 APIRouter(). Spring 의 @RestController + @RequestMapping 에 해당한다.
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -90,16 +93,18 @@ def create_transaction(
     """HTTP 요청을 실제 사기 탐지 Pipeline에 전달한다."""
 
     result = fraud_detection_pipeline.run(payload)
+    agent_input = build_agent_input(result)
     dashboard_event_broker.publish(
         event="dashboard_updated",
-        data={"source": "transaction"},
+        data=build_transaction_dashboard_event(
+            source="transaction",
+            result=result,
+            agent_input=agent_input,
+        ),
     )
-    agent_input = build_agent_input(result)
     if agent_input is not None:
         background_tasks.add_task(agent_task_runner, agent_input)
 
-    if result.prediction_result is not None and result.prediction_result.predict_result:
-        dashboard_event_broker.publish(event="dashboard_updated", data={"source": "ml"})
     # Pipeline이 doo 응답에 ML·룰 결과까지 합쳤으므로 그대로 반환한다.
     return result.response
 

@@ -10,6 +10,7 @@ from sqlmodel import Session
 from app.core.db import engine
 from app.dto.agent import AgentInputDTO
 from app.services.agent.workflow_factory import create_agent_workflow
+from app.services.dashboard.dashboard_event_broker import dashboard_event_broker
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,11 @@ def _run_agent_task(agent_input: AgentInputDTO, *, send_email: bool) -> None:
         logger.exception(
             "Agent 백그라운드 실행 실패: transaction_id=%s",
             agent_input.transaction_id,
+        )
+    finally:
+        dashboard_event_broker.publish(
+            event="dashboard_updated",
+            data={"source": "agent"},
         )
 
 

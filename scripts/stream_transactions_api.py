@@ -69,6 +69,15 @@ def parse_csv_row_to_payload(row: dict[str, str], use_current_time: bool = False
 
     if use_current_time:
         payload["transaction_datetime"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S%z")
+    elif payload.get("transaction_datetime"):
+        dt_str = str(payload["transaction_datetime"]).strip()
+        try:
+            dt = datetime.fromisoformat(dt_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            payload["transaction_datetime"] = dt.strftime("%Y-%m-%d %H:%M:%S%z")
+        except Exception:
+            pass
 
     return payload
 
@@ -77,7 +86,7 @@ def parse_csv_row_to_payload(row: dict[str, str], use_current_time: bool = False
 
 def send_transaction(url: str, payload: dict, timeout: float = 5.0) -> tuple[int, dict | str, float]:
     """HTTP POST 요청 전송 및 응답 반환."""
-    data_bytes = json.dumps(payload).encode("utf-8")
+    data_bytes = json.dumps(payload).encode("utf-8-sig")
     req = urllib.request.Request(
         url,
         data=data_bytes,
@@ -117,14 +126,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--file",
         type=str,
-        default="./dummy_data/transaction_august_2.csv",
+        default="./dummy_data/transaction_august.csv",
         help="전송할 CSV 파일 경로 (기본: ./dummy_data/transactions_august.csv)",
     )
     parser.add_argument(
         "--url",
         type=str,
-        default="http://localhost:8000/transactions",
-        help="FDS 거래 API 엔드포인트 URL (기본: http://localhost:8000/transactions)",
+        default="http://127.0.0.1:8000/transactions",
+        help="FDS 거래 API 엔드포인트 URL (기본: http://127.0.0.1:8000/transactions)",
     )
     parser.add_argument(
         "--interval",
@@ -174,7 +183,7 @@ def main() -> None:
 
     try:
         while True:
-            with open(args.file, "r", encoding="utf-8") as f:
+            with open(args.file, "r", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row_idx, raw_row in enumerate(reader, start=1):
                     if args.max_count is not None and sent_count >= args.max_count:
@@ -230,7 +239,7 @@ def main() -> None:
         print("\n\n⏹️ 사용자에 의해 전송이 중단되었습니다.")
 
     print("\n================================================================================")
-    print(" 📊 Transmission Summary")
+    print(" Transmission Summary")
     print(f" - Total Sent : {sent_count:,} requests")
     print(f" - Approved   : {approved_count:,} (정상 승인)")
     print(f" - Declined   : {declined_count:,} (이상 탐지 차단)")

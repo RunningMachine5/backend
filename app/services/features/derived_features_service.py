@@ -1,5 +1,5 @@
 """ML로 보낼 피쳐들 다 조립하는 코드"""
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from math import asin, cos, radians, sin, sqrt
 
 from app.data.model import CustomerEventType, DerivedFeatures

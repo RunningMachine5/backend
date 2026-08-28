@@ -12,7 +12,7 @@ import re
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -46,8 +46,12 @@ from app.dto.mlops import (
     LabeledDatasetBuildResponse,
     MLflowDetailsPointer,
     MLflowModelDetails,
+    ModelTransactionPageResponse,
+    ModelTransactionResponse,
     ModelReviewResponse,
     ModelPromotionRequest,
+    ModelUsageSummaryResponse,
+    ModelVersionSummaryResponse,
     PlatformMonitoringResponse,
     PlatformStatusResponse,
     ServingMonitoringResponse,
@@ -63,6 +67,7 @@ from app.dto.mlops import (
     TrainingRunStartResponse,
 )
 from app.repositories.inference_performance import InferencePerformanceRepository
+from app.repositories.model_catalog import ModelCatalogRepository, ModelUsageSummary
 from app.services.features.ml_feature_assembler import assemble_ml_features
 from app.services.ml_serving.client import MLServingError
 from app.services.mlops.cloud_run import (
@@ -233,6 +238,48 @@ def _upstream_error(exc: Exception) -> HTTPException:
     )
 
 
+def _quality_policy_configured() -> bool:
+    return config.MLOPS_MIN_PR_AUC > 0 and config.MLOPS_MIN_RECALL > 0
+
+
+def _quality_policy_thresholds() -> tuple[float, float]:
+    if not _quality_policy_configured():
+        return 0.0, 0.0
+    return config.MLOPS_MIN_PR_AUC, config.MLOPS_MIN_RECALL
+
+
+def _model_quality_gate(details: dict[str, Any]) -> dict[str, Any]:
+    metrics = details.get("metrics")
+    tags = details.get("tags")
+    validation_pr_auc = (
+        metrics.get("validation_pr_auc") if isinstance(metrics, dict) else None
+    )
+    validation_recall = (
+        metrics.get("validation_recall") if isinstance(metrics, dict) else None
+    )
+    validation_status = (
+        tags.get("validation_status") if isinstance(tags, dict) else None
+    )
+    minimum_pr_auc, minimum_recall = _quality_policy_thresholds()
+    configured = _quality_policy_configured()
+    passed = not configured or (
+        validation_status == "passed"
+        and validation_pr_auc is not None
+        and validation_recall is not None
+        and validation_pr_auc >= minimum_pr_auc
+        and validation_recall >= minimum_recall
+    )
+    return {
+        "configured": configured,
+        "minimum_pr_auc": minimum_pr_auc,
+        "minimum_recall": minimum_recall,
+        "validation_pr_auc": validation_pr_auc,
+        "validation_recall": validation_recall,
+        "validation_status": validation_status,
+        "passed": passed,
+    }
+
+
 def _dataset_payload(dataset: DatasetVersion) -> DatasetVersionResponse:
     assert dataset.id is not None
     period_start, period_end, normal_count, fraud_count = (
@@ -319,8 +366,6 @@ def _create_requested_training_run(
 
 def _execute_training_run(
     run_id: int,
-    min_pr_auc: float,
-    min_recall: float,
     client: CloudRunAdminClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
@@ -338,6 +383,7 @@ def _execute_training_run(
     session.commit()
 
     try:
+        min_pr_auc, min_recall = _quality_policy_thresholds()
         operation = client.run_training(
             min_pr_auc=min_pr_auc,
             min_recall=min_recall,
@@ -380,6 +426,56 @@ def _resolve_run_model_version(
         return mlflow.resolve_model_version(run.model_key, run.mlflow_run_id)
     except MLflowRegistryError as exc:
         raise _upstream_error(exc) from exc
+
+
+def _get_run_model_details(
+    run: TrainingRun,
+    mlflow: MLflowRegistryClientDep,
+) -> dict[str, Any]:
+    if run.mlflow_run_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="학습 실행에 MLflow run ID가 기록되지 않았습니다.",
+        )
+    try:
+        return mlflow.get_model_details(run.model_key, run.mlflow_run_id)
+    except MLflowRegistryError as exc:
+        raise _upstream_error(exc) from exc
+
+
+def _model_usage_payload(
+    usage: ModelUsageSummary | None,
+) -> ModelUsageSummaryResponse:
+    if usage is None:
+        return ModelUsageSummaryResponse(
+            processed_transaction_count=0,
+            fraud_prediction_count=0,
+            labeled_transaction_count=0,
+            matching_label_count=0,
+            false_positive_count=0,
+            false_negative_count=0,
+            label_agreement_percent=None,
+            average_latency_ms=None,
+            first_inference_at=None,
+            latest_inference_at=None,
+        )
+    agreement = (
+        round(usage.matching_label_count / usage.labeled_transaction_count * 100, 1)
+        if usage.labeled_transaction_count > 0
+        else None
+    )
+    return ModelUsageSummaryResponse(
+        processed_transaction_count=usage.processed_transaction_count,
+        fraud_prediction_count=usage.fraud_prediction_count,
+        labeled_transaction_count=usage.labeled_transaction_count,
+        matching_label_count=usage.matching_label_count,
+        false_positive_count=usage.false_positive_count,
+        false_negative_count=usage.false_negative_count,
+        label_agreement_percent=agreement,
+        average_latency_ms=usage.average_latency_ms,
+        first_inference_at=usage.first_inference_at,
+        latest_inference_at=usage.latest_inference_at,
+    )
 
 
 @router.get("/datasets", response_model=list[DatasetVersionResponse])
@@ -560,7 +656,7 @@ def prepare_training_run(
 )
 def execute_training_run(
     run_id: int,
-    payload: TrainingRunExecutionRequest,
+    _payload: TrainingRunExecutionRequest,
     client: CloudRunAdminClientDep,
     session: SessionDep,
 ) -> dict[str, Any]:
@@ -568,8 +664,6 @@ def execute_training_run(
 
     return _execute_training_run(
         run_id,
-        payload.min_pr_auc,
-        payload.min_recall,
         client,
         session,
     )
@@ -585,6 +679,124 @@ def list_training_runs(session: SessionDep) -> list[TrainingRunResponse]:
         select(TrainingRun).order_by(TrainingRun.created_at.desc())
     ).all()
     return [_training_run_payload(run) for run in runs]
+
+
+@router.get("/models", response_model=list[ModelVersionSummaryResponse])
+def list_model_versions(
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+) -> list[ModelVersionSummaryResponse]:
+    """학습이 끝나 MLflow에 등록된 모델과 실제 처리 이력을 함께 반환한다."""
+
+    runs = list(
+        session.exec(
+            select(TrainingRun)
+            .where(TrainingRun.mlflow_run_id.is_not(None))
+            .order_by(TrainingRun.created_at.desc(), TrainingRun.id.desc())
+        ).all()
+    )
+    if not runs:
+        return []
+
+    versions_by_model: dict[str, dict[str, str]] = {}
+    try:
+        for model_name in {run.model_key for run in runs}:
+            versions_by_model[model_name] = mlflow.model_versions_by_run(model_name)
+    except MLflowRegistryError as exc:
+        raise _upstream_error(exc) from exc
+
+    dataset_ids = {run.dataset_version_id for run in runs}
+    datasets = {
+        dataset.id: dataset
+        for dataset in session.exec(
+            select(DatasetVersion).where(DatasetVersion.id.in_(dataset_ids))
+        ).all()
+    }
+    usage_by_version = ModelCatalogRepository(session).usage_by_model_version()
+    current_production_id = next(
+        (run.id for run in runs if run.status == "PRODUCTION"),
+        None,
+    )
+
+    models: list[ModelVersionSummaryResponse] = []
+    for run in runs:
+        assert run.id is not None
+        assert run.mlflow_run_id is not None
+        model_version = versions_by_model[run.model_key].get(run.mlflow_run_id)
+        dataset = datasets.get(run.dataset_version_id)
+        # MLflow에 실제 등록 모델이 없는 학습 이력은 모델 목록이 아니라
+        # 학습·배포 이력에서 확인한다.
+        if model_version is None or dataset is None:
+            continue
+        display_status = (
+            "RETIRED"
+            if run.status == "PRODUCTION" and run.id != current_production_id
+            else run.status
+        )
+        models.append(
+            ModelVersionSummaryResponse(
+                training_run_id=run.id,
+                model_name=run.model_key,
+                model_version=model_version,
+                status=display_status,
+                dataset_version_id=dataset.id,
+                dataset_version=dataset.version,
+                created_at=run.created_at,
+                usage=_model_usage_payload(
+                    usage_by_version.get((run.model_key, model_version))
+                ),
+            )
+        )
+    return models
+
+
+@router.get(
+    "/models/{run_id}/transactions",
+    response_model=ModelTransactionPageResponse,
+)
+def list_model_transactions(
+    run_id: int,
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+    label_filter: Literal["ALL", "LABELED", "MISMATCH"] = Query(default="ALL"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+) -> ModelTransactionPageResponse:
+    """선택 모델의 최근 처리 거래와 담당자 확정 판정을 조회한다."""
+
+    run = _get_training_run_or_404(run_id, session)
+    model_version = _resolve_run_model_version(run, mlflow)
+    rows, total_count = ModelCatalogRepository(session).list_transactions(
+        model_name=run.model_key,
+        model_version=model_version,
+        label_filter=label_filter,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    return ModelTransactionPageResponse(
+        items=[
+            ModelTransactionResponse(
+                transaction_id=transaction.id,
+                transaction_datetime=transaction.transaction_datetime,
+                transaction_amount=transaction.transaction_amount,
+                channel=transaction.channel,
+                predict_result=prediction.predict_result,
+                predict_proba=prediction.predict_proba,
+                confirmed_is_fraud=(
+                    label.confirmed_is_fraud if label is not None else None
+                ),
+                label_matches=(
+                    prediction.predict_result == label.confirmed_is_fraud
+                    if label is not None
+                    else None
+                ),
+            )
+            for transaction, prediction, label in rows
+        ],
+        page=page,
+        page_size=page_size,
+        total_count=total_count,
+    )
 
 
 @router.get("/training/runs/{run_id}", response_model=TrainingRunResponse)
@@ -648,15 +860,8 @@ def get_training_run_model_details(
     """지표·모델 버전을 DB 복제본이 아닌 MLflow 원본에서 조회한다."""
 
     run = _get_training_run_or_404(run_id, session)
-    if run.mlflow_run_id is None:
-        raise HTTPException(
-            status_code=409,
-            detail="학습 실행에 MLflow run ID가 기록되지 않았습니다.",
-        )
-    try:
-        return mlflow.get_model_details(run.model_key, run.mlflow_run_id)
-    except MLflowRegistryError as exc:
-        raise _upstream_error(exc) from exc
+    details = _get_run_model_details(run, mlflow)
+    return {**details, "quality_gate": _model_quality_gate(details)}
 
 
 @router.post(
@@ -827,6 +1032,14 @@ def decide_training_run(
     )
     if not initial_decision and not explicit_restage:
         raise HTTPException(status_code=409, detail="검토 가능한 후보 모델이 아닙니다.")
+    if payload.decision == TrainingDecision.APPROVE and _quality_policy_configured():
+        quality_gate = _model_quality_gate(_get_run_model_details(run, mlflow))
+        if not quality_gate["passed"]:
+            raise HTTPException(
+                status_code=409,
+                detail="모델 품질 기준을 충족하지 못해 승인할 수 없습니다.",
+            )
+
     model_version = _resolve_run_model_version(run, mlflow)
     decision_tags = {"backend_decision": payload.decision.value}
     if payload.reason:
@@ -859,6 +1072,51 @@ def decide_training_run(
         )
     except MLflowRegistryError as exc:
         raise _upstream_error(exc) from exc
+    run.status = "STAGED"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    operation = result.get("operation")
+    operation_id = _operation_id(operation) if isinstance(operation, dict) else None
+    return {
+        "training_run": _training_run_payload(run),
+        "model_version": model_version,
+        "operation_id": operation_id,
+        **result,
+    }
+
+
+@router.post(
+    "/training/runs/{run_id}/reactivate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def reactivate_training_run(
+    run_id: int,
+    client: CloudRunAdminClientDep,
+    mlflow: MLflowRegistryClientDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """이전에 운영한 모델을 0% 후보로 다시 준비한다."""
+
+    run = _get_training_run_for_update_or_404(run_id, session)
+    current_production_id = session.exec(
+        select(TrainingRun.id)
+        .where(TrainingRun.status == "PRODUCTION")
+        .order_by(TrainingRun.created_at.desc(), TrainingRun.id.desc())
+    ).first()
+    is_previous_production = run.status in {"RETIRED", "PRODUCTION"}
+    if not is_previous_production or run.id == current_production_id:
+        raise HTTPException(
+            status_code=409,
+            detail="이전에 운영한 모델만 다시 준비할 수 있습니다.",
+        )
+
+    model_version = _resolve_run_model_version(run, mlflow)
+    try:
+        result = client.stage_model_revision(model_version)
+    except CloudRunAdminError as exc:
+        raise _upstream_error(exc) from exc
+
     run.status = "STAGED"
     session.add(run)
     session.commit()
@@ -1096,10 +1354,16 @@ def promote_serving_revision(
     """태그 리비전을 실제 예측으로 검증하고 100% 트래픽 승격을 요청한다."""
 
     run = _get_training_run_for_update_or_404(payload.training_run_id, session)
-    if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED"}:
+    if run.status not in {"STAGED", "DEPLOYMENT_FAILED"}:
         raise HTTPException(status_code=409, detail="승격 가능한 학습 실행이 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
     transaction_id, features = _latest_verification_sample(session)
+
+    # 외부 트래픽 변경보다 DB 상태를 먼저 확정한다. 이후 응답이 유실돼도
+    # deployment/complete가 실제 Cloud Run 상태를 기준으로 복구할 수 있다.
+    run.status = "PROMOTING"
+    session.add(run)
+    session.commit()
     try:
         result = client.promote_model_revision(
             model_version=model_version,
@@ -1107,10 +1371,20 @@ def promote_serving_revision(
             features=features,
         )
     except (CloudRunAdminError, MLServingError) as exc:
+        request_may_have_been_accepted = (
+            isinstance(exc, CloudRunAdminError)
+            and exc.request_may_have_been_accepted
+        )
+        if not request_may_have_been_accepted:
+            failed_run = _get_training_run_for_update_or_404(
+                payload.training_run_id,
+                session,
+            )
+            if failed_run.status == "PROMOTING":
+                failed_run.status = "DEPLOYMENT_FAILED"
+                session.add(failed_run)
+                session.commit()
         raise _upstream_error(exc) from exc
-    run.status = "PROMOTING"
-    session.add(run)
-    session.commit()
     session.refresh(run)
     operation = result["operation"]
     return {
@@ -1133,7 +1407,7 @@ def complete_model_deployment(
     """Cloud Run live traffic를 확인하고 champion alias와 상태를 종결한다."""
 
     run = _get_training_run_for_update_or_404(run_id, session)
-    if run.status not in {"PROMOTING", "PRODUCTION"}:
+    if run.status not in {"STAGED", "PROMOTING", "DEPLOYMENT_FAILED", "PRODUCTION"}:
         raise HTTPException(status_code=409, detail="완료 확인 대상 배포가 아닙니다.")
     model_version = _resolve_run_model_version(run, mlflow)
     operation: dict[str, Any] | None = None
@@ -1171,10 +1445,19 @@ def complete_model_deployment(
             mlflow.set_model_alias(run.model_key, config.MLOPS_MODEL_ALIAS, model_version)
         except MLflowRegistryError as exc:
             raise _upstream_error(exc) from exc
-        run.status = "PRODUCTION"
-        session.add(run)
-        session.commit()
-        session.refresh(run)
+    previous_production_runs = session.exec(
+        select(TrainingRun).where(
+            TrainingRun.status == "PRODUCTION",
+            TrainingRun.id != run.id,
+        )
+    ).all()
+    for previous_run in previous_production_runs:
+        previous_run.status = "RETIRED"
+        session.add(previous_run)
+    run.status = "PRODUCTION"
+    session.add(run)
+    session.commit()
+    session.refresh(run)
     return {
         "training_run": _training_run_payload(run),
         "model_version": model_version,

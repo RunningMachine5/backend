@@ -18,6 +18,8 @@ class TrainingRunPrepareRequest(StrictMLOpsDTO):
 
 
 class TrainingRunExecutionRequest(StrictMLOpsDTO):
+    """기존 요청 호환 필드이며 실제 기준은 Backend 운영 설정을 사용한다."""
+
     min_pr_auc: float = Field(default=0.0, ge=0.0, le=1.0)
     min_recall: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -166,6 +168,54 @@ class InferencePerformanceResponse(StrictMLOpsDTO):
     inference_count: int
     p95_latency_ms: int | None
     latest_inference_at: datetime | None
+
+
+class ModelUsageSummaryResponse(StrictMLOpsDTO):
+    """한 모델 버전이 실제 거래를 처리한 결과 요약."""
+
+    processed_transaction_count: int = Field(ge=0)
+    fraud_prediction_count: int = Field(ge=0)
+    labeled_transaction_count: int = Field(ge=0)
+    matching_label_count: int = Field(ge=0)
+    false_positive_count: int = Field(ge=0)
+    false_negative_count: int = Field(ge=0)
+    label_agreement_percent: float | None = Field(default=None, ge=0, le=100)
+    average_latency_ms: float | None = Field(default=None, ge=0)
+    first_inference_at: datetime | None
+    latest_inference_at: datetime | None
+
+
+class ModelVersionSummaryResponse(StrictMLOpsDTO):
+    """MLflow 모델 버전과 Backend 학습·운영 이력을 함께 보여준다."""
+
+    training_run_id: int
+    model_name: str
+    model_version: str
+    status: str
+    dataset_version_id: int
+    dataset_version: str
+    created_at: datetime
+    usage: ModelUsageSummaryResponse
+
+
+class ModelTransactionResponse(StrictMLOpsDTO):
+    """선택한 모델 버전이 처리한 거래와 담당자 확정 판정."""
+
+    transaction_id: int
+    transaction_datetime: datetime
+    transaction_amount: int
+    channel: str
+    predict_result: bool
+    predict_proba: float = Field(ge=0, le=1)
+    confirmed_is_fraud: bool | None
+    label_matches: bool | None
+
+
+class ModelTransactionPageResponse(StrictMLOpsDTO):
+    items: list[ModelTransactionResponse]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+    total_count: int = Field(ge=0)
 
 
 class MonitoringPointResponse(StrictMLOpsDTO):
@@ -325,6 +375,16 @@ class TrainingRunStartResponse(StrictMLOpsDTO):
     operation: CloudRunOperationResponse
 
 
+class ModelQualityGateResponse(StrictMLOpsDTO):
+    configured: bool
+    minimum_pr_auc: float
+    minimum_recall: float
+    validation_pr_auc: float | None
+    validation_recall: float | None
+    validation_status: str | None
+    passed: bool
+
+
 class MLflowModelDetails(StrictMLOpsDTO):
     source: Literal["MLFLOW"] = "MLFLOW"
     run_id: str
@@ -337,6 +397,7 @@ class MLflowModelDetails(StrictMLOpsDTO):
     metrics: dict[str, float]
     params: dict[str, str]
     tags: dict[str, str]
+    quality_gate: ModelQualityGateResponse
 
 
 class ModelReviewResponse(StrictMLOpsDTO):
@@ -356,6 +417,11 @@ __all__ = [
     "LabeledDatasetBuildResponse",
     "MLflowDetailsPointer",
     "MLflowModelDetails",
+    "ModelQualityGateResponse",
+    "ModelTransactionPageResponse",
+    "ModelTransactionResponse",
+    "ModelUsageSummaryResponse",
+    "ModelVersionSummaryResponse",
     "ModelReviewResponse",
     "ModelPromotionRequest",
     "MonitoringPointResponse",

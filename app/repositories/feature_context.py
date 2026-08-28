@@ -137,7 +137,7 @@ class FeatureContextRepository:
                     ), 0
                 ),
                 func.coalesce(
-                    func.stddev_pop(Transaction.transaction_amount).filter(
+                    func.avg(Transaction.transaction_amount).filter(
                         Transaction.transaction_datetime >= tx_datetime - timedelta(days=30),
                     ), 0.0
                 ),
@@ -148,7 +148,7 @@ class FeatureContextRepository:
                     ), 0
                 ),
                 func.coalesce(
-                    func.stddev_pop(Transaction.transaction_amount).filter(
+                    func.avg(Transaction.transaction_amount).filter(
                         Transaction.transaction_datetime >= tx_datetime - timedelta(days=30),
                         hour.between(0, 5),
                     ), 0.0

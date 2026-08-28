@@ -1,6 +1,7 @@
 import unittest
 from datetime import UTC, datetime
-from unittest.mock import patch
+from threading import Event, Thread
+from unittest.mock import MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,6 +11,7 @@ from app.services.demo_transaction_injection import (
     DEMO_TRANSACTION_COUNT,
     DemoTransactionInjectionManager,
     load_demo_transaction_rows,
+    run_demo_transaction_injection,
 )
 
 
@@ -46,6 +48,262 @@ class DemoTransactionResourceTest(unittest.TestCase):
         self.assertEqual(status.total_count, 500)
         self.assertEqual(status.transactions_per_second, 20)
         self.assertFalse(manager.start())
+
+    def test_publishes_transaction_patch_for_demo_transaction(self) -> None:
+        row = MagicMock()
+        result = MagicMock()
+        result.response.prediction_status = "COMPLETED"
+        pipeline = MagicMock()
+        pipeline.run.return_value = result
+        manager = MagicMock()
+        dashboard_event = {
+            "source": "demo_transaction",
+            "transaction_patch": {"event_id": "transaction:1"},
+        }
+
+        with (
+            patch(
+                "app.services.demo_transaction_injection.load_demo_transaction_rows",
+                return_value=[row],
+            ),
+            patch(
+                "app.services.demo_transaction_injection._pipeline",
+                return_value=pipeline,
+            ),
+            patch("app.services.demo_transaction_injection.Session"),
+            patch(
+                "app.services.demo_transaction_injection.build_agent_input",
+                return_value=None,
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "build_transaction_dashboard_event",
+                return_value=dashboard_event,
+            ) as build_event,
+            patch(
+                "app.services.demo_transaction_injection.dashboard_event_broker.publish"
+            ) as publish,
+            patch(
+                "app.services.demo_transaction_injection."
+                "demo_transaction_injection_manager",
+                manager,
+            ),
+        ):
+            run_demo_transaction_injection(MagicMock(), transaction_count=1)
+
+        build_event.assert_called_once_with(
+            source="demo_transaction",
+            result=result,
+            agent_input=None,
+        )
+        publish.assert_called_once_with(
+            event="dashboard_updated",
+            data=dashboard_event,
+        )
+        manager.complete.assert_called_once_with()
+
+    def test_agent_analysis_does_not_block_next_demo_transaction(self) -> None:
+        rows = [MagicMock(), MagicMock()]
+        result = MagicMock()
+        result.response.prediction_status = "DECLINED"
+        pipeline = MagicMock()
+        second_transaction_processed = Event()
+        processed_count = 0
+
+        def run_pipeline(_):
+            nonlocal processed_count
+            processed_count += 1
+            if processed_count == 2:
+                second_transaction_processed.set()
+            return result
+
+        pipeline.run.side_effect = run_pipeline
+        agent_input = MagicMock()
+        agent_started = Event()
+        release_agent = Event()
+
+        def wait_for_release(_):
+            agent_started.set()
+            release_agent.wait(timeout=2)
+
+        with (
+            patch(
+                "app.services.demo_transaction_injection.load_demo_transaction_rows",
+                return_value=rows,
+            ),
+            patch(
+                "app.services.demo_transaction_injection._pipeline",
+                return_value=pipeline,
+            ),
+            patch("app.services.demo_transaction_injection.Session"),
+            patch(
+                "app.services.demo_transaction_injection.build_agent_input",
+                return_value=agent_input,
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "build_transaction_dashboard_event",
+                return_value={"source": "demo_transaction"},
+            ),
+            patch(
+                "app.services.demo_transaction_injection.dashboard_event_broker.publish"
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "demo_transaction_injection_manager"
+            ) as manager,
+            patch(
+                "app.services.demo_transaction_injection.run_demo_agent_task",
+                side_effect=wait_for_release,
+            ),
+            patch("app.services.demo_transaction_injection.sleep"),
+        ):
+            injection_thread = Thread(
+                target=run_demo_transaction_injection,
+                args=(MagicMock(),),
+                kwargs={
+                    "transaction_count": 2,
+                    "transactions_per_second": 20,
+                },
+            )
+            injection_thread.start()
+            try:
+                self.assertTrue(agent_started.wait(timeout=3))
+                self.assertTrue(second_transaction_processed.wait(timeout=3))
+                injection_thread.join(timeout=3)
+                self.assertFalse(injection_thread.is_alive())
+                manager.complete.assert_called_once_with()
+            finally:
+                release_agent.set()
+
+        self.assertEqual(manager.record.call_count, 2)
+
+    def test_pipeline_failure_does_not_wait_for_running_agent_task(self) -> None:
+        rows = [MagicMock(), MagicMock()]
+        result = MagicMock()
+        result.response.prediction_status = "DECLINED"
+        pipeline = MagicMock()
+        pipeline.run.side_effect = [result, RuntimeError("pipeline")]
+        agent_input = MagicMock()
+        agent_started = Event()
+        release_agent = Event()
+
+        def wait_for_release(_):
+            agent_started.set()
+            release_agent.wait(timeout=2)
+
+        with (
+            patch(
+                "app.services.demo_transaction_injection.load_demo_transaction_rows",
+                return_value=rows,
+            ),
+            patch(
+                "app.services.demo_transaction_injection._pipeline",
+                return_value=pipeline,
+            ),
+            patch("app.services.demo_transaction_injection.Session"),
+            patch(
+                "app.services.demo_transaction_injection.build_agent_input",
+                return_value=agent_input,
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "build_transaction_dashboard_event",
+                return_value={"source": "demo_transaction"},
+            ),
+            patch(
+                "app.services.demo_transaction_injection.dashboard_event_broker.publish"
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "demo_transaction_injection_manager"
+            ) as manager,
+            patch(
+                "app.services.demo_transaction_injection.run_demo_agent_task",
+                side_effect=wait_for_release,
+            ),
+            patch(
+                "app.services.demo_transaction_injection.monotonic",
+                side_effect=[10.0, 10.1, 10.2],
+            ),
+            patch("app.services.demo_transaction_injection.sleep"),
+            self.assertLogs(
+                "app.services.demo_transaction_injection",
+                "ERROR",
+            ),
+        ):
+            injection_thread = Thread(
+                target=run_demo_transaction_injection,
+                args=(MagicMock(),),
+                kwargs={
+                    "transaction_count": 2,
+                    "transactions_per_second": 2,
+                },
+            )
+            injection_thread.start()
+            try:
+                self.assertTrue(agent_started.wait(timeout=3))
+                injection_thread.join(timeout=3)
+                self.assertFalse(injection_thread.is_alive())
+            finally:
+                release_agent.set()
+
+        manager.fail.assert_called_once_with("pipeline")
+        manager.complete.assert_not_called()
+
+    def test_pacing_waits_only_for_time_remaining_after_each_transaction(
+        self,
+    ) -> None:
+        rows = [MagicMock(), MagicMock(), MagicMock()]
+        result = MagicMock()
+        result.response.prediction_status = "COMPLETED"
+        pipeline = MagicMock()
+        pipeline.run.return_value = result
+        manager = MagicMock()
+
+        with (
+            patch(
+                "app.services.demo_transaction_injection.load_demo_transaction_rows",
+                return_value=rows,
+            ),
+            patch(
+                "app.services.demo_transaction_injection._pipeline",
+                return_value=pipeline,
+            ),
+            patch("app.services.demo_transaction_injection.Session"),
+            patch(
+                "app.services.demo_transaction_injection.build_agent_input",
+                return_value=None,
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "build_transaction_dashboard_event",
+                return_value={"source": "demo_transaction"},
+            ),
+            patch(
+                "app.services.demo_transaction_injection.dashboard_event_broker.publish"
+            ),
+            patch(
+                "app.services.demo_transaction_injection."
+                "demo_transaction_injection_manager",
+                manager,
+            ),
+            patch(
+                "app.services.demo_transaction_injection.monotonic",
+                side_effect=[10.0, 10.2, 10.5, 11.2, 11.2],
+            ),
+            patch("app.services.demo_transaction_injection.sleep") as sleep_mock,
+        ):
+            run_demo_transaction_injection(
+                MagicMock(),
+                transaction_count=3,
+                transactions_per_second=2,
+            )
+
+        sleep_mock.assert_called_once()
+        self.assertAlmostEqual(sleep_mock.call_args.args[0], 0.3)
+        self.assertEqual(manager.record.call_count, 3)
+        manager.complete.assert_called_once_with()
 
 
 class DemoTransactionApiTest(unittest.TestCase):

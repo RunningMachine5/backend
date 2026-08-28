@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from threading import Lock
+from time import monotonic
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
@@ -15,6 +17,7 @@ from fastapi import Depends, HTTPException, Request, status
 from app.core import config
 
 MODEL_COMPARISON_ARTIFACT_PATH = "metadata/model-comparison.json"
+MODEL_VERSION_CACHE_TTL_SECONDS = 10.0
 
 
 class MLflowRegistryError(RuntimeError):
@@ -49,6 +52,8 @@ class MLflowRegistryClient:
         self.timeout_seconds = timeout_seconds
         self._auth = (username, password) if username else None
         self._http_client = http_client
+        self._model_versions_cache: dict[str, tuple[float, dict[str, str]]] = {}
+        self._model_versions_lock = Lock()
 
     def _request(
         self,
@@ -132,24 +137,58 @@ class MLflowRegistryClient:
 
         # 최신 버전을 단순 선택하면 다른 학습 Run의 모델을 승인할 수 있다.
         # 따라서 Backend TrainingRun과 연결된 run_id가 정확히 같은 버전만 쓴다.
-        matches = [
-            item
-            for item in self._model_versions(model_name)
-            if item.get("name") == model_name and item.get("run_id") == run_id
-        ]
-        if not matches:
+        version = self.model_versions_by_run(model_name).get(run_id)
+        if version is None:
             raise MLflowRegistryError(
                 "해당 학습 실행이 등록한 모델 버전을 MLflow에서 찾지 못했습니다."
             )
-        versions = {str(item.get("version", "")) for item in matches}
-        if len(versions) != 1:
-            raise MLflowRegistryError(
-                "학습 실행에 연결된 등록 모델 버전이 하나로 결정되지 않습니다."
-            )
-        version = versions.pop()
-        if not version.isdigit() or int(version) <= 0:
-            raise MLflowRegistryError("MLflow model version 형식이 올바르지 않습니다.")
         return version
+
+    def model_versions_by_run(self, model_name: str) -> dict[str, str]:
+        """등록 모델의 MLflow run ID와 모델 버전을 한 번에 연결한다."""
+
+        cached = self._cached_model_versions(model_name)
+        if cached is not None:
+            return cached
+
+        # 목록·상세·거래 API가 동시에 열려도 Registry 검색은 한 번만 실행한다.
+        with self._model_versions_lock:
+            cached = self._cached_model_versions(model_name)
+            if cached is not None:
+                return cached
+
+            versions_by_run: dict[str, str] = {}
+            for item in self._model_versions(model_name):
+                if item.get("name") != model_name:
+                    continue
+                run_id = item.get("run_id")
+                version = str(item.get("version", ""))
+                if not isinstance(run_id, str) or not run_id:
+                    continue
+                if not version.isdigit() or int(version) <= 0:
+                    raise MLflowRegistryError(
+                        "MLflow model version 형식이 올바르지 않습니다."
+                    )
+                if run_id in versions_by_run and versions_by_run[run_id] != version:
+                    raise MLflowRegistryError(
+                        "학습 실행에 연결된 등록 모델 버전이 하나로 결정되지 않습니다."
+                    )
+                versions_by_run[run_id] = version
+
+            self._model_versions_cache[model_name] = (
+                monotonic(),
+                versions_by_run,
+            )
+            return dict(versions_by_run)
+
+    def _cached_model_versions(self, model_name: str) -> dict[str, str] | None:
+        cached = self._model_versions_cache.get(model_name)
+        if cached is None:
+            return None
+        cached_at, versions_by_run = cached
+        if monotonic() - cached_at >= MODEL_VERSION_CACHE_TTL_SECONDS:
+            return None
+        return dict(versions_by_run)
 
     @staticmethod
     def _key_value_map(
