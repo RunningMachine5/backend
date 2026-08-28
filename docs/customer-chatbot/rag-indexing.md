@@ -63,6 +63,36 @@ Unstructured `fast`도 텍스트 레이어가 없으면 OCR로 폴백하므로, 
 `recall@3` 0.4500을 기록해 최종 설정으로 채택했다. 이후 검색·응답 품질 평가는
 `app.scripts.evaluate_rag_ragas`를 사용한다.
 
+## Cohere 리랭킹
+
+운영 검색은 `text-embedding-3-small`과 pgvector 코사인 거리로 `0.6` 이내 후보를
+최대 30개 가져온 뒤, Cohere `rerank-v4.0-fast`가 질의와 청크 본문만 비교해 최종
+5개를 고른다. 검색 질의 원문이나 청크를 별도로 재작성하지 않는다.
+
+`COHERE_RERANK_ENABLED=false`로 두면 Cohere 를 전혀 호출하지 않고 후보도 `top_k`
+개만 조회한다. 의도적으로 끈 상태이므로 안내는 프로세스당 한 번 INFO 로만 남긴다.
+평가 스크립트의 `--rerank-rpm`도 이때는 무시되고, `check_cohere_reranker`는 연결
+확인은 그대로 하되 챗봇 경로가 리랭커를 부르지 않는다고 먼저 경고한다.
+
+키가 비었거나 네트워크·응답 검증에 실패하면 (플래그가 켜져 있어도) 기존 벡터
+거리순 결과로 물러나고 경고를 남긴다. 실제 키는 `COHERE_API_KEY`로만 주입하며
+저장소에 커밋하지 않는다.
+
+키·모델·네트워크 오류를 고객 데이터나 DB 호출 없이 확인하려면 다음 독립 진단을
+실행한다. 키 값은 출력하지 않고 SDK 예외 타입, HTTP 상태와 응답 메시지만 기록한다.
+
+```bash
+uv run --env-file .env python -m app.scripts.check_cohere_reranker
+```
+
+Cohere 평가용 키의 10 RPM 한도를 넘기지 않고 RAGAS를 실행하려면 실제 리랭커
+요청 시작을 9 RPM으로 제한한다. 재시도 요청도 이 제한 횟수에 포함된다.
+
+```bash
+uv run --env-file .env --group eval python -m app.scripts.evaluate_rag_ragas \
+  --rerank-rpm 9 --out evals/rag/reports/use_cohere_reranker.json
+```
+
 Unstructured 동작 근거는 공식
 [Partitioning 문서](https://docs.unstructured.io/open-source/core-functionality/partitioning)와
 [Chunking 문서](https://docs.unstructured.io/open-source/core-functionality/chunking)를

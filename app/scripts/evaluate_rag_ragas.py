@@ -8,8 +8,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
+from collections.abc import Callable, Sequence
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -18,12 +21,22 @@ load_dotenv()
 
 from sqlmodel import Session  # noqa: E402
 
+from app.core.config import COHERE_RERANK_ENABLED  # noqa: E402
 from app.core.db import engine  # noqa: E402
+from app.services.rag.chatbot_retriever import retriever_source  # noqa: E402
+from app.services.rag.cohere_reranker import CohereReranker  # noqa: E402
 from app.services.rag.golden_dataset import CATEGORIES, load_golden_cases  # noqa: E402
 from app.services.rag.ragas_evaluation import RunResult, evaluate_rag  # noqa: E402
 
 
-def _parse_args() -> argparse.Namespace:
+def _positive_float(value: str) -> float:
+    number = float(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("0보다 큰 값이어야 합니다")
+    return number
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RAGAS 기반 RAG 평가")
     parser.add_argument(
         "--category",
@@ -45,7 +58,48 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--quiet", action="store_true", help="진행 상황을 출력하지 않는다"
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--rerank-rpm",
+        type=_positive_float,
+        default=None,
+        help=(
+            "Cohere 리랭커 API 호출을 분당 N회로 제한한다. "
+            "평가용 키는 9를 권장한다"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+class _RerankRateLimiter:
+    """리랭커 요청 시작 사이에 일정 간격을 두는 프로세스 단위 제한기."""
+
+    def __init__(
+        self,
+        requests_per_minute: float,
+        *,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        if requests_per_minute <= 0:
+            raise ValueError("requests_per_minute는 0보다 커야 합니다")
+        self.minimum_interval = 60.0 / requests_per_minute
+        self._clock = clock or time.monotonic
+        self._sleep = sleep or time.sleep
+        self._last_request_at: float | None = None
+        self._lock = threading.Lock()
+
+    def __call__(self) -> None:
+        # Cohere 재시도도 실제 API 요청이므로 같은 제한기를 반드시 거친다.
+        with self._lock:
+            now = self._clock()
+            if self._last_request_at is not None:
+                wait_seconds = self.minimum_interval - (
+                    now - self._last_request_at
+                )
+                if wait_seconds > 0:
+                    self._sleep(wait_seconds)
+                    now = self._clock()
+            self._last_request_at = now
 
 
 def _default_report_path() -> Path:
@@ -178,10 +232,37 @@ def main() -> None:
     quiet = args.quiet
     on_case = None if quiet else _ProgressPrinter()
     on_phase = None if quiet else _log
+    retriever = retriever_source
+    if not COHERE_RERANK_ENABLED:
+        # 리랭킹을 끈 상태에서는 retriever_source 가 리랭커를 부르지 않으므로
+        # 호출 제한을 걸어봐야 의미가 없다. 착각하지 않도록 알린다.
+        if not quiet:
+            _log(
+                "COHERE_RERANK_ENABLED=false 라 벡터 검색 순위로 평가합니다"
+                + (" (--rerank-rpm 은 무시됩니다)" if args.rerank_rpm else "")
+            )
+    elif args.rerank_rpm is not None:
+        limiter = _RerankRateLimiter(args.rerank_rpm)
+        retriever = partial(
+            retriever_source,
+            reranker=CohereReranker(before_request=limiter),
+        )
+        if not quiet:
+            _log(
+                "Cohere 리랭커 호출 제한: "
+                f"{args.rerank_rpm:g} RPM "
+                f"(요청 간 최소 {limiter.minimum_interval:.2f}초)"
+            )
 
     started = time.monotonic()
     with Session(engine) as session:
-        report = evaluate_rag(cases, session, on_case=on_case, on_phase=on_phase)
+        report = evaluate_rag(
+            cases,
+            session,
+            retriever=retriever,
+            on_case=on_case,
+            on_phase=on_phase,
+        )
 
     payload = json.dumps(report, ensure_ascii=False, indent=2)
 

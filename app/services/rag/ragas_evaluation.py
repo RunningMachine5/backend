@@ -449,6 +449,7 @@ def evaluate_rag(
     session: Session,
     *,
     top_k: int = RETRIEVE_TOP_K,
+    retriever: RetrieverCallable = retriever_source,
     on_case: CaseCallback | None = None,
     on_phase: PhaseCallback | None = None,
 ) -> dict[str, Any]:
@@ -460,7 +461,13 @@ def evaluate_rag(
 
     notify(f"[1/3] 파이프라인 실행 ({len(cases)}건) — 질의 분해·검색·응답 생성")
     with get_usage_metadata_callback() as pipeline_usage:
-        results = run_cases(cases, session, top_k=top_k, on_case=on_case)
+        results = run_cases(
+            cases,
+            session,
+            retriever=retriever,
+            top_k=top_k,
+            on_case=on_case,
+        )
     pipeline_usage_by_model = dict(pipeline_usage.usage_metadata)
     notify(format_usage_summary(pipeline_usage_by_model))
 
